@@ -3,6 +3,65 @@ import { generateEmbedding } from "./embedding.js";
 
 const DEFAULT_TARGET_WORDS_PER_CHUNK = 180;
 
+// A "paragraph" (from the blank-line split below) bigger than this multiple
+// of targetWords is treated as unsegmented text — e.g. a whole chapter
+// pasted with single line breaks between paragraphs rather than blank
+// lines — and gets force-split further so it can't become one oversized
+// chunk that swallows the entire chapter into a single embedding.
+const OVERSIZED_BLOCK_MULTIPLIER = 2;
+
+function wordCountOf(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+// Falls back through progressively coarser split strategies until a block
+// is broken into pieces no larger than ~targetWords: single newlines (for
+// text with one-line-per-paragraph formatting), then sentence boundaries
+// (for a block with no newlines at all), then hard word-count slicing as
+// the last resort (for a single run-on line with no sentence punctuation).
+function splitOversizedBlock(block: string, targetWords: number): string[] {
+  if (wordCountOf(block) <= targetWords * OVERSIZED_BLOCK_MULTIPLIER) {
+    return [block];
+  }
+
+  const lines = block
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length > 1) {
+    return lines.flatMap((line) => splitOversizedBlock(line, targetWords));
+  }
+
+  const sentences = block.match(/[^.!?]+[.!?]+(?:\s+|$)/g);
+  if (sentences && sentences.length > 1) {
+    const pieces: string[] = [];
+    let buffer: string[] = [];
+    let bufferWords = 0;
+
+    for (const sentence of sentences) {
+      const sentenceWords = wordCountOf(sentence);
+      if (bufferWords > 0 && bufferWords + sentenceWords > targetWords) {
+        pieces.push(buffer.join("").trim());
+        buffer = [];
+        bufferWords = 0;
+      }
+      buffer.push(sentence);
+      bufferWords += sentenceWords;
+    }
+    if (buffer.length > 0) {
+      pieces.push(buffer.join("").trim());
+    }
+    return pieces;
+  }
+
+  const words = block.split(/\s+/).filter(Boolean);
+  const pieces: string[] = [];
+  for (let i = 0; i < words.length; i += targetWords) {
+    pieces.push(words.slice(i, i + targetWords).join(" "));
+  }
+  return pieces;
+}
+
 // Groups consecutive paragraphs into ~targetWords-sized chunks without ever
 // splitting a paragraph mid-sentence. Keeps chunk granularity consistent
 // with the ~150-300 word paragraphs Layer 3 (Deep Past RAG) retrieves.
@@ -13,7 +72,8 @@ export function chunkManuscriptText(
   const paragraphs = rawText
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((paragraph) => splitOversizedBlock(paragraph, targetWords));
 
   const chunks: string[] = [];
   let buffer: string[] = [];
