@@ -11,7 +11,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Default 100kb is too small for a full manuscript chapter pasted into
+// POST /api/v1/manuscript/chunks; raised to comfortably fit tens of
+// thousands of words in one ingestion call.
+app.use(express.json({ limit: "5mb" }));
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
