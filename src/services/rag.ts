@@ -22,7 +22,22 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function entryMatchesSceneBeat(entry: CodexEntry, sceneBeat: string): boolean {
+type Layer1CodexRow = Pick<
+  CodexEntry,
+  | "id"
+  | "user_id"
+  | "book_id"
+  | "name"
+  | "aliases"
+  | "entry_type"
+  | "description"
+  | "tier"
+  | "personality_traits"
+  | "motivations"
+  | "created_at"
+>;
+
+function entryMatchesSceneBeat(entry: Layer1CodexRow, sceneBeat: string): boolean {
   const candidates = [entry.name, ...(entry.aliases ?? [])].filter(Boolean);
   return candidates.some((candidate) => {
     const pattern = new RegExp(`\\b${escapeRegExp(candidate)}\\b`, "i");
@@ -30,26 +45,40 @@ function entryMatchesSceneBeat(entry: CodexEntry, sceneBeat: string): boolean {
   });
 }
 
-function formatCodexEntry(entry: CodexEntry): string {
+// Condenses a Codex entry into a short Layer 1 block. The table can hold a
+// full character sheet (physical description, background, arc, notes —
+// CRUD'd via src/routes/codex.ts), but only a compact summary is injected
+// here so a richly-detailed entry can't blow the ~800-token Layer 1 budget.
+function formatCodexEntry(entry: Layer1CodexRow): string {
   const aliasSuffix = entry.aliases?.length ? ` (aka ${entry.aliases.join(", ")})` : "";
-  return `### ${entry.name}${aliasSuffix} [${entry.entry_type}]\n${entry.description}`;
+  const tierSuffix = entry.tier ? `, ${entry.tier}` : "";
+  const lines = [`### ${entry.name}${aliasSuffix} [${entry.entry_type}${tierSuffix}]`, entry.description];
+
+  if (entry.personality_traits?.length) {
+    lines.push(`Traits: ${entry.personality_traits.join(", ")}`);
+  }
+  if (entry.motivations?.length) {
+    lines.push(`Motivations: ${entry.motivations.slice(0, 3).join("; ")}`);
+  }
+
+  return lines.join("\n");
 }
 
 // Layer 1 — Codex (Explicit Match): scans the scene beat for known
 // character/location/item/lore names or aliases and injects the matched
-// profiles verbatim, deterministically, no embedding call required.
+// profiles' condensed summary, deterministically, no embedding call required.
 async function buildLayer1Codex(bookId: string, sceneBeat: string): Promise<string> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("codex_entries")
-    .select("id, user_id, book_id, name, aliases, entry_type, description, created_at")
+    .select("id, user_id, book_id, name, aliases, entry_type, description, tier, personality_traits, motivations, created_at")
     .eq("book_id", bookId);
 
   if (error) {
     throw new Error(`Layer 1 (Codex) lookup failed: ${error.message}`);
   }
 
-  const matched = ((data ?? []) as CodexEntry[]).filter((entry) =>
+  const matched = ((data ?? []) as Layer1CodexRow[]).filter((entry) =>
     entryMatchesSceneBeat(entry, sceneBeat)
   );
   if (matched.length === 0) {

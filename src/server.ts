@@ -2,6 +2,8 @@ import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import { generateProseRouter } from "./routes/generateProse.js";
+import { codexRouter } from "./routes/codex.js";
+import { manuscriptRouter } from "./routes/manuscript.js";
 
 const app = express();
 app.use(cors());
@@ -12,6 +14,8 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api/v1", generateProseRouter);
+app.use("/api/v1", codexRouter);
+app.use("/api/v1", manuscriptRouter);
 
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: `Not found: ${req.method} ${req.originalUrl}` });

@@ -30,8 +30,10 @@ depends on manually authored summaries.
 ### Layer 1 — Codex (Explicit Match)
 
 Direct string/alias lookup against saved character, location, and lore
-entries. Scans the scene beat text for known names or aliases and injects the
-matched profile(s) directly.
+entries. Scans the scene beat text for known names or aliases and injects a
+condensed summary of the matched profile(s) — description plus top
+personality traits/motivations, not the full Codex record (see Database
+Schema below for what stays human-facing-only).
 
 - Budget: **~500–800 tokens max**
 - Deterministic, no embedding call required
@@ -83,10 +85,38 @@ accounts.
 | `book_id` | UUID NOT NULL | |
 | `name` | VARCHAR(255) NOT NULL | |
 | `aliases` | VARCHAR(255)[] | alternate names/titles scanned during Layer 1 match |
-| `entry_type` | VARCHAR(50) NOT NULL | CHECK: `character` \| `location` \| `item` \| `lore` |
-| `description` | TEXT NOT NULL | injected verbatim on Layer 1 match |
+| `entry_type` | VARCHAR(50) NOT NULL | CHECK: `character` \| `location` \| `item` \| `lore` \| `nation` \| `culture` \| `magic` \| `faction` \| `religion` \| `history` |
+| `description` | TEXT NOT NULL | overview/summary; the only field always injected on a Layer 1 match |
 | `embedding` | VECTOR(1536) | reserved for future semantic Codex lookup; not used by Layer 1's deterministic string match |
+| `tier` | VARCHAR(20) | CHECK: `main` \| `supporting` \| `minor` |
+| `quote`, `image_url`, `age`, `gender`, `role_in_story`, `occupation`, `location_name` | TEXT/VARCHAR | human-facing profile fields, CRUD-only — not injected into Layer 1 |
+| `physical_description`, `motivations` | TEXT[] | bullet-list fields; `motivations` (top 3) is condensed into Layer 1 alongside `personality_traits` |
+| `personality_traits` | VARCHAR(100)[] | condensed into Layer 1 as a short `Traits: ...` line |
+| `background`, `notes` | TEXT | human-facing only, not injected into Layer 1 |
+| `character_arc` | JSONB | array of `{ stage, description }`; human-facing only |
+| `event_year` | VARCHAR(50) | for `history`-type entries (timeline events) |
 | `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+Managed entirely through `POST/GET/PATCH/DELETE /api/v1/codex` (see below). Only
+`description` + condensed `personality_traits`/`motivations` ever reach Hanami's
+prompt — the richer fields exist for a human-facing Codex UI (character sheets,
+worldbuilding pages) and stay out of the token budget regardless of how much
+detail a writer stores.
+
+### `codex_relationships` (character bonds)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `book_id` | UUID NOT NULL | |
+| `from_entry_id`, `to_entry_id` | UUID NOT NULL, FK → `codex_entries(id)` | `ON DELETE CASCADE`; CHECK prevents self-relationships |
+| `bond_type` | VARCHAR(100) NOT NULL | e.g. "Nephew of", "Rival" |
+| `description` | TEXT | |
+| `strength` | VARCHAR(20) | CHECK: `strong` \| `moderate` \| `tense` \| `weak` |
+| `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+Not currently surfaced to Layer 1 — purely for the human-facing Codex UI's
+Relationships tab. Managed via `/api/v1/codex/:id/relationships`.
 
 ### `manuscript_chunks` (Layer 2/3 source)
 
@@ -113,6 +143,36 @@ filtered by `match_threshold`, ordered by similarity descending, capped at
 
 - `idx_codex_entries_book_id`, `idx_manuscript_chunks_book_id` — B-tree, scope every retrieval query to one book
 - `idx_codex_entries_embedding`, `idx_manuscript_chunks_embedding` — HNSW (`vector_cosine_ops`), back the cosine-distance searches above
+- `idx_codex_relationships_book_id`, `idx_codex_relationships_from_entry`, `idx_codex_relationships_to_entry` — B-tree
+
+## Content Management API
+
+Endpoints that keep the Codex and manuscript memory populated and up to date
+as a writer works — separate from `/generate-prose`'s read-only retrieval path.
+
+### Codex CRUD (`src/routes/codex.ts`)
+
+- `GET /api/v1/codex?bookId=&entryType=&tier=` — list entries for a book
+- `GET /api/v1/codex/:id` — fetch one entry (full record, all fields)
+- `POST /api/v1/codex` — create an entry
+- `PATCH /api/v1/codex/:id` — partial update
+- `DELETE /api/v1/codex/:id` — delete (cascades to its relationships)
+- `GET /api/v1/codex/:id/relationships` — list relationships involving an entry (either direction)
+- `POST /api/v1/codex/:id/relationships` — create a relationship from `:id` to another entry
+- `DELETE /api/v1/codex/relationships/:relationshipId` — delete a relationship
+
+### Manuscript ingestion (`src/routes/manuscript.ts`, `src/services/manuscriptIngest.ts`)
+
+`POST /api/v1/manuscript/chunks` — `{ userId, bookId, chapterNumber, rawText, startingSceneOrder? }`
+
+Groups `rawText` into ~180-word paragraph-aligned chunks
+(`chunkManuscriptText`), embeds each via `generateEmbedding()`, and stores
+them with auto-incrementing `scene_order` (continuing from whatever's
+already stored for that book+chapter unless `startingSceneOrder` is given).
+This is what keeps Layer 3's "Deep Past" memory growing automatically as a
+manuscript is written — call it whenever a scene/chapter is finished (or
+once AI-generated prose from `/generate-prose` is accepted) so future
+generations can recall it.
 
 ## Development Stages
 
@@ -121,3 +181,4 @@ filtered by `match_threshold`, ordered by similarity descending, capped at
 3. Core RAG Services (Embeddings, Dual-Layer Retriever, Hanami LLM Client)
 4. Decoupled Express API Server
 5. In-Terminal Seed & Test Runner (verifies memory/retrieval accuracy directly, no frontend required)
+6. Content Management API (Codex CRUD + relationships, manuscript chunk ingestion) — closes the loop so Codex/manuscript memory can be authored and kept current, not just seeded once for testing
