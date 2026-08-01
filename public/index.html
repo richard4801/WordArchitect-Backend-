@@ -204,9 +204,9 @@
     <p class="meta-line" id="previewMeta"></p>
     <pre id="previewOutput"></pre>
 
-    <p class="meta-line" style="margin-top:14px;">Layer 3 (Deep Past) — nearest manuscript chunks found, whether or not they made it into the context above:</p>
+    <p class="meta-line" style="margin-top:14px;">Layer 3 (Deep Past) — nearest manuscript chunks found per searched concept, whether or not they made it into the context above:</p>
     <table>
-      <thead><tr><th>Similarity</th><th>Included?</th><th>Chunk preview</th></tr></thead>
+      <thead><tr><th>Concept(s)</th><th>Similarity</th><th>Included?</th><th>Chunk preview</th></tr></thead>
       <tbody id="candidateTable"></tbody>
     </table>
   </div>
@@ -515,11 +515,12 @@ async function showContextPreview(body) {
   candidateTable.innerHTML = "";
   const candidates = data.layer3Candidates || [];
   if (candidates.length === 0) {
-    candidateTable.innerHTML = '<tr><td colspan="3">No manuscript chunks exist yet for this Book ID — try Manuscript ingestion first.</td></tr>';
+    candidateTable.innerHTML = '<tr><td colspan="4">No manuscript chunks exist yet for this Book ID — try Manuscript ingestion first.</td></tr>';
   } else {
     for (const c of candidates) {
       const tr = document.createElement("tr");
       tr.innerHTML =
+        "<td>" + escapeHtml((c.concepts || []).join(", ")) + "</td>" +
         "<td>" + c.similarity.toFixed(3) + "</td>" +
         "<td>" + (c.included ? "✅ yes" : "❌ no (below 0.5 threshold)") + "</td>" +
         "<td>" + escapeHtml(c.preview) + "</td>";

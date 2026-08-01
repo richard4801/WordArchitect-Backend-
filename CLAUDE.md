@@ -49,13 +49,30 @@ tone, and character positioning at the point of generation.
 
 ### Layer 3 — Deep Past (Vector RAG)
 
-The scene beat is embedded via `text-embedding-3-small` and matched against
-previously embedded manuscript chunks in Supabase using a cosine similarity
-RPC query: `match_manuscript_chunks`. Only the **top 3** most relevant
-historical paragraphs are returned.
+The scene beat is first expanded (`src/services/queryExpansion.ts`) into up
+to 4 distinct searchable concepts — plot objects, events, or threads, not
+character names (Layer 1 already covers those deterministically) — each
+rewritten into a fuller descriptive phrase closer to how it would actually
+read in prose. This exists because a single beat often mixes unrelated
+topics (e.g. "the pregnancy, and the totem"), and embedding the whole beat
+as one blended query lets one topic crowd out the other; searching each
+concept separately gives both a fair shot. Each concept is embedded via
+`text-embedding-3-small` and matched against previously embedded manuscript
+chunks using the cosine similarity RPC `match_manuscript_chunks`, then
+results are interleaved round-robin across concepts (best-of-A,
+best-of-B, ..., second-best-of-A, ...) rather than pooled and sorted by
+raw similarity — otherwise a concept with generally higher-scoring matches
+could still crowd out a less-dominant one when merging. Falls back to
+treating the whole beat as a single concept if expansion fails for any
+reason.
 
 - Budget: **~1,000 tokens max**
-- The only layer that performs a live embedding + vector search round trip
+- The only layer that performs live embedding + vector search round trips
+- Match threshold is currently `0.5`, applied per-concept — early testing
+  found this can be stricter than warranted for short beat-to-prose
+  comparisons (genuinely relevant matches scoring in the 0.3s got
+  excluded entirely), so this value is a candidate for tuning rather than
+  a settled constant
 
 ## Strict Context Boundary
 

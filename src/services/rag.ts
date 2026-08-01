@@ -1,6 +1,7 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { estimateTokens, truncateToTokenBudget } from "../lib/tokenBudget.js";
 import { generateEmbedding } from "./embedding.js";
+import { expandSceneBeatConcepts } from "./queryExpansion.js";
 import type { CodexEntry, ManuscriptChunkMatch } from "../types/domain.js";
 
 // Per-layer token budgets, per the Dual-Layer Context Engine spec in CLAUDE.md.
@@ -9,7 +10,10 @@ const LAYER2_MAX_WORDS = 2000;
 const LAYER2_TOKEN_BUDGET = 2000;
 const LAYER3_TOKEN_BUDGET = 1000;
 const LAYER3_MATCH_THRESHOLD = 0.5;
-const LAYER3_MATCH_COUNT = 3;
+// Each extracted concept gets its own search for this many nearest chunks —
+// not one shared top-N across the whole beat, which would let one concept
+// (e.g. "pregnancy") crowd out another (e.g. "totem") in a single search.
+const LAYER3_MATCH_COUNT_PER_CONCEPT = 3;
 
 export interface AssembleContextParams {
   userId: string;
@@ -123,6 +127,7 @@ export interface Layer3Candidate {
   similarity: number;
   included: boolean;
   preview: string;
+  concepts: string[];
 }
 
 interface Layer3Result {
@@ -132,46 +137,109 @@ interface Layer3Result {
 
 const CANDIDATE_PREVIEW_CHARS = 160;
 
-// Layer 3 — Deep Past (Vector RAG): embeds the scene beat and runs the
-// match_manuscript_chunks cosine-similarity RPC, scoped to the current book.
-// Queries with match_threshold 0 so the top LAYER3_MATCH_COUNT nearest
-// chunks always come back regardless of relevance, then applies the real
-// LAYER3_MATCH_THRESHOLD locally — same end result for the compiled
-// context, but it also lets us report near-misses for diagnostics.
-async function buildLayer3DeepPast(bookId: string, sceneBeat: string): Promise<Layer3Result> {
-  const embedding = await generateEmbedding(sceneBeat);
+interface ConceptMatches {
+  concept: string;
+  matches: ManuscriptChunkMatch[];
+}
+
+// Layer 3 — Deep Past (Vector RAG): expands the scene beat into its
+// distinct searchable concepts (see queryExpansion.ts — e.g. a beat about
+// "the pregnancy, and the totem" becomes two concepts, not one blended
+// query) and runs a separate match_manuscript_chunks search per concept,
+// scoped to the current book. Each search uses match_threshold 0 so its
+// nearest LAYER3_MATCH_COUNT_PER_CONCEPT chunks always come back
+// regardless of relevance; the real LAYER3_MATCH_THRESHOLD is applied
+// locally when selecting what actually goes into the compiled context —
+// this is what lets near-misses still surface for diagnostics.
+async function searchConcepts(bookId: string, concepts: { concept: string; searchText: string }[]): Promise<ConceptMatches[]> {
   const supabase = getSupabaseClient();
 
-  const { data, error } = await supabase.rpc("match_manuscript_chunks", {
-    query_embedding: embedding,
-    match_threshold: 0,
-    match_count: LAYER3_MATCH_COUNT,
-    target_book_id: bookId,
-  });
+  return Promise.all(
+    concepts.map(async ({ concept, searchText }) => {
+      const embedding = await generateEmbedding(searchText);
+      const { data, error } = await supabase.rpc("match_manuscript_chunks", {
+        query_embedding: embedding,
+        match_threshold: 0,
+        match_count: LAYER3_MATCH_COUNT_PER_CONCEPT,
+        target_book_id: bookId,
+      });
 
-  if (error) {
-    throw new Error(`Layer 3 (Deep Past RAG) lookup failed: ${error.message}`);
+      if (error) {
+        throw new Error(`Layer 3 (Deep Past RAG) lookup failed for concept "${concept}": ${error.message}`);
+      }
+
+      return { concept, matches: (data ?? []) as ManuscriptChunkMatch[] };
+    })
+  );
+}
+
+// Interleaves each concept's ranked matches round-robin (concept A's best,
+// concept B's best, concept C's best, then concept A's second-best, ...)
+// instead of pooling everything and sorting by raw similarity — the latter
+// would let one concept with generally higher-scoring matches crowd out a
+// less-dominant one entirely, exactly the "only finds one of the two
+// things" failure this is meant to fix. Chunks already selected under an
+// earlier concept are skipped so nothing appears twice.
+function selectFairlyAcrossConcepts(conceptMatches: ConceptMatches[]): ManuscriptChunkMatch[] {
+  const selected: ManuscriptChunkMatch[] = [];
+  const seenIds = new Set<string>();
+  const maxRounds = Math.max(0, ...conceptMatches.map((c) => c.matches.length));
+
+  for (let round = 0; round < maxRounds; round++) {
+    for (const { matches } of conceptMatches) {
+      const candidate = matches[round];
+      if (!candidate || seenIds.has(candidate.id)) continue;
+      if (candidate.similarity < LAYER3_MATCH_THRESHOLD) continue;
+      seenIds.add(candidate.id);
+      selected.push(candidate);
+    }
   }
 
-  const matches = (data ?? []) as ManuscriptChunkMatch[];
-  const candidates: Layer3Candidate[] = matches.map((match) => ({
-    similarity: match.similarity,
-    included: match.similarity >= LAYER3_MATCH_THRESHOLD,
-    preview:
-      match.raw_text.length > CANDIDATE_PREVIEW_CHARS
-        ? `${match.raw_text.slice(0, CANDIDATE_PREVIEW_CHARS).trimEnd()}…`
-        : match.raw_text,
-  }));
+  return selected;
+}
 
-  const included = matches.filter((match) => match.similarity >= LAYER3_MATCH_THRESHOLD);
-  if (included.length === 0) {
+function buildDiagnosticCandidates(conceptMatches: ConceptMatches[]): Layer3Candidate[] {
+  const byId = new Map<string, Layer3Candidate>();
+
+  for (const { concept, matches } of conceptMatches) {
+    for (const match of matches) {
+      const existing = byId.get(match.id);
+      if (existing) {
+        if (!existing.concepts.includes(concept)) existing.concepts.push(concept);
+        existing.similarity = Math.max(existing.similarity, match.similarity);
+        existing.included = existing.similarity >= LAYER3_MATCH_THRESHOLD;
+        continue;
+      }
+      byId.set(match.id, {
+        similarity: match.similarity,
+        included: match.similarity >= LAYER3_MATCH_THRESHOLD,
+        preview:
+          match.raw_text.length > CANDIDATE_PREVIEW_CHARS
+            ? `${match.raw_text.slice(0, CANDIDATE_PREVIEW_CHARS).trimEnd()}…`
+            : match.raw_text,
+        concepts: [concept],
+      });
+    }
+  }
+
+  return [...byId.values()].sort((a, b) => b.similarity - a.similarity);
+}
+
+async function buildLayer3DeepPast(bookId: string, sceneBeat: string): Promise<Layer3Result> {
+  const concepts = await expandSceneBeatConcepts(sceneBeat);
+  const conceptMatches = await searchConcepts(bookId, concepts);
+
+  const candidates = buildDiagnosticCandidates(conceptMatches);
+  const selected = selectFairlyAcrossConcepts(conceptMatches);
+
+  if (selected.length === 0) {
     return { text: "", candidates };
   }
 
   const blocks: string[] = [];
   let usedTokens = 0;
 
-  for (const [index, match] of included.entries()) {
+  for (const [index, match] of selected.entries()) {
     const block = `### Memory ${index + 1} (similarity: ${match.similarity.toFixed(3)})\n${match.raw_text}`;
     const blockTokens = estimateTokens(block);
 
