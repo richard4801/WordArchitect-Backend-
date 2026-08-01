@@ -1,7 +1,7 @@
 import type { Response } from "express";
 import { getEnvVar } from "../lib/env.js";
 
-const HANAMI_MODEL = "Hanami-32k";
+const HANAMI_MODEL = "Sao10K-L3.1-70B-Hanami-x1";
 const TEMPERATURE = 0.85;
 
 interface InfermaticStreamChoice {
