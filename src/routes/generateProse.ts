@@ -27,7 +27,7 @@ function validateGenerateProseBody(body: Record<string, unknown>): string | null
   return null;
 }
 
-function buildSystemPrompt(contextPayload: string): string {
+export function buildSystemPrompt(contextPayload: string): string {
   const context = contextPayload || "No prior codex, history, or manuscript memory is available yet.";
   return [
     "You are Hanami, a creative fiction-writing engine continuing a novel in progress.",
