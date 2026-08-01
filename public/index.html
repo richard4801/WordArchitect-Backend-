@@ -65,6 +65,7 @@
     font-size: 0.85rem;
     max-height: 400px;
     overflow: auto;
+    color: #1a1a2e;
   }
   .status { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
   .status.error { color: #d33; }
@@ -81,6 +82,7 @@
     border-radius: 8px;
     padding: 14px;
     font-size: 0.95rem;
+    color: #1a1a2e;
   }
   .meta-line { font-size: 0.78rem; color: var(--muted); margin-top: 8px; }
   details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
@@ -335,6 +337,31 @@ $("mIngest").addEventListener("click", async () => {
 // ---- Generate prose (streamed) ----
 let activeAbort = null;
 
+// Shared by the Generate flow and the standalone Preview button: fetches
+// the compiled Layer 1/2/3 context and renders it into previewBlock so you
+// can see exactly what's about to be sent to Hanami. Retrieval itself
+// finishes in well under a second (no meaningful "in progress" state to
+// show), so the honest way to show "what got pulled in" is to display it
+// as soon as it's compiled, right before the prose starts streaming.
+async function showContextPreview(body) {
+  $("previewBlock").style.display = "none";
+  const res = await fetch(apiBase() + "/api/v1/generate-prose/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+
+  const budgetNote = data.estimatedTokens > 4000
+    ? " — over the 4,000 token budget!"
+    : " (budget: 4,000 max)";
+  $("previewMeta").textContent =
+    "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
+  $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";
+  $("previewBlock").style.display = "block";
+}
+
 $("gGenerate").addEventListener("click", async () => {
   const userId = $("userId").value.trim();
   const bookId = $("bookId").value.trim();
@@ -351,13 +378,21 @@ $("gGenerate").addEventListener("click", async () => {
   $("gMeta").textContent = "";
   $("gGenerate").disabled = true;
   $("gStop").disabled = false;
-  setStatus($("gStatus"), "Compiling context & generating...");
+  setStatus($("gStatus"), "Compiling context...");
 
   const startedAt = performance.now();
   let charCount = 0;
   activeAbort = new AbortController();
 
   try {
+    try {
+      await showContextPreview(body);
+    } catch (previewErr) {
+      // Non-fatal — the preview is a nice-to-have, generation can still proceed.
+      console.warn("Context preview failed:", previewErr);
+    }
+
+    setStatus($("gStatus"), "Generating...");
     const res = await fetch(apiBase() + "/api/v1/generate-prose", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -418,24 +453,9 @@ $("gPreview").addEventListener("click", async () => {
 
   $("gPreview").disabled = true;
   setStatus($("gStatus"), "Compiling context...");
-  $("previewBlock").style.display = "none";
 
   try {
-    const res = await fetch(apiBase() + "/api/v1/generate-prose/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-
-    const budgetNote = data.estimatedTokens > 4000
-      ? " — over the 4,000 token budget!"
-      : " (budget: 4,000 max)";
-    $("previewMeta").textContent =
-      "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
-    $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";
-    $("previewBlock").style.display = "block";
+    await showContextPreview(body);
     setStatus($("gStatus"), "Context compiled. Not generated yet — click Generate to run it through Hanami.", "ok");
   } catch (err) {
     setStatus($("gStatus"), String(err.message || err), "error");
