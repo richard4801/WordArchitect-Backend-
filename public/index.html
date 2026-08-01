@@ -167,16 +167,21 @@
 
 <fieldset>
   <legend>Bulk import (whole manuscript, auto-split by chapter)</legend>
-  <p class="sub" style="margin-top:0;">Paste an entire manuscript. Lines like "Chapter 1", "Chapter Two — Homecoming", or "CHAPTER 9:" are detected automatically and split into separate chapters, each chunked and embedded the same as a single ingest. No chapter headers found? The whole paste is imported as one chapter.</p>
+  <p class="sub" style="margin-top:0;">Paste an entire manuscript. Lines like "Chapter 1", "Chapter Two — Homecoming", or "CHAPTER 9:" are detected automatically and split into separate chapters. Runs as a resumable background job — one chapter is chunked and embedded per step, so even a very large manuscript processes safely without one long-lived request. Closing this tab pauses it; reopening offers to resume right where it left off.</p>
   <div class="row">
     <div><textarea id="bRawText" rows="10" placeholder="Chapter 1: The Harbor Gate&#10;&#10;The guard chuckled...&#10;&#10;Chapter 2: Homecoming&#10;&#10;The Valdris palace looked..."></textarea></div>
   </div>
-  <button id="bImport">Bulk import</button>
+  <button id="bStart">Start bulk import</button>
+  <button class="secondary" id="bResume" type="button" style="display:none;">Resume last import</button>
+  <button class="secondary" id="bStop" type="button" disabled>Pause</button>
   <div id="bStatus" class="status"></div>
-  <table id="bTable" style="display:none;">
-    <thead><tr><th>Chapter</th><th>Title</th><th>Words</th><th>Chunks stored</th></tr></thead>
-    <tbody></tbody>
-  </table>
+
+  <div id="bProgressBlock" style="display:none; margin-top:10px;">
+    <div style="background:var(--bg-soft); border:1px solid var(--border); border-radius:6px; height:10px; overflow:hidden;">
+      <div id="bProgressBar" style="background:var(--accent); height:100%; width:0%; transition:width 0.2s;"></div>
+    </div>
+    <p class="meta-line" id="bProgressText"></p>
+  </div>
 </fieldset>
 
 <fieldset>
@@ -354,46 +359,131 @@ $("mIngest").addEventListener("click", async () => {
   }
 });
 
-// ---- Bulk import (whole manuscript, auto-split by chapter) ----
-$("bImport").addEventListener("click", async () => {
+// ---- Bulk import (resumable background job, one chapter per step) ----
+let bulkImportStopRequested = false;
+let bulkImportRunning = false;
+
+function saveLastImportJob(bookId, jobId) {
+  localStorage.setItem("wa_import_job", JSON.stringify({ bookId, jobId }));
+}
+function loadLastImportJob() {
+  try {
+    return JSON.parse(localStorage.getItem("wa_import_job") || "null");
+  } catch {
+    return null;
+  }
+}
+function clearLastImportJob() {
+  localStorage.removeItem("wa_import_job");
+}
+
+function updateImportProgress(job) {
+  $("bProgressBlock").style.display = "block";
+  const pct = job.chapters_total > 0 ? Math.round((job.chapters_done / job.chapters_total) * 100) : 0;
+  $("bProgressBar").style.width = pct + "%";
+  const lastChapter = job.last_chapter_title ? " — last: “" + job.last_chapter_title + "”" : "";
+  $("bProgressText").textContent =
+    job.chapters_done + " / " + job.chapters_total + " chapters (" + pct + "%)" +
+    lastChapter + " — " + job.chunks_stored + " chunks stored so far";
+}
+
+function setImportButtonsRunning(running) {
+  bulkImportRunning = running;
+  $("bStart").disabled = running;
+  $("bResume").disabled = running;
+  $("bStop").disabled = !running;
+}
+
+// Repeatedly calls the step endpoint — one HTTP request per chapter — until
+// the job is done, fails, or the user pauses it. Each request is short, so
+// this never risks a request timeout no matter how large the manuscript is,
+// and every step's progress is saved server-side before the next one fires.
+async function runImportJob(jobId, bookId) {
+  bulkImportStopRequested = false;
+  setImportButtonsRunning(true);
+  saveLastImportJob(bookId, jobId);
+
+  try {
+    while (true) {
+      if (bulkImportStopRequested) {
+        setStatus($("bStatus"), "Paused. Click Resume last import to continue.");
+        break;
+      }
+
+      const res = await fetch(apiBase() + "/api/v1/manuscript/bulk-import/jobs/" + jobId + "/step", {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+
+      const job = data.job;
+      updateImportProgress(job);
+
+      if (job.status === "failed") {
+        setStatus($("bStatus"), "Chapter failed: " + (job.error || "unknown error") + " — click Resume last import to retry.", "error");
+        break;
+      }
+      if (job.status === "done") {
+        setStatus($("bStatus"), "Import complete — " + job.chapters_total + " chapter(s), " + job.chunks_stored + " chunk(s) stored.", "ok");
+        clearLastImportJob();
+        $("bResume").style.display = "none";
+        break;
+      }
+      setStatus($("bStatus"), "Importing...");
+    }
+  } catch (err) {
+    setStatus($("bStatus"), String(err.message || err), "error");
+  } finally {
+    setImportButtonsRunning(false);
+  }
+}
+
+$("bStart").addEventListener("click", () => {
   const userId = $("userId").value.trim();
   const bookId = $("bookId").value.trim();
   const rawText = $("bRawText").value;
   if (!userId || !bookId) { setStatus($("bStatus"), "User ID and Book ID are required.", "error"); return; }
   if (!rawText.trim()) { setStatus($("bStatus"), "Paste manuscript text first.", "error"); return; }
 
-  $("bImport").disabled = true;
-  $("bTable").style.display = "none";
-  setStatus($("bStatus"), "Splitting, chunking, and embedding — this can take a while for a long manuscript...");
+  setImportButtonsRunning(true);
+  setStatus($("bStatus"), "Creating import job...");
 
-  try {
-    const res = await fetch(apiBase() + "/api/v1/manuscript/bulk-import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, bookId, rawText }),
+  fetch(apiBase() + "/api/v1/manuscript/bulk-import/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId, bookId, rawText }),
+  })
+    .then(async (res) => {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+      updateImportProgress(data.job);
+      return runImportJob(data.job.id, bookId);
+    })
+    .catch((err) => {
+      setStatus($("bStatus"), String(err.message || err), "error");
+      setImportButtonsRunning(false);
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-
-    const tbody = $("bTable").querySelector("tbody");
-    tbody.innerHTML = "";
-    for (const c of data.chapters || []) {
-      const tr = document.createElement("tr");
-      tr.innerHTML =
-        "<td>" + c.chapterNumber + "</td>" +
-        "<td>" + escapeHtml(c.title || "") + "</td>" +
-        "<td>" + c.wordCount + "</td>" +
-        "<td>" + c.chunksStored + "</td>";
-      tbody.appendChild(tr);
-    }
-    $("bTable").style.display = "table";
-    setStatus($("bStatus"), data.chaptersImported + " chapter(s) imported, " + data.totalChunksStored + " chunk(s) stored total.", "ok");
-  } catch (err) {
-    setStatus($("bStatus"), String(err.message || err), "error");
-  } finally {
-    $("bImport").disabled = false;
-  }
 });
+
+$("bResume").addEventListener("click", () => {
+  const saved = loadLastImportJob();
+  if (!saved) { setStatus($("bStatus"), "No paused import found.", "error"); return; }
+  $("bookId").value = saved.bookId;
+  runImportJob(saved.jobId, saved.bookId);
+});
+
+$("bStop").addEventListener("click", () => {
+  bulkImportStopRequested = true;
+});
+
+// On load, offer to resume a paused/failed job left over from a previous visit.
+(function checkForResumableImport() {
+  const saved = loadLastImportJob();
+  if (saved) {
+    $("bResume").style.display = "inline-block";
+    setStatus($("bStatus"), "Found a paused import for book " + saved.bookId + ". Click Resume last import to continue.");
+  }
+})();
 
 // ---- Generate prose (streamed) ----
 let activeAbort = null;

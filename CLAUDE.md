@@ -190,9 +190,42 @@ before the first detected header is dropped. Each detected chapter is then
 run through the same chunk/embed/store pipeline as `/manuscript/chunks`.
 If no headers are found, the whole input is imported as a single chapter.
 Chapters are processed sequentially in one request, which is fine for
-testing and moderate-length manuscripts, but a full-length novel (500+
-chunks) could take a couple of minutes — the first candidate to move to a
-background job if that becomes a real timeout risk.
+testing and small manuscripts, but risks a request timeout on anything
+long — for that, use the resumable job-based import below instead.
+
+#### Resumable bulk import (background job)
+
+For large manuscripts, `/manuscript/bulk-import` above is superseded by a
+step-based job that processes one chapter per HTTP call instead of the
+whole manuscript in one request — this is what makes a very long import
+safe on a platform like Render's free tier, which has no separate worker
+process and spins down without incoming traffic: every request stays
+short (one chapter), progress is persisted to Postgres after each step, and
+the client (not a server-side timer) drives the next step by polling, which
+also happens to keep the instance's inbound traffic alive for the whole
+import.
+
+- `POST /api/v1/manuscript/bulk-import/jobs` — `{ userId, bookId, rawText }`.
+  Splits `rawText` into chapters (same `splitIntoChapters` as above) and
+  persists them as a `manuscript_import_jobs` row (`status: 'pending'`). No
+  embedding calls happen here, so this returns immediately regardless of
+  manuscript size. Returns the job (chapters array omitted from the
+  response — potentially megabytes of text, no reason to send it back).
+- `POST /api/v1/manuscript/bulk-import/jobs/:jobId/step` — chunks, embeds,
+  and stores exactly one chapter (the one at `next_chapter_index`), then
+  advances the index and returns updated progress. Call this repeatedly —
+  once per HTTP request — until `status` is `'done'`. A `'failed'` job is
+  not terminal: `next_chapter_index` was never advanced past the chapter
+  that failed, so stepping a failed job retries that same chapter, which
+  is what makes retrying safe after a transient error (rate limit, network
+  blip) instead of losing the whole import.
+- `GET /api/v1/manuscript/bulk-import/jobs/:jobId` — read-only status
+  check, does not advance the job.
+
+Defined in `src/services/manuscriptImportJob.ts` /
+`manuscript_import_jobs` (migration `003_manuscript_import_jobs.sql`). Not
+safe against two callers stepping the same job concurrently (no row-level
+claim/lock) — fine while the only caller is a single sequential poller.
 
 ## Development Stages
 
