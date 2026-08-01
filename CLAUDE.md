@@ -68,6 +68,52 @@ must truncate/drop lower-priority content rather than exceed the cap.
 Priority order when trimming to fit budget: Layer 1 (Codex) > Layer 2
 (Recent History) > Layer 3 (Deep Past RAG).
 
+## Database Schema
+
+Defined in `supabase/migrations/001_init_schema.sql`. Every table is scoped
+by `book_id` (and `user_id`) so retrieval never crosses between books or
+accounts.
+
+### `codex_entries` (Layer 1 source)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `user_id` | UUID NOT NULL | |
+| `book_id` | UUID NOT NULL | |
+| `name` | VARCHAR(255) NOT NULL | |
+| `aliases` | VARCHAR(255)[] | alternate names/titles scanned during Layer 1 match |
+| `entry_type` | VARCHAR(50) NOT NULL | CHECK: `character` \| `location` \| `item` \| `lore` |
+| `description` | TEXT NOT NULL | injected verbatim on Layer 1 match |
+| `embedding` | VECTOR(1536) | reserved for future semantic Codex lookup; not used by Layer 1's deterministic string match |
+| `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+### `manuscript_chunks` (Layer 2/3 source)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `user_id` | UUID NOT NULL | |
+| `book_id` | UUID NOT NULL | |
+| `chapter_number` | INT NOT NULL | |
+| `scene_order` | INT NOT NULL | ordering within a chapter |
+| `raw_text` | TEXT NOT NULL | source for both the trailing-window slice (Layer 2) and embedding (Layer 3) |
+| `embedding` | VECTOR(1536) | generated from `raw_text` via `text-embedding-3-small` |
+| `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+### `match_manuscript_chunks` RPC (Layer 3)
+
+`match_manuscript_chunks(query_embedding VECTOR(1536), match_threshold FLOAT, match_count INT, target_book_id UUID) RETURNS TABLE(id UUID, raw_text TEXT, similarity FLOAT)`
+
+Cosine distance search (`<=>` operator) scoped to `target_book_id`,
+filtered by `match_threshold`, ordered by similarity descending, capped at
+`match_count` (Layer 3 calls this with `match_count = 3`).
+
+### Indexes
+
+- `idx_codex_entries_book_id`, `idx_manuscript_chunks_book_id` — B-tree, scope every retrieval query to one book
+- `idx_codex_entries_embedding`, `idx_manuscript_chunks_embedding` — HNSW (`vector_cosine_ops`), back the cosine-distance searches above
+
 ## Development Stages
 
 1. Repository & Architectural Blueprint (this document)
