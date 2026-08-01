@@ -173,10 +173,16 @@
     <div class="row"><div><textarea id="gHistory" rows="5" placeholder="Paste the manuscript text immediately before the cursor..."></textarea></div></div>
   </details>
   <button id="gGenerate">Generate</button>
+  <button class="secondary" id="gPreview" type="button">Preview context</button>
   <button class="secondary" id="gStop" type="button" disabled>Stop</button>
   <div id="gStatus" class="status"></div>
   <p class="meta-line" id="gMeta"></p>
   <div class="prose-output" id="gOutput"></div>
+
+  <div id="previewBlock" style="display:none; margin-top:16px;">
+    <p class="meta-line" id="previewMeta"></p>
+    <pre id="previewOutput"></pre>
+  </div>
 </fieldset>
 
 <script>
@@ -395,6 +401,47 @@ $("gGenerate").addEventListener("click", async () => {
 
 $("gStop").addEventListener("click", () => {
   if (activeAbort) activeAbort.abort();
+});
+
+// ---- Context preview (Layer 1/2/3 compiled payload, no LLM call) ----
+$("gPreview").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  const userSceneBeat = $("gBeat").value.trim();
+  if (!userId || !bookId || !userSceneBeat) {
+    setStatus($("gStatus"), "User ID, Book ID, and a scene beat are required.", "error");
+    return;
+  }
+
+  const body = { userId, bookId, userSceneBeat };
+  if ($("gHistory").value.trim()) body.recentHistoryText = $("gHistory").value;
+
+  $("gPreview").disabled = true;
+  setStatus($("gStatus"), "Compiling context...");
+  $("previewBlock").style.display = "none";
+
+  try {
+    const res = await fetch(apiBase() + "/api/v1/generate-prose/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+
+    const budgetNote = data.estimatedTokens > 4000
+      ? " — over the 4,000 token budget!"
+      : " (budget: 4,000 max)";
+    $("previewMeta").textContent =
+      "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
+    $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";
+    $("previewBlock").style.display = "block";
+    setStatus($("gStatus"), "Context compiled. Not generated yet — click Generate to run it through Hanami.", "ok");
+  } catch (err) {
+    setStatus($("gStatus"), String(err.message || err), "error");
+  } finally {
+    $("gPreview").disabled = false;
+  }
 });
 </script>
 </body>

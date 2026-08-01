@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { assembleContextPayload } from "../services/rag.js";
 import { streamHanamiProse } from "../services/llm.js";
+import { estimateTokens } from "../lib/tokenBudget.js";
 
 export const generateProseRouter = Router();
 
@@ -37,6 +38,41 @@ export function buildSystemPrompt(contextPayload: string): string {
     context,
   ].join("\n");
 }
+
+// Runs the same Layer 1/2/3 context assembly as /generate-prose but returns
+// the compiled payload as JSON instead of invoking Hanami — lets the test
+// UI (and other callers) inspect exactly what would be sent as the system
+// prompt, and confirm it stays under the 4,000-token budget from CLAUDE.md.
+generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const validationError = validateGenerateProseBody(body);
+
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
+  }
+
+  const { userId, bookId, userSceneBeat, recentHistoryText } = body as unknown as GenerateProseBody;
+
+  try {
+    const contextPayload = await assembleContextPayload({
+      userId,
+      bookId,
+      userSceneBeat,
+      recentHistoryText: recentHistoryText ?? "",
+    });
+    const systemPrompt = buildSystemPrompt(contextPayload);
+
+    res.json({
+      contextPayload,
+      systemPrompt,
+      estimatedTokens: estimateTokens(systemPrompt),
+    });
+  } catch (error) {
+    console.error("generate-prose preview failed:", error);
+    res.status(502).json({ error: "Failed to compile context. Please try again." });
+  }
+});
 
 generateProseRouter.post("/generate-prose", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
