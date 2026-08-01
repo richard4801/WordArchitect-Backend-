@@ -1,9 +1,13 @@
 import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import { generateProseRouter } from "./routes/generateProse.js";
 import { codexRouter } from "./routes/codex.js";
 import { manuscriptRouter } from "./routes/manuscript.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(cors());
@@ -12,6 +16,10 @@ app.use(express.json());
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+// Manual test harness (public/index.html) for exercising the Codex,
+// manuscript ingestion, and /generate-prose endpoints without a frontend.
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.use("/api/v1", generateProseRouter);
 app.use("/api/v1", codexRouter);

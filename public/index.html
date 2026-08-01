@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WordArchitect — Test UI</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --border: #d0d0d8;
+    --muted: #666;
+    --accent: #6d4aff;
+    --bg-soft: #f6f5fb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 20px 80px;
+    line-height: 1.4;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .sub { color: var(--muted); margin-top: 0; margin-bottom: 20px; font-size: 0.9rem; }
+  fieldset {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 18px;
+    margin-bottom: 20px;
+  }
+  legend { padding: 0 6px; font-weight: 600; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .row > div { flex: 1 1 220px; }
+  label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 3px; }
+  input, textarea, select {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    background: transparent;
+    color: inherit;
+  }
+  textarea { resize: vertical; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 0.88rem;
+    cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.small { padding: 4px 9px; font-size: 0.78rem; }
+  pre {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.85rem;
+    max-height: 400px;
+    overflow: auto;
+  }
+  .status { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
+  .status.error { color: #d33; }
+  .status.ok { color: #2a8f4d; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .actions { white-space: nowrap; }
+  .prose-output {
+    min-height: 160px;
+    white-space: pre-wrap;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 0.95rem;
+  }
+  .meta-line { font-size: 0.78rem; color: var(--muted); margin-top: 8px; }
+  details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<h1>WordArchitect — Test UI</h1>
+<p class="sub">Manual test harness for the Codex CRUD, manuscript ingestion, and dual-layer <code>/generate-prose</code> endpoints. Nothing here ships to writers — it just talks to the API.</p>
+
+<fieldset>
+  <legend>Connection</legend>
+  <div class="row">
+    <div>
+      <label for="apiBase">API base URL</label>
+      <input id="apiBase" value="http://localhost:4000" />
+    </div>
+    <div>
+      <label for="userId">User ID</label>
+      <input id="userId" placeholder="any UUID for testing" />
+    </div>
+    <div>
+      <label for="bookId">Book ID</label>
+      <input id="bookId" placeholder="any UUID for testing" />
+    </div>
+  </div>
+  <div id="connStatus" class="status"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Codex</legend>
+
+  <div class="row">
+    <div><label>Name</label><input id="cName" placeholder="Kaelen Voss" /></div>
+    <div><label>Entry type</label>
+      <select id="cType">
+        <option>character</option><option>location</option><option>item</option>
+        <option>lore</option><option>nation</option><option>culture</option>
+        <option>magic</option><option>faction</option><option>religion</option><option>history</option>
+      </select>
+    </div>
+    <div><label>Tier</label>
+      <select id="cTier">
+        <option value="">(none)</option><option>main</option><option>supporting</option><option>minor</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Aliases (comma-separated)</label><input id="cAliases" placeholder="the Warden, Voss" /></div>
+    <div><label>Personality traits (comma-separated)</label><input id="cTraits" placeholder="stoic, guarded, loyal" /></div>
+  </div>
+  <div class="row">
+    <div><label>Description (injected into Layer 1)</label><textarea id="cDescription" rows="2" placeholder="Former city guard captain, exiled after..."></textarea></div>
+  </div>
+  <div class="row">
+    <div><label>Motivations (comma-separated, top 3 used)</label><input id="cMotivations" placeholder="find his sister, clear his name" /></div>
+  </div>
+  <div class="row">
+    <button id="cCreate">Create entry</button>
+    <button class="secondary" id="cRefresh" type="button">Refresh list</button>
+  </div>
+  <div id="cStatus" class="status"></div>
+
+  <table id="cTable">
+    <thead><tr><th>Name</th><th>Type</th><th>Aliases</th><th>Tier</th><th class="actions">Actions</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
+  <legend>Manuscript ingestion (Layer 2 / Layer 3 memory)</legend>
+  <div class="row">
+    <div><label>Chapter number</label><input id="mChapter" type="number" min="1" value="1" /></div>
+    <div><label>Starting scene order (optional)</label><input id="mStartOrder" type="number" min="1" /></div>
+  </div>
+  <div class="row">
+    <div><label>Raw text</label><textarea id="mRawText" rows="6" placeholder="Paste finished scene/chapter prose here..."></textarea></div>
+  </div>
+  <button id="mIngest">Ingest chunks</button>
+  <div id="mStatus" class="status"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Generate prose</legend>
+  <div class="row">
+    <div><label>Scene beat</label><textarea id="gBeat" rows="3" placeholder="Kaelen confronts the Warden at the harbor gate."></textarea></div>
+  </div>
+  <details>
+    <summary>Optional: recent history text (Layer 2 source — trailing ~2000 words used)</summary>
+    <div class="row"><div><textarea id="gHistory" rows="5" placeholder="Paste the manuscript text immediately before the cursor..."></textarea></div></div>
+  </details>
+  <button id="gGenerate">Generate</button>
+  <button class="secondary" id="gStop" type="button" disabled>Stop</button>
+  <div id="gStatus" class="status"></div>
+  <p class="meta-line" id="gMeta"></p>
+  <div class="prose-output" id="gOutput"></div>
+</fieldset>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function apiBase() { return $("apiBase").value.replace(/\/+$/, ""); }
+function setStatus(el, msg, kind) {
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+function splitList(value) {
+  return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+["apiBase", "userId", "bookId"].forEach((id) => {
+  const saved = localStorage.getItem("wa_" + id);
+  if (saved) $(id).value = saved;
+  $(id).addEventListener("change", () => localStorage.setItem("wa_" + id, $(id).value));
+});
+
+async function checkHealth() {
+  try {
+    const res = await fetch(apiBase() + "/health");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    setStatus($("connStatus"), "Connected to " + apiBase(), "ok");
+  } catch (err) {
+    setStatus($("connStatus"), "Cannot reach backend at " + apiBase() + " — is `npm run dev` running?", "error");
+  }
+}
+$("apiBase").addEventListener("change", checkHealth);
+checkHealth();
+
+// ---- Codex ----
+async function loadCodex() {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("cStatus"), "Enter a Book ID above to list entries.", "error"); return; }
+  setStatus($("cStatus"), "Loading...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/codex?bookId=" + encodeURIComponent(bookId));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderCodexTable(data.entries || []);
+    setStatus($("cStatus"), (data.entries || []).length + " entries loaded.", "ok");
+  } catch (err) {
+    setStatus($("cStatus"), String(err.message || err), "error");
+  }
+}
+
+function renderCodexTable(entries) {
+  const tbody = $("cTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + escapeHtml(e.name) + "</td>" +
+      "<td>" + escapeHtml(e.entry_type) + "</td>" +
+      "<td>" + escapeHtml((e.aliases || []).join(", ")) + "</td>" +
+      "<td>" + escapeHtml(e.tier || "") + "</td>" +
+      '<td class="actions"><button class="small secondary" data-del="' + e.id + '">Delete</button></td>';
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this codex entry?")) return;
+      const id = btn.getAttribute("data-del");
+      try {
+        const res = await fetch(apiBase() + "/api/v1/codex/" + id, { method: "DELETE" });
+        if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status);
+        loadCodex();
+      } catch (err) {
+        setStatus($("cStatus"), String(err.message || err), "error");
+      }
+    });
+  });
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+$("cRefresh").addEventListener("click", loadCodex);
+
+$("cCreate").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  if (!userId || !bookId) { setStatus($("cStatus"), "User ID and Book ID are required.", "error"); return; }
+
+  const body = {
+    userId,
+    bookId,
+    name: $("cName").value.trim(),
+    entryType: $("cType").value,
+    description: $("cDescription").value.trim(),
+    aliases: splitList($("cAliases").value),
+    personalityTraits: splitList($("cTraits").value),
+    motivations: splitList($("cMotivations").value),
+  };
+  if ($("cTier").value) body.tier = $("cTier").value;
+
+  setStatus($("cStatus"), "Creating...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/codex", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    setStatus($("cStatus"), "Created “" + data.entry.name + "”.", "ok");
+    $("cName").value = "";
+    $("cDescription").value = "";
+    $("cAliases").value = "";
+    $("cTraits").value = "";
+    $("cMotivations").value = "";
+    loadCodex();
+  } catch (err) {
+    setStatus($("cStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Manuscript ingestion ----
+$("mIngest").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  if (!userId || !bookId) { setStatus($("mStatus"), "User ID and Book ID are required.", "error"); return; }
+
+  const body = {
+    userId,
+    bookId,
+    chapterNumber: Number($("mChapter").value),
+    rawText: $("mRawText").value,
+  };
+  if ($("mStartOrder").value) body.startingSceneOrder = Number($("mStartOrder").value);
+
+  setStatus($("mStatus"), "Ingesting...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/manuscript/chunks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    setStatus($("mStatus"), (data.chunks || []).length + " chunk(s) embedded and stored.", "ok");
+  } catch (err) {
+    setStatus($("mStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Generate prose (streamed) ----
+let activeAbort = null;
+
+$("gGenerate").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  const userSceneBeat = $("gBeat").value.trim();
+  if (!userId || !bookId || !userSceneBeat) {
+    setStatus($("gStatus"), "User ID, Book ID, and a scene beat are required.", "error");
+    return;
+  }
+
+  const body = { userId, bookId, userSceneBeat };
+  if ($("gHistory").value.trim()) body.recentHistoryText = $("gHistory").value;
+
+  $("gOutput").textContent = "";
+  $("gMeta").textContent = "";
+  $("gGenerate").disabled = true;
+  $("gStop").disabled = false;
+  setStatus($("gStatus"), "Compiling context & generating...");
+
+  const startedAt = performance.now();
+  let charCount = 0;
+  activeAbort = new AbortController();
+
+  try {
+    const res = await fetch(apiBase() + "/api/v1/generate-prose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: activeAbort.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || "HTTP " + res.status);
+    }
+
+    setStatus($("gStatus"), "Streaming...", "ok");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      charCount += text.length;
+      $("gOutput").textContent += text;
+      $("gOutput").scrollTop = $("gOutput").scrollHeight;
+    }
+
+    const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
+    setStatus($("gStatus"), "Done.", "ok");
+    $("gMeta").textContent = charCount + " characters in " + seconds + "s";
+  } catch (err) {
+    if (err.name === "AbortError") {
+      setStatus($("gStatus"), "Stopped.");
+    } else {
+      setStatus($("gStatus"), String(err.message || err), "error");
+    }
+  } finally {
+    $("gGenerate").disabled = false;
+    $("gStop").disabled = true;
+    activeAbort = null;
+  }
+});
+
+$("gStop").addEventListener("click", () => {
+  if (activeAbort) activeAbort.abort();
+});
+</script>
+</body>
+</html>
