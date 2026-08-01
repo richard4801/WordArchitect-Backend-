@@ -116,15 +116,35 @@ function buildLayer2RecentHistory(recentHistoryText: string): string {
   return truncateToTokenBudget(trailing, LAYER2_TOKEN_BUDGET);
 }
 
+// Diagnostic view of a Layer 3 candidate, surfaced by the /generate-prose/
+// preview endpoint so a near-miss (fetched but below LAYER3_MATCH_THRESHOLD)
+// is visible instead of just silently absent from the compiled context.
+export interface Layer3Candidate {
+  similarity: number;
+  included: boolean;
+  preview: string;
+}
+
+interface Layer3Result {
+  text: string;
+  candidates: Layer3Candidate[];
+}
+
+const CANDIDATE_PREVIEW_CHARS = 160;
+
 // Layer 3 — Deep Past (Vector RAG): embeds the scene beat and runs the
 // match_manuscript_chunks cosine-similarity RPC, scoped to the current book.
-async function buildLayer3DeepPast(bookId: string, sceneBeat: string): Promise<string> {
+// Queries with match_threshold 0 so the top LAYER3_MATCH_COUNT nearest
+// chunks always come back regardless of relevance, then applies the real
+// LAYER3_MATCH_THRESHOLD locally — same end result for the compiled
+// context, but it also lets us report near-misses for diagnostics.
+async function buildLayer3DeepPast(bookId: string, sceneBeat: string): Promise<Layer3Result> {
   const embedding = await generateEmbedding(sceneBeat);
   const supabase = getSupabaseClient();
 
   const { data, error } = await supabase.rpc("match_manuscript_chunks", {
     query_embedding: embedding,
-    match_threshold: LAYER3_MATCH_THRESHOLD,
+    match_threshold: 0,
     match_count: LAYER3_MATCH_COUNT,
     target_book_id: bookId,
   });
@@ -134,14 +154,24 @@ async function buildLayer3DeepPast(bookId: string, sceneBeat: string): Promise<s
   }
 
   const matches = (data ?? []) as ManuscriptChunkMatch[];
-  if (matches.length === 0) {
-    return "";
+  const candidates: Layer3Candidate[] = matches.map((match) => ({
+    similarity: match.similarity,
+    included: match.similarity >= LAYER3_MATCH_THRESHOLD,
+    preview:
+      match.raw_text.length > CANDIDATE_PREVIEW_CHARS
+        ? `${match.raw_text.slice(0, CANDIDATE_PREVIEW_CHARS).trimEnd()}…`
+        : match.raw_text,
+  }));
+
+  const included = matches.filter((match) => match.similarity >= LAYER3_MATCH_THRESHOLD);
+  if (included.length === 0) {
+    return { text: "", candidates };
   }
 
   const blocks: string[] = [];
   let usedTokens = 0;
 
-  for (const [index, match] of matches.entries()) {
+  for (const [index, match] of included.entries()) {
     const block = `### Memory ${index + 1} (similarity: ${match.similarity.toFixed(3)})\n${match.raw_text}`;
     const blockTokens = estimateTokens(block);
 
@@ -157,20 +187,29 @@ async function buildLayer3DeepPast(bookId: string, sceneBeat: string): Promise<s
     usedTokens += blockTokens;
   }
 
-  return blocks.join("\n\n");
+  return { text: blocks.join("\n\n"), candidates };
+}
+
+export interface AssembleContextResult {
+  payload: string;
+  layer3Candidates: Layer3Candidate[];
 }
 
 // Compiles the three-layer context payload for a scene beat. Layers 1 and 3
 // are independent round trips and run concurrently; Layer 2 is a pure local
-// slice. Empty layers are omitted from the final payload.
-export async function assembleContextPayload(params: AssembleContextParams): Promise<string> {
+// slice. Empty layers are omitted from the final payload. Also returns the
+// raw Layer 3 candidates (including near-misses below the match threshold)
+// for diagnostic use by /generate-prose/preview — the compiled `payload`
+// itself only ever contains chunks that cleared the real threshold.
+export async function assembleContextPayload(params: AssembleContextParams): Promise<AssembleContextResult> {
   const { bookId, userSceneBeat, recentHistoryText } = params;
 
-  const [layer1, layer3] = await Promise.all([
+  const [layer1, layer3Result] = await Promise.all([
     buildLayer1Codex(bookId, userSceneBeat),
     buildLayer3DeepPast(bookId, userSceneBeat),
   ]);
   const layer2 = buildLayer2RecentHistory(recentHistoryText);
+  const layer3 = layer3Result.text;
 
   const sections: string[] = [];
 
@@ -184,5 +223,5 @@ export async function assembleContextPayload(params: AssembleContextParams): Pro
     sections.push(`## Background Manuscript Memory (Deep Past)\n\n${layer3}`);
   }
 
-  return sections.join("\n\n---\n\n");
+  return { payload: sections.join("\n\n---\n\n"), layer3Candidates: layer3Result.candidates };
 }

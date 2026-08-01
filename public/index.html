@@ -184,6 +184,12 @@
   <div id="previewBlock" style="display:none; margin-top:16px;">
     <p class="meta-line" id="previewMeta"></p>
     <pre id="previewOutput"></pre>
+
+    <p class="meta-line" style="margin-top:14px;">Layer 3 (Deep Past) — nearest manuscript chunks found, whether or not they made it into the context above:</p>
+    <table>
+      <thead><tr><th>Similarity</th><th>Included?</th><th>Chunk preview</th></tr></thead>
+      <tbody id="candidateTable"></tbody>
+    </table>
   </div>
 </fieldset>
 
@@ -359,6 +365,23 @@ async function showContextPreview(body) {
   $("previewMeta").textContent =
     "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
   $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";
+
+  const candidateTable = $("candidateTable");
+  candidateTable.innerHTML = "";
+  const candidates = data.layer3Candidates || [];
+  if (candidates.length === 0) {
+    candidateTable.innerHTML = '<tr><td colspan="3">No manuscript chunks exist yet for this Book ID — try Manuscript ingestion first.</td></tr>';
+  } else {
+    for (const c of candidates) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + c.similarity.toFixed(3) + "</td>" +
+        "<td>" + (c.included ? "✅ yes" : "❌ no (below 0.5 threshold)") + "</td>" +
+        "<td>" + escapeHtml(c.preview) + "</td>";
+      candidateTable.appendChild(tr);
+    }
+  }
+
   $("previewBlock").style.display = "block";
 }
 

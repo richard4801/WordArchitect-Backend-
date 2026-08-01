@@ -269,12 +269,12 @@ async function main(): Promise<void> {
   let contextPayload: string;
   try {
     const startedAt = Date.now();
-    contextPayload = await assembleContextPayload({
+    ({ payload: contextPayload } = await assembleContextPayload({
       userId: TEST_USER_ID,
       bookId: TEST_BOOK_ID,
       userSceneBeat: SCENE_BEAT,
       recentHistoryText: RECENT_HISTORY_TEXT,
-    });
+    }));
     const elapsedMs = Date.now() - startedAt;
 
     console.log(`  Assembled in ${elapsedMs}ms\n`);

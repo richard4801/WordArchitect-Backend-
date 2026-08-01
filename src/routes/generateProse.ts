@@ -55,18 +55,19 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
   const { userId, bookId, userSceneBeat, recentHistoryText } = body as unknown as GenerateProseBody;
 
   try {
-    const contextPayload = await assembleContextPayload({
+    const { payload, layer3Candidates } = await assembleContextPayload({
       userId,
       bookId,
       userSceneBeat,
       recentHistoryText: recentHistoryText ?? "",
     });
-    const systemPrompt = buildSystemPrompt(contextPayload);
+    const systemPrompt = buildSystemPrompt(payload);
 
     res.json({
-      contextPayload,
+      contextPayload: payload,
       systemPrompt,
       estimatedTokens: estimateTokens(systemPrompt),
+      layer3Candidates,
     });
   } catch (error) {
     console.error("generate-prose preview failed:", error);
@@ -86,14 +87,14 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
   const { userId, bookId, userSceneBeat, recentHistoryText } = body as unknown as GenerateProseBody;
 
   try {
-    const contextPayload = await assembleContextPayload({
+    const { payload } = await assembleContextPayload({
       userId,
       bookId,
       userSceneBeat,
       recentHistoryText: recentHistoryText ?? "",
     });
 
-    const systemPrompt = buildSystemPrompt(contextPayload);
+    const systemPrompt = buildSystemPrompt(payload);
     await streamHanamiProse(systemPrompt, userSceneBeat, res);
   } catch (error) {
     console.error("generate-prose failed:", error);
