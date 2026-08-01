@@ -99,6 +99,83 @@ export function chunkManuscriptText(
   return chunks;
 }
 
+// Spelled-out chapter numbers up to twenty (e.g. "Chapter Nine") — beyond
+// that, real manuscripts overwhelmingly switch to digits ("Chapter 47"),
+// which the regex below already handles directly.
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+};
+
+// Matches a whole line like "Chapter 12", "CHAPTER 12: The Harbor Gate", or
+// "Chapter Nine — Homecoming". Deliberately doesn't match "chapter" appearing
+// mid-sentence since it requires the line (minus an optional title) to be
+// short — see MAX_HEADER_LINE_LENGTH.
+const CHAPTER_HEADER_RE = /^chapter\s+([a-z]+|\d+)\s*[:.\-–—]?\s*(.*)$/i;
+const MAX_HEADER_LINE_LENGTH = 100;
+
+function resolveChapterNumber(token: string): number | null {
+  if (/^\d+$/.test(token)) return parseInt(token, 10);
+  return NUMBER_WORDS[token.toLowerCase()] ?? null;
+}
+
+export interface ParsedChapter {
+  chapterNumber: number;
+  title: string | null;
+  text: string;
+}
+
+// Splits one big pasted manuscript into per-chapter text blocks by
+// detecting "Chapter N" header lines. Any text before the first detected
+// header (a title page, foreword, etc.) is dropped rather than indexed as
+// its own chapter. If no headers are found at all, the whole input is
+// treated as a single chapter so bulk import still works for a manuscript
+// that isn't chapter-labeled.
+export function splitIntoChapters(rawText: string): ParsedChapter[] {
+  const lines = rawText.split(/\r?\n/);
+  const chapters: ParsedChapter[] = [];
+
+  let currentNumber: number | null = null;
+  let currentTitle: string | null = null;
+  let currentBody: string[] = [];
+
+  const flush = () => {
+    if (currentNumber === null) return;
+    const text = currentBody.join("\n").trim();
+    if (text) {
+      chapters.push({ chapterNumber: currentNumber, title: currentTitle, text });
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0 && trimmed.length <= MAX_HEADER_LINE_LENGTH) {
+      const match = trimmed.match(CHAPTER_HEADER_RE);
+      const chapterNumber = match ? resolveChapterNumber(match[1] ?? "") : null;
+
+      if (match && chapterNumber !== null) {
+        flush();
+        currentNumber = chapterNumber;
+        currentTitle = match[2]?.trim() || null;
+        currentBody = [];
+        continue;
+      }
+    }
+    currentBody.push(line);
+  }
+  flush();
+
+  if (chapters.length === 0) {
+    const text = rawText.trim();
+    if (text) {
+      chapters.push({ chapterNumber: 1, title: null, text });
+    }
+  }
+
+  return chapters;
+}
+
 export interface IngestManuscriptTextParams {
   userId: string;
   bookId: string;
@@ -179,4 +256,55 @@ export async function ingestManuscriptText(
   }
 
   return ingested;
+}
+
+export interface BulkIngestManuscriptParams {
+  userId: string;
+  bookId: string;
+  rawText: string;
+}
+
+export interface BulkIngestedChapter {
+  chapterNumber: number;
+  title: string | null;
+  wordCount: number;
+  chunksStored: number;
+}
+
+// Splits one big pasted manuscript into chapters (via splitIntoChapters)
+// and runs each through the normal single-chapter ingest pipeline in turn.
+// Chapters are processed sequentially, same as their individual chunk
+// embeddings — for a full-length novel this is a lot of sequential OpenAI
+// calls in one request (see the comment on ingestManuscriptText), so this
+// is the first thing to move to a background job if it ever needs to
+// handle imports large enough to risk a request timeout.
+export async function bulkIngestManuscript(
+  params: BulkIngestManuscriptParams
+): Promise<BulkIngestedChapter[]> {
+  const { userId, bookId, rawText } = params;
+  const chapters = splitIntoChapters(rawText);
+
+  if (chapters.length === 0) {
+    throw new Error("bulkIngestManuscript: rawText contained no importable content");
+  }
+
+  const results: BulkIngestedChapter[] = [];
+
+  for (const chapter of chapters) {
+    const chunks = await ingestManuscriptText({
+      userId,
+      bookId,
+      chapterNumber: chapter.chapterNumber,
+      rawText: chapter.text,
+    });
+
+    results.push({
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      wordCount: wordCountOf(chapter.text),
+      chunksStored: chunks.length,
+    });
+  }
+
+  return results;
 }

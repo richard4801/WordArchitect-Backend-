@@ -174,6 +174,26 @@ manuscript is written — call it whenever a scene/chapter is finished (or
 once AI-generated prose from `/generate-prose` is accepted) so future
 generations can recall it.
 
+`chunkManuscriptText` splits on blank-line paragraph breaks first; any
+resulting block still more than 2x the target chunk size (e.g. a whole
+chapter pasted with single line breaks and no blank lines at all) is force-
+split further via `splitOversizedBlock` — single newlines, then sentence
+boundaries, then hard word-count slicing as a last resort — so a chunk can
+never balloon into an entire chapter regardless of input formatting.
+
+`POST /api/v1/manuscript/bulk-import` — `{ userId, bookId, rawText }`
+
+Imports a whole manuscript in one call. `splitIntoChapters` detects
+"Chapter N" header lines (digits, spelled-out up to twenty, optional title
+after a colon/dash) and splits `rawText` into per-chapter blocks; content
+before the first detected header is dropped. Each detected chapter is then
+run through the same chunk/embed/store pipeline as `/manuscript/chunks`.
+If no headers are found, the whole input is imported as a single chapter.
+Chapters are processed sequentially in one request, which is fine for
+testing and moderate-length manuscripts, but a full-length novel (500+
+chunks) could take a couple of minutes — the first candidate to move to a
+background job if that becomes a real timeout risk.
+
 ## Development Stages
 
 1. Repository & Architectural Blueprint (this document)

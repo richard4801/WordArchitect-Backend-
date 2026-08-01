@@ -166,6 +166,20 @@
 </fieldset>
 
 <fieldset>
+  <legend>Bulk import (whole manuscript, auto-split by chapter)</legend>
+  <p class="sub" style="margin-top:0;">Paste an entire manuscript. Lines like "Chapter 1", "Chapter Two — Homecoming", or "CHAPTER 9:" are detected automatically and split into separate chapters, each chunked and embedded the same as a single ingest. No chapter headers found? The whole paste is imported as one chapter.</p>
+  <div class="row">
+    <div><textarea id="bRawText" rows="10" placeholder="Chapter 1: The Harbor Gate&#10;&#10;The guard chuckled...&#10;&#10;Chapter 2: Homecoming&#10;&#10;The Valdris palace looked..."></textarea></div>
+  </div>
+  <button id="bImport">Bulk import</button>
+  <div id="bStatus" class="status"></div>
+  <table id="bTable" style="display:none;">
+    <thead><tr><th>Chapter</th><th>Title</th><th>Words</th><th>Chunks stored</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
   <legend>Generate prose</legend>
   <div class="row">
     <div><label>Scene beat</label><textarea id="gBeat" rows="3" placeholder="Kaelen confronts the Warden at the harbor gate."></textarea></div>
@@ -337,6 +351,47 @@ $("mIngest").addEventListener("click", async () => {
     setStatus($("mStatus"), (data.chunks || []).length + " chunk(s) embedded and stored.", "ok");
   } catch (err) {
     setStatus($("mStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Bulk import (whole manuscript, auto-split by chapter) ----
+$("bImport").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  const rawText = $("bRawText").value;
+  if (!userId || !bookId) { setStatus($("bStatus"), "User ID and Book ID are required.", "error"); return; }
+  if (!rawText.trim()) { setStatus($("bStatus"), "Paste manuscript text first.", "error"); return; }
+
+  $("bImport").disabled = true;
+  $("bTable").style.display = "none";
+  setStatus($("bStatus"), "Splitting, chunking, and embedding — this can take a while for a long manuscript...");
+
+  try {
+    const res = await fetch(apiBase() + "/api/v1/manuscript/bulk-import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, bookId, rawText }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+
+    const tbody = $("bTable").querySelector("tbody");
+    tbody.innerHTML = "";
+    for (const c of data.chapters || []) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + c.chapterNumber + "</td>" +
+        "<td>" + escapeHtml(c.title || "") + "</td>" +
+        "<td>" + c.wordCount + "</td>" +
+        "<td>" + c.chunksStored + "</td>";
+      tbody.appendChild(tr);
+    }
+    $("bTable").style.display = "table";
+    setStatus($("bStatus"), data.chaptersImported + " chapter(s) imported, " + data.totalChunksStored + " chunk(s) stored total.", "ok");
+  } catch (err) {
+    setStatus($("bStatus"), String(err.message || err), "error");
+  } finally {
+    $("bImport").disabled = false;
   }
 });
 
