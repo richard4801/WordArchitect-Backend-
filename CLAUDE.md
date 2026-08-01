@@ -206,13 +206,19 @@ also happens to keep the instance's inbound traffic alive for the whole
 import.
 
 - `POST /api/v1/manuscript/bulk-import/jobs` — `{ userId, bookId, rawText }`.
-  Splits `rawText` into chapters (same `splitIntoChapters` as above) and
-  persists them as a `manuscript_import_jobs` row (`status: 'pending'`). No
-  embedding calls happen here, so this returns immediately regardless of
-  manuscript size. Returns the job (chapters array omitted from the
-  response — potentially megabytes of text, no reason to send it back).
+  Splits `rawText` into chapters (same `splitIntoChapters` as above),
+  creates a `manuscript_import_jobs` row (`status: 'pending'`), and inserts
+  each chapter's full text as its own row in
+  `manuscript_import_job_chapters`. No embedding calls happen here, so this
+  returns immediately regardless of manuscript size. Chapter text is kept
+  out of the job row itself — an earlier version stored it inline as JSONB
+  on the job, which meant every subsequent step re-fetched (and
+  re-returned) the *entire remaining manuscript* on every call, a cost that
+  grew with manuscript size instead of staying flat per step and caused
+  failures partway through long imports. Splitting it into a child table
+  means each step only ever touches the one chapter row it's processing.
 - `POST /api/v1/manuscript/bulk-import/jobs/:jobId/step` — chunks, embeds,
-  and stores exactly one chapter (the one at `next_chapter_index`), then
+  and stores exactly one chapter (the row at `next_chapter_index`), then
   advances the index and returns updated progress. Call this repeatedly —
   once per HTTP request — until `status` is `'done'`. A `'failed'` job is
   not terminal: `next_chapter_index` was never advanced past the chapter
@@ -223,7 +229,8 @@ import.
   check, does not advance the job.
 
 Defined in `src/services/manuscriptImportJob.ts` /
-`manuscript_import_jobs` (migration `003_manuscript_import_jobs.sql`). Not
+`manuscript_import_jobs` + `manuscript_import_job_chapters` (migrations
+`003_manuscript_import_jobs.sql` and `004_import_job_chapters.sql`). Not
 safe against two callers stepping the same job concurrently (no row-level
 claim/lock) — fine while the only caller is a single sequential poller.
 

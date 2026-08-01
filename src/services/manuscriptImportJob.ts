@@ -1,5 +1,5 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
-import { splitIntoChapters, ingestManuscriptText, type ParsedChapter } from "./manuscriptIngest.js";
+import { splitIntoChapters, ingestManuscriptText } from "./manuscriptIngest.js";
 
 export type ImportJobStatus = "pending" | "processing" | "done" | "failed";
 
@@ -8,7 +8,6 @@ export interface ImportJobRow {
   user_id: string;
   book_id: string;
   status: ImportJobStatus;
-  chapters: ParsedChapter[];
   next_chapter_index: number;
   chapters_total: number;
   chapters_done: number;
@@ -17,16 +16,25 @@ export interface ImportJobRow {
   error: string | null;
 }
 
+export class ImportJobNotFoundError extends Error {
+  constructor(jobId: string) {
+    super(`No import job found with id ${jobId}`);
+    this.name = "ImportJobNotFoundError";
+  }
+}
+
 export interface CreateImportJobParams {
   userId: string;
   bookId: string;
   rawText: string;
 }
 
-// Splits rawText into chapters and persists them as a job row — deliberately
-// no embedding calls here, so this step is always fast regardless of
-// manuscript size and never risks a request timeout. The slow part
-// (chunk + embed + store) happens incrementally in stepImportJob.
+// Splits rawText into chapters and persists each as its own row in
+// manuscript_import_job_chapters (not embedded here — cheap text-only
+// inserts, so this stays fast regardless of manuscript size). The slow
+// part (chunk + embed + store) happens incrementally in stepImportJob,
+// one chapter row at a time, so no single request ever has to touch more
+// than one chapter's worth of text.
 export async function createImportJob(params: CreateImportJobParams): Promise<ImportJobRow> {
   const { userId, bookId, rawText } = params;
   const chapters = splitIntoChapters(rawText);
@@ -36,13 +44,12 @@ export async function createImportJob(params: CreateImportJobParams): Promise<Im
   }
 
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  const { data: job, error: jobError } = await supabase
     .from("manuscript_import_jobs")
     .insert({
       user_id: userId,
       book_id: bookId,
       status: "pending",
-      chapters,
       next_chapter_index: 0,
       chapters_total: chapters.length,
       chapters_done: 0,
@@ -51,11 +58,25 @@ export async function createImportJob(params: CreateImportJobParams): Promise<Im
     .select("*")
     .single();
 
-  if (error) {
-    throw new Error(`Failed to create import job: ${error.message}`);
+  if (jobError) {
+    throw new Error(`Failed to create import job: ${jobError.message}`);
   }
 
-  return data as ImportJobRow;
+  const chapterRows = chapters.map((chapter, index) => ({
+    job_id: job.id,
+    chapter_index: index,
+    chapter_number: chapter.chapterNumber,
+    title: chapter.title,
+    raw_text: chapter.text,
+  }));
+
+  const { error: chaptersError } = await supabase.from("manuscript_import_job_chapters").insert(chapterRows);
+
+  if (chaptersError) {
+    throw new Error(`Failed to store import job chapters: ${chaptersError.message}`);
+  }
+
+  return job as ImportJobRow;
 }
 
 export async function getImportJob(jobId: string): Promise<ImportJobRow | null> {
@@ -75,8 +96,8 @@ export async function getImportJob(jobId: string): Promise<ImportJobRow | null> 
 // Processes exactly one chapter's worth of chunk/embed/store work, then
 // persists updated progress and returns. Meant to be called repeatedly by
 // the client (once per HTTP request) until status is "done" or "failed" —
-// each call stays short (one chapter, typically a handful of chunks), and
-// progress survives even if the caller stops polling partway through.
+// each call stays short and its cost is proportional to one chapter, not
+// the whole manuscript, regardless of how far into a long import this is.
 //
 // Not safe against two callers stepping the same job concurrently (no
 // row-level claim/lock) — fine for a single sequential poller, which is
@@ -86,7 +107,7 @@ export async function stepImportJob(jobId: string): Promise<ImportJobRow> {
   const job = await getImportJob(jobId);
 
   if (!job) {
-    throw new Error(`No import job found with id ${jobId}`);
+    throw new ImportJobNotFoundError(jobId);
   }
   // "done" is terminal. "failed" is not — next_chapter_index was never
   // advanced past the chapter that failed, so stepping a failed job just
@@ -96,7 +117,17 @@ export async function stepImportJob(jobId: string): Promise<ImportJobRow> {
     return job;
   }
 
-  const chapter = job.chapters[job.next_chapter_index];
+  const { data: chapter, error: chapterError } = await supabase
+    .from("manuscript_import_job_chapters")
+    .select("chapter_number, title, raw_text")
+    .eq("job_id", jobId)
+    .eq("chapter_index", job.next_chapter_index)
+    .maybeSingle();
+
+  if (chapterError) {
+    throw new Error(`Failed to fetch next chapter for import job: ${chapterError.message}`);
+  }
+
   if (!chapter) {
     const { data, error } = await supabase
       .from("manuscript_import_jobs")
@@ -117,8 +148,8 @@ export async function stepImportJob(jobId: string): Promise<ImportJobRow> {
     const chunks = await ingestManuscriptText({
       userId: job.user_id,
       bookId: job.book_id,
-      chapterNumber: chapter.chapterNumber,
-      rawText: chapter.text,
+      chapterNumber: chapter.chapter_number,
+      rawText: chapter.raw_text,
     });
 
     const nextIndex = job.next_chapter_index + 1;
@@ -131,7 +162,7 @@ export async function stepImportJob(jobId: string): Promise<ImportJobRow> {
         next_chapter_index: nextIndex,
         chapters_done: job.chapters_done + 1,
         chunks_stored: job.chunks_stored + chunks.length,
-        last_chapter_title: chapter.title ?? `Chapter ${chapter.chapterNumber}`,
+        last_chapter_title: chapter.title ?? `Chapter ${chapter.chapter_number}`,
         error: null,
         updated_at: new Date().toISOString(),
       })

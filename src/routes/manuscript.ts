@@ -1,16 +1,13 @@
 import { Router, type Request, type Response } from "express";
 import { ingestManuscriptText, bulkIngestManuscript } from "../services/manuscriptIngest.js";
-import { createImportJob, getImportJob, stepImportJob, type ImportJobRow } from "../services/manuscriptImportJob.js";
+import {
+  createImportJob,
+  getImportJob,
+  stepImportJob,
+  ImportJobNotFoundError,
+} from "../services/manuscriptImportJob.js";
 
 export const manuscriptRouter = Router();
-
-// The `chapters` column can hold the full text of a large manuscript
-// (megabytes) — never worth sending back over the wire on every poll, so
-// every job response strips it down to progress/status fields only.
-function toJobSummary(job: ImportJobRow) {
-  const { chapters: _chapters, ...summary } = job;
-  return summary;
-}
 
 function validateBulkImportBody(body: Record<string, unknown>): string | null {
   if (typeof body.userId !== "string" || body.userId.trim() === "") {
@@ -134,7 +131,7 @@ manuscriptRouter.post("/manuscript/bulk-import/jobs", async (req: Request, res: 
       bookId: body.bookId as string,
       rawText: body.rawText as string,
     });
-    res.status(201).json({ job: toJobSummary(job) });
+    res.status(201).json({ job });
   } catch (error) {
     console.error("import job creation failed:", error);
     res.status(502).json({ error: "Failed to create import job. Please try again." });
@@ -152,14 +149,13 @@ manuscriptRouter.post("/manuscript/bulk-import/jobs/:jobId/step", async (req: Re
   }
 
   try {
-    const existing = await getImportJob(jobId);
-    if (!existing) {
-      res.status(404).json({ error: `No import job found with id ${jobId}.` });
+    const job = await stepImportJob(jobId);
+    res.json({ job });
+  } catch (error) {
+    if (error instanceof ImportJobNotFoundError) {
+      res.status(404).json({ error: error.message });
       return;
     }
-    const job = await stepImportJob(jobId);
-    res.json({ job: toJobSummary(job) });
-  } catch (error) {
     console.error("import job step failed:", error);
     res.status(502).json({ error: "Failed to advance import job. Please try again." });
   }
@@ -181,7 +177,7 @@ manuscriptRouter.get("/manuscript/bulk-import/jobs/:jobId", async (req: Request,
       res.status(404).json({ error: `No import job found with id ${jobId}.` });
       return;
     }
-    res.json({ job: toJobSummary(job) });
+    res.json({ job });
   } catch (error) {
     console.error("import job lookup failed:", error);
     res.status(502).json({ error: "Failed to fetch import job." });
