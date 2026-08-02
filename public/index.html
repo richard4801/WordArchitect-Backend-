@@ -231,6 +231,25 @@
 const $ = (id) => document.getElementById(id);
 
 function apiBase() { return $("apiBase").value.replace(/\/+$/, ""); }
+
+// A long resumable job polls the same endpoint many times in a row; any
+// single one of those requests can hit a proxy/timeout error page instead
+// of our actual JSON response (e.g. a slow step on a free-tier instance).
+// res.json() on an HTML body throws a cryptic "Unexpected token '<'"
+// parse error — this gives a clear, actionable message instead, and
+// leaves the underlying job/data untouched so Resume just works.
+async function parseJsonResponse(res) {
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      "Server returned a non-JSON response (HTTP " + res.status + "), likely a timeout or proxy hiccup on that one request — the job's progress is safe, just try again." +
+      (text ? " (started with: " + text.slice(0, 80) + ")" : "")
+    );
+  }
+  return res.json();
+}
+
 function setStatus(el, msg, kind) {
   el.textContent = msg;
   el.className = "status" + (kind ? " " + kind : "");
@@ -264,7 +283,7 @@ async function loadCodex() {
   setStatus($("cStatus"), "Loading...");
   try {
     const res = await fetch(apiBase() + "/api/v1/codex?bookId=" + encodeURIComponent(bookId));
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
     renderCodexTable(data.entries || []);
     setStatus($("cStatus"), (data.entries || []).length + " entries loaded.", "ok");
@@ -333,7 +352,7 @@ $("cCreate").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
     setStatus($("cStatus"), "Created “" + data.entry.name + "”.", "ok");
     $("cName").value = "";
@@ -392,7 +411,7 @@ async function runCodexSyncJob(jobId, bookId) {
       }
 
       const res = await fetch(apiBase() + "/api/v1/codex/sync/jobs/" + jobId + "/step", { method: "POST" });
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
 
       const job = data.job;
@@ -432,7 +451,7 @@ $("sStart").addEventListener("click", () => {
     body: JSON.stringify({ userId, bookId }),
   })
     .then(async (res) => {
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
       updateSyncProgress(data.job);
       return runCodexSyncJob(data.job.id, bookId);
@@ -483,7 +502,7 @@ $("mIngest").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
     setStatus($("mStatus"), (data.chunks || []).length + " chunk(s) embedded and stored.", "ok");
   } catch (err) {
@@ -545,7 +564,7 @@ async function runImportJob(jobId, bookId) {
       const res = await fetch(apiBase() + "/api/v1/manuscript/bulk-import/jobs/" + jobId + "/step", {
         method: "POST",
       });
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
 
       const job = data.job;
@@ -586,7 +605,7 @@ $("bStart").addEventListener("click", () => {
     body: JSON.stringify({ userId, bookId, rawText }),
   })
     .then(async (res) => {
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
       updateImportProgress(data.job);
       return runImportJob(data.job.id, bookId);
@@ -633,7 +652,7 @@ async function showContextPreview(body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
+  const data = await parseJsonResponse(res);
   if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
 
   const budgetNote = data.estimatedTokens > 4000
