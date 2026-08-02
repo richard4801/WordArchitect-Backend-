@@ -147,7 +147,7 @@
   <div id="cStatus" class="status"></div>
 
   <table id="cTable">
-    <thead><tr><th>Name</th><th>Type</th><th>Aliases</th><th>Tier</th><th>Source</th><th>Auto summary (from manuscript)</th><th class="actions">Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th>Aliases</th><th>Tier</th><th>Source</th><th>Description</th><th>Auto summary (from manuscript)</th><th class="actions">Actions</th></tr></thead>
     <tbody></tbody>
   </table>
 </fieldset>
@@ -303,6 +303,7 @@ function renderCodexTable(entries) {
       "<td>" + escapeHtml((e.aliases || []).join(", ")) + "</td>" +
       "<td>" + escapeHtml(e.tier || "") + "</td>" +
       "<td>" + (e.auto_generated ? "🤖 auto" : "manual") + "</td>" +
+      "<td>" + escapeHtml(e.description || "") + "</td>" +
       "<td>" + escapeHtml(e.auto_summary || "") + "</td>" +
       '<td class="actions"><button class="small secondary" data-del="' + e.id + '">Delete</button></td>';
     tbody.appendChild(tr);
