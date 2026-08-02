@@ -237,7 +237,14 @@ scene_order)` order, one chunk per step:
    (`enrichFromChunk`, `gpt-4o-mini`) that does two things at once:
    - For matched entries, decides whether this passage reveals anything
      new and, if so, returns an updated concise `auto_summary` (merged
-     with what's already known, not just appended).
+     with what's already known, not just appended — each update replaces
+     the field rather than growing it). The prompt asks for ~100 words,
+     but that's a request, not a guarantee — repeated summarization can
+     drift longer over many updates on a heavily-mentioned character, so
+     `codexSync.ts` also hard-truncates to `AUTO_SUMMARY_MAX_TOKENS`
+     server-side before writing, regardless of what the model returns.
+     Without this, one bloated entry could crowd out other Codex entries
+     sharing Layer 1's 800-token budget in the same beat.
    - Proposes new Codex entries (with `auto_generated: true`) for other
      named characters/locations/items/lore prominently mentioned but not
      yet tracked — the "pull a full codex from the manuscript" behavior,

@@ -1,6 +1,17 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { textMentionsAnyOf } from "../lib/textMatch.js";
+import { truncateToTokenBudget } from "../lib/tokenBudget.js";
 import { enrichFromChunk } from "./codexEnrichment.js";
+
+// The enrichment prompt asks the model to keep each merged auto_summary to
+// ~100 words, but that's a request, not a guarantee — repeated
+// summarization tends to drift longer over many updates as a model stays
+// reluctant to actually drop earlier detail, especially for a heavily-
+// mentioned character. This is the server-side backstop: auto_summary can
+// never exceed this regardless of what any single model call returns, so
+// one entry's summary can't crowd out others sharing Layer 1's token
+// budget (see rag.ts's LAYER1_TOKEN_BUDGET).
+const AUTO_SUMMARY_MAX_TOKENS = 150;
 
 export type CodexSyncJobStatus = "pending" | "processing" | "done" | "failed";
 
@@ -166,7 +177,7 @@ export async function stepCodexSyncJob(jobId: string): Promise<CodexSyncJobRow> 
 
       const { error: updateError } = await supabase
         .from("codex_entries")
-        .update({ auto_summary: update.summary })
+        .update({ auto_summary: truncateToTokenBudget(update.summary, AUTO_SUMMARY_MAX_TOKENS) })
         .eq("id", entry.id);
       if (updateError) {
         console.error(`Failed to update auto_summary for "${entry.name}":`, updateError.message);
