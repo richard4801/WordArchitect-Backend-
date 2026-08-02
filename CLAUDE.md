@@ -33,7 +33,10 @@ Direct string/alias lookup against saved character, location, and lore
 entries. Scans the scene beat text for known names or aliases and injects a
 condensed summary of the matched profile(s) — description plus top
 personality traits/motivations, not the full Codex record (see Database
-Schema below for what stays human-facing-only).
+Schema below for what stays human-facing-only) — plus `auto_summary` if
+present (see Codex Enrichment below): a system-maintained synthesis of
+everywhere that entry has actually been mentioned across the manuscript so
+far, distinct from and injected alongside the writer's own `description`.
 
 - Budget: **~500–800 tokens max**
 - Deterministic, no embedding call required
@@ -112,13 +115,15 @@ accounts.
 | `background`, `notes` | TEXT | human-facing only, not injected into Layer 1 |
 | `character_arc` | JSONB | array of `{ stage, description }`; human-facing only |
 | `event_year` | VARCHAR(50) | for `history`-type entries (timeline events) |
+| `auto_summary` | TEXT | system-maintained, injected into Layer 1 alongside `description` — see Codex Enrichment |
+| `auto_generated` | BOOLEAN NOT NULL | default `false`; `true` if the Codex sync job proposed this entry rather than the writer creating it by hand |
 | `created_at` | TIMESTAMPTZ | default `NOW()` |
 
 Managed entirely through `POST/GET/PATCH/DELETE /api/v1/codex` (see below). Only
-`description` + condensed `personality_traits`/`motivations` ever reach Hanami's
-prompt — the richer fields exist for a human-facing Codex UI (character sheets,
-worldbuilding pages) and stay out of the token budget regardless of how much
-detail a writer stores.
+`description` + condensed `personality_traits`/`motivations` + `auto_summary` ever
+reach Hanami's prompt — the richer fields exist for a human-facing Codex UI
+(character sheets, worldbuilding pages) and stay out of the token budget
+regardless of how much detail a writer stores.
 
 ### `codex_relationships` (character bonds)
 
@@ -134,6 +139,34 @@ detail a writer stores.
 
 Not currently surfaced to Layer 1 — purely for the human-facing Codex UI's
 Relationships tab. Managed via `/api/v1/codex/:id/relationships`.
+
+### `codex_mentions` (Codex Enrichment mention index)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `codex_entry_id` | UUID NOT NULL, FK → `codex_entries(id)` | `ON DELETE CASCADE` |
+| `manuscript_chunk_id` | UUID NOT NULL, FK → `manuscript_chunks(id)` | `ON DELETE CASCADE` |
+| `book_id` | UUID NOT NULL | |
+| `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+One row per (entry, chunk) where the Codex sync job found the entry
+mentioned — `UNIQUE(codex_entry_id, manuscript_chunk_id)` so a chunk is
+never folded into an entry's `auto_summary` twice.
+
+### `codex_sync_jobs` (Codex Enrichment job)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `user_id`, `book_id` | UUID NOT NULL | |
+| `status` | VARCHAR(20) NOT NULL | CHECK: `pending` \| `processing` \| `done` \| `failed` |
+| `next_chunk_offset` | INT NOT NULL | position within this book's `manuscript_chunks`, ordered by `(chapter_number, scene_order)` |
+| `chunks_total`, `chunks_processed` | INT NOT NULL | |
+| `entries_updated`, `entries_created` | INT NOT NULL | running totals across the job |
+| `last_chunk_summary` | TEXT | short preview of the most recently processed chunk, for progress display |
+| `error` | TEXT | |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
 
 ### `manuscript_chunks` (Layer 2/3 source)
 
@@ -154,7 +187,9 @@ Relationships tab. Managed via `/api/v1/codex/:id/relationships`.
 
 Cosine distance search (`<=>` operator) scoped to `target_book_id`,
 filtered by `match_threshold`, ordered by similarity descending, capped at
-`match_count` (Layer 3 calls this with `match_count = 3`).
+`match_count`. Layer 3 calls this once per expanded concept (see above)
+with `match_count = 3` and `match_threshold = 0`, applying the real
+threshold locally afterward.
 
 ### Indexes
 
@@ -177,6 +212,60 @@ as a writer works — separate from `/generate-prose`'s read-only retrieval path
 - `GET /api/v1/codex/:id/relationships` — list relationships involving an entry (either direction)
 - `POST /api/v1/codex/:id/relationships` — create a relationship from `:id` to another entry
 - `DELETE /api/v1/codex/relationships/:relationshipId` — delete a relationship
+
+### Codex Enrichment (`src/services/codexSync.ts`, `src/services/codexEnrichment.ts`)
+
+A single top-3 raw manuscript excerpt often isn't enough to actually
+understand a recurring character/object/plot thread — its real
+significance can be scattered across many scenes, and Layer 3's fixed
+token budget can never fit "everywhere it was mentioned" as raw text
+(see Layer 3 above). Codex Enrichment solves this the way Sudowrite's
+Story Bible auto-cataloging and Novelcrafter's Codex mention-indexing
+both do it in production: build understanding once, incrementally, ahead
+of generation time — not re-discover it from scratch on every
+`/generate-prose` call.
+
+A resumable job (same one-step-per-HTTP-call shape as bulk import, for the
+same reason) sweeps a book's `manuscript_chunks` in `(chapter_number,
+scene_order)` order, one chunk per step:
+
+1. Deterministically matches the chunk's text against every existing
+   Codex entry's name/aliases (`textMentionsAnyOf`, shared with Layer 1's
+   matching logic).
+2. Sends the chunk, the matched entries' current understanding, and the
+   full list of existing Codex names to a single LLM call
+   (`enrichFromChunk`, `gpt-4o-mini`) that does two things at once:
+   - For matched entries, decides whether this passage reveals anything
+     new and, if so, returns an updated concise `auto_summary` (merged
+     with what's already known, not just appended).
+   - Proposes new Codex entries (with `auto_generated: true`) for other
+     named characters/locations/items/lore prominently mentioned but not
+     yet tracked — the "pull a full codex from the manuscript" behavior,
+     applied incrementally per chunk rather than one expensive full-book
+     pass.
+3. Records a `codex_mentions` row for every (entry, chunk) pair touched,
+   so a chunk is never folded into the same entry's `auto_summary` twice.
+
+Endpoints:
+
+- `POST /api/v1/codex/sync/jobs` — `{ userId, bookId }`. Counts the
+  book's chunks and creates the job; no LLM calls yet, so this returns
+  immediately regardless of manuscript size.
+- `POST /api/v1/codex/sync/jobs/:jobId/step` — processes exactly one
+  chunk, returns updated progress. Call repeatedly until `status` is
+  `'done'`.
+- `GET /api/v1/codex/sync/jobs/:jobId` — read-only status check.
+
+Auto-generated entries land in the same `codex_entries` table as
+hand-written ones and go through the same CRUD/UI — nothing is hidden in
+a separate review queue. `auto_generated: true` is just a flag so the
+writer can spot and clean up anything the sync job got wrong.
+
+Not yet wired into the ingestion pipeline itself — running this after new
+chapters are ingested is a manual step (via the job endpoints, or the
+test UI's Codex Sync panel), not automatic on every `/manuscript/chunks`
+or bulk-import call. Automating that is the natural next step once this
+is validated against real manuscripts.
 
 ### Manuscript ingestion (`src/routes/manuscript.ts`, `src/services/manuscriptIngest.ts`)
 

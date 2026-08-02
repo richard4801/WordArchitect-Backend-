@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { estimateTokens, truncateToTokenBudget } from "../lib/tokenBudget.js";
+import { textMentionsAnyOf } from "../lib/textMatch.js";
 import { generateEmbedding } from "./embedding.js";
 import { expandSceneBeatConcepts } from "./queryExpansion.js";
 import type { CodexEntry, ManuscriptChunkMatch } from "../types/domain.js";
@@ -22,10 +23,6 @@ export interface AssembleContextParams {
   recentHistoryText: string;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 type Layer1CodexRow = Pick<
   CodexEntry,
   | "id"
@@ -38,21 +35,21 @@ type Layer1CodexRow = Pick<
   | "tier"
   | "personality_traits"
   | "motivations"
+  | "auto_summary"
   | "created_at"
 >;
 
 function entryMatchesSceneBeat(entry: Layer1CodexRow, sceneBeat: string): boolean {
-  const candidates = [entry.name, ...(entry.aliases ?? [])].filter(Boolean);
-  return candidates.some((candidate) => {
-    const pattern = new RegExp(`\\b${escapeRegExp(candidate)}\\b`, "i");
-    return pattern.test(sceneBeat);
-  });
+  return textMentionsAnyOf(sceneBeat, [entry.name, ...(entry.aliases ?? [])]);
 }
 
 // Condenses a Codex entry into a short Layer 1 block. The table can hold a
 // full character sheet (physical description, background, arc, notes —
 // CRUD'd via src/routes/codex.ts), but only a compact summary is injected
 // here so a richly-detailed entry can't blow the ~800-token Layer 1 budget.
+// auto_summary — the Codex sync job's incrementally-built synthesis of
+// every manuscript mention (see codexSync.ts) — is included alongside the
+// writer's own description, not instead of it.
 function formatCodexEntry(entry: Layer1CodexRow): string {
   const aliasSuffix = entry.aliases?.length ? ` (aka ${entry.aliases.join(", ")})` : "";
   const tierSuffix = entry.tier ? `, ${entry.tier}` : "";
@@ -63,6 +60,9 @@ function formatCodexEntry(entry: Layer1CodexRow): string {
   }
   if (entry.motivations?.length) {
     lines.push(`Motivations: ${entry.motivations.slice(0, 3).join("; ")}`);
+  }
+  if (entry.auto_summary) {
+    lines.push(`Established in manuscript so far: ${entry.auto_summary}`);
   }
 
   return lines.join("\n");
@@ -75,7 +75,9 @@ async function buildLayer1Codex(bookId: string, sceneBeat: string): Promise<stri
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("codex_entries")
-    .select("id, user_id, book_id, name, aliases, entry_type, description, tier, personality_traits, motivations, created_at")
+    .select(
+      "id, user_id, book_id, name, aliases, entry_type, description, tier, personality_traits, motivations, auto_summary, created_at"
+    )
     .eq("book_id", bookId);
 
   if (error) {
