@@ -17,7 +17,11 @@ interface InfermaticStreamChunk {
 // it arrives. Shared by streamHanamiProse (writes tokens straight to an
 // Express response as they arrive) and generateHanamiProse (buffers them
 // into one string) so the SSE-parsing logic only lives in one place.
-async function* streamHanamiTokens(systemPrompt: string, userPrompt: string): AsyncGenerator<string> {
+async function* streamHanamiTokens(
+  systemPrompt: string,
+  userPrompt: string,
+  temperature: number = TEMPERATURE
+): AsyncGenerator<string> {
   const baseUrl = getEnvVar("INFERMATIC_BASE_URL").replace(/\/+$/, "");
   const apiKey = getEnvVar("INFERMATIC_API_KEY");
 
@@ -29,7 +33,7 @@ async function* streamHanamiTokens(systemPrompt: string, userPrompt: string): As
     },
     body: JSON.stringify({
       model: HANAMI_MODEL,
-      temperature: TEMPERATURE,
+      temperature,
       stream: true,
       messages: [
         { role: "system", content: systemPrompt },
@@ -94,10 +98,18 @@ export async function streamHanamiProse(systemPrompt: string, userPrompt: string
 // Buffers the full Hanami response into one string instead of streaming it
 // to an HTTP response — used by the direct-generate path (MCP tool calls,
 // and any caller that needs the complete prose as a single return value
-// rather than a live stream).
-export async function generateHanamiProse(systemPrompt: string, userPrompt: string): Promise<string> {
+// rather than a live stream). temperature defaults to the same creative
+// setting prose generation uses; callers that need strict instruction-
+// following instead of creative variation (e.g. the /ask retrieval-accuracy
+// route, which needs Hanami to stick to "answer only from context" rather
+// than embellish) should pass a lower value explicitly.
+export async function generateHanamiProse(
+  systemPrompt: string,
+  userPrompt: string,
+  temperature?: number
+): Promise<string> {
   let full = "";
-  for await (const token of streamHanamiTokens(systemPrompt, userPrompt)) {
+  for await (const token of streamHanamiTokens(systemPrompt, userPrompt, temperature)) {
     full += token;
   }
   return full;

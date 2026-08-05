@@ -218,6 +218,38 @@
   </div>
 </fieldset>
 
+<fieldset>
+  <legend>Ask a question (retrieval accuracy test)</legend>
+  <p class="sub" style="margin-top:0;">Not prose generation — asks Hanami a direct factual question using the exact same Layer 1/2/3 retrieval /generate-prose relies on, but instructed to answer strictly from the compiled context (and say so plainly if it can't). Useful for confirming retrieval actually found the right, specific detail rather than judging it indirectly through prose quality.</p>
+  <div class="row">
+    <div><label>Question</label><textarea id="aQuestion" rows="2" placeholder="Whose child is Sera secretly carrying?"></textarea></div>
+  </div>
+  <button id="aAsk">Ask</button>
+  <div id="aStatus" class="status"></div>
+  <div id="aAnswerBlock" style="display:none; margin-top:12px;">
+    <p class="meta-line">Answer:</p>
+    <pre id="aAnswerOutput"></pre>
+    <p class="meta-line" id="aMeta"></p>
+
+    <details style="margin-top:10px;">
+      <summary>Compiled context this answer was grounded in</summary>
+      <pre id="aContextOutput"></pre>
+
+      <p class="meta-line" style="margin-top:14px;">Chapters expanded into the context:</p>
+      <table>
+        <thead><tr><th>Chapter</th><th>Concept(s)</th><th>Best similarity</th><th>Tokens used</th></tr></thead>
+        <tbody id="aExpandedChapterTable"></tbody>
+      </table>
+
+      <p class="meta-line" style="margin-top:14px;">Nearest manuscript chunks found per searched concept:</p>
+      <table>
+        <thead><tr><th>Concept(s)</th><th>Similarity</th><th>Included?</th><th>Chunk preview</th></tr></thead>
+        <tbody id="aCandidateTable"></tbody>
+      </table>
+    </details>
+  </div>
+</fieldset>
+
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -673,6 +705,76 @@ $("gPreview").addEventListener("click", async () => {
     setStatus($("gStatus"), String(err.message || err), "error");
   } finally {
     $("gPreview").disabled = false;
+  }
+});
+
+// ---- Ask a question (retrieval accuracy test) ----
+$("aAsk").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  const question = $("aQuestion").value.trim();
+  if (!userId || !bookId || !question) {
+    setStatus($("aStatus"), "User ID, Book ID, and a question are required.", "error");
+    return;
+  }
+
+  $("aAsk").disabled = true;
+  $("aAnswerBlock").style.display = "none";
+  setStatus($("aStatus"), "Retrieving context and asking Hanami...");
+
+  try {
+    const res = await fetch(apiBase() + "/api/v1/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, bookId, question }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+
+    $("aAnswerOutput").textContent = data.answer || "(empty response)";
+    $("aMeta").textContent = "~" + data.estimatedTotalTokens + " tokens of retrieved context";
+    $("aContextOutput").textContent = data.contextPayload || "(no context retrieved — nothing matched in Codex or manuscript memory)";
+
+    const expandedChapterTable = $("aExpandedChapterTable");
+    expandedChapterTable.innerHTML = "";
+    const expandedChapters = data.expandedChapters || [];
+    if (expandedChapters.length === 0) {
+      expandedChapterTable.innerHTML = '<tr><td colspan="4">No chapters were expanded into the context.</td></tr>';
+    } else {
+      for (const ch of expandedChapters) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + ch.chapterNumber + "</td>" +
+          "<td>" + escapeHtml((ch.concepts || []).join(", ")) + "</td>" +
+          "<td>" + ch.bestSimilarity.toFixed(3) + "</td>" +
+          "<td>" + ch.tokens + "</td>";
+        expandedChapterTable.appendChild(tr);
+      }
+    }
+
+    const candidateTable = $("aCandidateTable");
+    candidateTable.innerHTML = "";
+    const candidates = data.layer3Candidates || [];
+    if (candidates.length === 0) {
+      candidateTable.innerHTML = '<tr><td colspan="4">No manuscript chunks exist yet for this Book ID — try Manuscript ingestion first.</td></tr>';
+    } else {
+      for (const c of candidates) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + escapeHtml((c.concepts || []).join(", ")) + "</td>" +
+          "<td>" + c.similarity.toFixed(3) + "</td>" +
+          "<td>" + (c.included ? "✅ yes" : "❌ no (below 0.3 threshold)") + "</td>" +
+          "<td>" + escapeHtml(c.preview) + "</td>";
+        candidateTable.appendChild(tr);
+      }
+    }
+
+    $("aAnswerBlock").style.display = "block";
+    setStatus($("aStatus"), "Done.", "ok");
+  } catch (err) {
+    setStatus($("aStatus"), String(err.message || err), "error");
+  } finally {
+    $("aAsk").disabled = false;
   }
 });
 </script>
