@@ -297,9 +297,13 @@ Read (safe to call freely):
   same Layer 1/2/3 compilation `/generate-prose` would use, as a reference
   point before deciding whether Claude can do better
 
-Write (mirror the Codex CRUD routes — only meant to be called when the
-writer has actively confirmed the change in the conversation, never
-speculatively; nothing here should ever write unsupervised):
+Write (mirror the Codex CRUD routes' full field set — every optional
+column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
+in sync via a shared field list in `tools.ts` so a field present on one
+path and missing from the other can't silently fail to save again; only
+meant to be called when the writer has actively confirmed the change in
+the conversation, never speculatively — nothing here should ever write
+unsupervised):
 - `create_codex_entry`, `update_codex_entry`
 - `save_manuscript_scene` — ingests accepted prose into permanent
   manuscript memory via the existing `ingestManuscriptText` pipeline, so

@@ -154,6 +154,59 @@ export function registerWordArchitectTools(server: McpServer): void {
     }
   );
 
+  const tierSchema = z.enum(["main", "supporting", "minor"]);
+  const characterArcSchema = z.array(z.object({ stage: z.string(), description: z.string() }));
+
+  // Every optional field codex_entries actually has, matching what
+  // PATCH /api/v1/codex/:id already supports (src/routes/codex.ts). Keep
+  // this and update_codex_entry's field list in sync — a field missing
+  // from one but present in the other is exactly the kind of gap that
+  // makes a tool silently fail to save something a writer asked for.
+  const codexFieldsSchema = {
+    aliases: z.array(z.string()).optional(),
+    tier: tierSchema.optional(),
+    quote: z.string().optional(),
+    imageUrl: z.string().optional(),
+    age: z.string().optional(),
+    gender: z.string().optional(),
+    roleInStory: z.string().optional(),
+    occupation: z.string().optional(),
+    locationName: z.string().optional(),
+    physicalDescription: z.array(z.string()).optional(),
+    personalityTraits: z.array(z.string()).optional(),
+    motivations: z.array(z.string()).optional(),
+    background: z.string().optional(),
+    characterArc: characterArcSchema.optional().describe("Array of { stage, description } objects"),
+    notes: z.string().optional(),
+    eventYear: z.string().optional(),
+  };
+
+  function toCodexPayload(fields: Record<string, unknown>): Record<string, unknown> {
+    const payload: Record<string, unknown> = {};
+    const map: Record<string, string> = {
+      aliases: "aliases",
+      tier: "tier",
+      quote: "quote",
+      imageUrl: "image_url",
+      age: "age",
+      gender: "gender",
+      roleInStory: "role_in_story",
+      occupation: "occupation",
+      locationName: "location_name",
+      physicalDescription: "physical_description",
+      personalityTraits: "personality_traits",
+      motivations: "motivations",
+      background: "background",
+      characterArc: "character_arc",
+      notes: "notes",
+      eventYear: "event_year",
+    };
+    for (const [key, column] of Object.entries(map)) {
+      if (fields[key] !== undefined) payload[column] = fields[key];
+    }
+    return payload;
+  }
+
   server.registerTool(
     "create_codex_entry",
     {
@@ -166,12 +219,10 @@ export function registerWordArchitectTools(server: McpServer): void {
         name: z.string().describe("The entry's name"),
         entryType: z.enum(VALID_CODEX_ENTRY_TYPES as [CodexEntryType, ...CodexEntryType[]]),
         description: z.string().describe("Overview/summary — the only field always injected into generation context"),
-        aliases: z.array(z.string()).optional(),
-        personalityTraits: z.array(z.string()).optional(),
-        motivations: z.array(z.string()).optional(),
+        ...codexFieldsSchema,
       },
     },
-    async ({ userId, bookId, name, entryType, description, aliases, personalityTraits, motivations }) => {
+    async ({ userId, bookId, name, entryType, description, ...rest }) => {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from("codex_entries")
@@ -181,9 +232,7 @@ export function registerWordArchitectTools(server: McpServer): void {
           name,
           entry_type: entryType,
           description,
-          aliases: aliases ?? null,
-          personality_traits: personalityTraits ?? null,
-          motivations: motivations ?? null,
+          ...toCodexPayload(rest),
         })
         .select("*")
         .single();
@@ -202,21 +251,12 @@ export function registerWordArchitectTools(server: McpServer): void {
       inputSchema: {
         entryId: z.string().describe("The codex_entries row ID"),
         description: z.string().optional(),
-        aliases: z.array(z.string()).optional(),
-        personalityTraits: z.array(z.string()).optional(),
-        motivations: z.array(z.string()).optional(),
-        background: z.string().optional(),
-        notes: z.string().optional(),
+        ...codexFieldsSchema,
       },
     },
-    async ({ entryId, description, aliases, personalityTraits, motivations, background, notes }) => {
-      const payload: Record<string, unknown> = {};
+    async ({ entryId, description, ...rest }) => {
+      const payload = toCodexPayload(rest);
       if (description !== undefined) payload.description = description;
-      if (aliases !== undefined) payload.aliases = aliases;
-      if (personalityTraits !== undefined) payload.personality_traits = personalityTraits;
-      if (motivations !== undefined) payload.motivations = motivations;
-      if (background !== undefined) payload.background = background;
-      if (notes !== undefined) payload.notes = notes;
 
       if (Object.keys(payload).length === 0) {
         return errorResult("No fields provided to update.");
