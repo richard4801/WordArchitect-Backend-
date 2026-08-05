@@ -13,13 +13,11 @@ interface InfermaticStreamChunk {
   choices?: InfermaticStreamChoice[];
 }
 
-// Streams Hanami prose generation chunk-by-chunk directly onto the Express
-// response as it arrives from Infermatic's OpenAI-compatible SSE endpoint.
-export async function streamHanamiProse(
-  systemPrompt: string,
-  userPrompt: string,
-  res: Response
-): Promise<void> {
+// Opens the upstream Infermatic SSE stream and yields each prose token as
+// it arrives. Shared by streamHanamiProse (writes tokens straight to an
+// Express response as they arrive) and generateHanamiProse (buffers them
+// into one string) so the SSE-parsing logic only lives in one place.
+async function* streamHanamiTokens(systemPrompt: string, userPrompt: string): AsyncGenerator<string> {
   const baseUrl = getEnvVar("INFERMATIC_BASE_URL").replace(/\/+$/, "");
   const apiKey = getEnvVar("INFERMATIC_API_KEY");
 
@@ -45,47 +43,62 @@ export async function streamHanamiProse(
     throw new Error(`Hanami generation request failed (${upstream.status}): ${errorText}`);
   }
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
 
-        const payload = trimmed.slice("data:".length).trim();
-        if (payload === "[DONE]") {
-          res.end();
-          return;
-        }
+      const payload = trimmed.slice("data:".length).trim();
+      if (payload === "[DONE]") return;
 
-        try {
-          const parsed = JSON.parse(payload) as InfermaticStreamChunk;
-          const token = parsed.choices?.[0]?.delta?.content;
-          if (token) {
-            res.write(token);
-          }
-        } catch {
-          // Partial/malformed SSE fragment — skip and continue on the next line.
-        }
+      try {
+        const parsed = JSON.parse(payload) as InfermaticStreamChunk;
+        const token = parsed.choices?.[0]?.delta?.content;
+        if (token) yield token;
+      } catch {
+        // Partial/malformed SSE fragment — skip and continue on the next line.
       }
+    }
+  }
+}
+
+// Streams Hanami prose generation chunk-by-chunk directly onto the Express
+// response as it arrives — used by /generate-prose for the browser test UI.
+export async function streamHanamiProse(systemPrompt: string, userPrompt: string, res: Response): Promise<void> {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  try {
+    for await (const token of streamHanamiTokens(systemPrompt, userPrompt)) {
+      res.write(token);
     }
   } finally {
     if (!res.writableEnded) {
       res.end();
     }
   }
+}
+
+// Buffers the full Hanami response into one string instead of streaming it
+// to an HTTP response — used by the direct-generate path (MCP tool calls,
+// and any caller that needs the complete prose as a single return value
+// rather than a live stream).
+export async function generateHanamiProse(systemPrompt: string, userPrompt: string): Promise<string> {
+  let full = "";
+  for await (const token of streamHanamiTokens(systemPrompt, userPrompt)) {
+    full += token;
+  }
+  return full;
 }

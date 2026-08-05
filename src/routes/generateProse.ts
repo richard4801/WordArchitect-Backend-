@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { assembleContextPayload } from "../services/rag.js";
-import { streamHanamiProse } from "../services/llm.js";
+import { streamHanamiProse, generateHanamiProse } from "../services/llm.js";
 import { estimateTokens } from "../lib/tokenBudget.js";
 
 export const generateProseRouter = Router();
@@ -106,5 +106,49 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
     if (!res.writableEnded) {
       res.end();
     }
+  }
+});
+
+interface DirectGenerateBody {
+  userSceneBeat: string;
+  compiledContext: string;
+}
+
+function validateDirectGenerateBody(body: Record<string, unknown>): string | null {
+  if (typeof body.userSceneBeat !== "string" || body.userSceneBeat.trim() === "") {
+    return "userSceneBeat is required and must be a non-empty string.";
+  }
+  if (typeof body.compiledContext !== "string" || body.compiledContext.trim() === "") {
+    return "compiledContext is required and must be a non-empty string.";
+  }
+  return null;
+}
+
+// Bypasses Layer 1/2/3 assembly entirely: the caller (an MCP client like
+// Claude, which can hold and reason over far more manuscript/Codex
+// context than the automatic pipeline's fixed 4,000-token budget allows)
+// supplies the fully-compiled context directly, and this just runs it
+// straight to Hanami. No userId/bookId needed — this endpoint never
+// touches Supabase at all, purely a Hanami passthrough. Returns the
+// complete prose as JSON rather than streaming, since the primary caller
+// (an MCP tool result) isn't a live browser connection.
+generateProseRouter.post("/generate-prose/direct", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const validationError = validateDirectGenerateBody(body);
+
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
+  }
+
+  const { userSceneBeat, compiledContext } = body as unknown as DirectGenerateBody;
+
+  try {
+    const systemPrompt = buildSystemPrompt(compiledContext);
+    const prose = await generateHanamiProse(systemPrompt, userSceneBeat);
+    res.json({ prose });
+  } catch (error) {
+    console.error("generate-prose/direct failed:", error);
+    res.status(502).json({ error: "Failed to generate prose. Please try again." });
   }
 });

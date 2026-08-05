@@ -253,6 +253,73 @@ Defined in `src/services/manuscriptImportJob.ts` /
 safe against two callers stepping the same job concurrently (no row-level
 claim/lock) — fine while the only caller is a single sequential poller.
 
+## MCP Server
+
+`/mcp` (`src/routes/mcp.ts`, `src/mcp/tools.ts`) exposes this book's Codex
+and manuscript memory to any MCP client — in practice, Claude connected via
+a custom connector for brainstorming sessions with the writer.
+
+**Why this exists**: Hanami has no content guardrails but a small (32k)
+context window and no judgment — it only ever sees what the automatic
+Layer 1/2/3 pipeline finds, bounded by the 4,000-token budget. Claude has
+much more context and real reasoning, but won't write the content this
+platform needs. The MCP server lets Claude do the understanding — reading
+broadly across the Codex and manuscript, catching inconsistencies a single
+similarity search can't, brainstorming with the writer — while Hanami
+stays purely an execution engine that writes from exactly what it's given.
+
+**The handoff problem this solves**: if Claude only passed a scene beat
+to the normal `/generate-prose` pipeline, Hanami would just run its own
+automatic retrieval again and Claude's richer understanding would never
+reach it. `generate_prose_direct` exists specifically to close that gap —
+it skips Layer 1/2/3 entirely and sends Hanami exactly the context Claude
+(and the writer, in conversation) already compiled.
+
+### Tools
+
+Read (safe to call freely):
+- `list_codex_entries` — `{ bookId, entryType? }`
+- `get_codex_entry` — `{ entryId }` — full record, not just what Layer 1 injects
+- `search_manuscript` — `{ bookId, query }` — up to 8 ranked matches, no
+  relevance threshold applied (unlike Layer 3) — Claude applies its own
+  judgment, and can call this repeatedly with different phrasing rather
+  than being limited to one shot the way the automatic pipeline is
+- `get_manuscript_chapter` — `{ bookId, chapterNumber }` — literal chapter
+  text, for when a similarity-matched excerpt isn't enough
+- `preview_automatic_context` — `{ userId, bookId, sceneBeat }` — runs the
+  same Layer 1/2/3 compilation `/generate-prose` would use, as a reference
+  point before deciding whether Claude can do better
+
+Write (mirror the Codex CRUD routes — only meant to be called when the
+writer has actively confirmed the change in the conversation, never
+speculatively; nothing here should ever write unsupervised):
+- `create_codex_entry`, `update_codex_entry`
+- `save_manuscript_scene` — ingests accepted prose into permanent
+  manuscript memory via the existing `ingestManuscriptText` pipeline, so
+  it's there for future generations (Claude-assisted or automatic) too
+
+Generation:
+- `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the
+  handoff problem" above. Buffers Hanami's full response and returns it
+  as one result rather than streaming, since the caller is a tool result,
+  not a live browser connection (`generateHanamiProse` in `llm.ts`).
+
+### Auth
+
+Every request needs `Authorization: Bearer <MCP_API_KEY>` — checked in
+`requireMcpAuth`. Unlike the rest of this API (which has no auth at all,
+fine for a local test harness), this surface is reachable from the public
+internet by whatever MCP client connects to it and grants read/write
+access to real data, so it can't be left open. Not full OAuth — a shared
+secret is enough for a single-user tool at this stage.
+
+### Session handling
+
+Stateful, one `McpServer` + `StreamableHTTPServerTransport` pair per
+session, held in an in-memory map keyed by `Mcp-Session-Id`. Fine for a
+single Render instance with no horizontal scaling; would need to move to
+a shared store if that ever changes.
+
 ## Development Stages
 
 1. Repository & Architectural Blueprint (this document)
