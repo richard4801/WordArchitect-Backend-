@@ -14,6 +14,12 @@ export const mcpRouter = Router();
 // auth at all, this surface can't be left open. Not full OAuth (overkill
 // for a single-user tool at this stage), just enough to keep it from
 // being wide open to anyone who finds the URL.
+//
+// Accepts the key via Authorization: Bearer header (for curl/testing) OR
+// a ?key= query param — claude.ai's "Add custom connector" dialog only
+// offers a URL field plus OAuth Client ID/Secret, no plain bearer-token
+// field, so the query param is what actually lets this be configured
+// from that UI: https://.../mcp?key=<MCP_API_KEY>.
 function requireMcpAuth(req: Request, res: Response, next: NextFunction): void {
   const expected = process.env.MCP_API_KEY;
   if (!expected) {
@@ -22,7 +28,9 @@ function requireMcpAuth(req: Request, res: Response, next: NextFunction): void {
   }
 
   const header = req.headers.authorization ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+  const headerToken = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+  const queryToken = typeof req.query.key === "string" ? req.query.key : null;
+  const token = headerToken ?? queryToken;
 
   if (token !== expected) {
     res.status(401).json({ error: "Unauthorized." });
