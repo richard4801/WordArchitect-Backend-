@@ -33,7 +33,10 @@ export async function expandSceneBeatConcepts(sceneBeat: string): Promise<SceneB
           content: [
             "You extract distinct searchable story concepts from a scene beat for a novel-writing tool's memory search.",
             `Identify up to ${MAX_CONCEPTS} distinct plot objects, events, or threads mentioned or implied — not character names.`,
-            "For each, write a short descriptive search phrase (5-15 words) resembling how it might actually be described in prose, not just the bare noun.",
+            "For each, write searchText as a concrete narrative sentence or clause describing WHAT happens or WHAT the thing is — written like an excerpt from the actual story, not an abstract summary label.",
+            'Bad (summary label): "Argument over pregnancy implications". Good (narrative phrasing): "Sera reveals to Mina that she is pregnant, and they discuss the danger of anyone finding out."',
+            'Bad (summary label): "Significance of the totem". Good (narrative phrasing): "The ancient totem standing at the edge of the grove, said to remember the past."',
+            "Aim for 15-30 words of concrete, scene-like phrasing per concept, not a short label.",
             'Respond with JSON: {"concepts": [{"concept": "...", "searchText": "..."}]}.',
             "If the beat has only one clear concept, return just one item. Never return an empty array.",
           ].join(" "),

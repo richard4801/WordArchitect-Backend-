@@ -10,7 +10,12 @@ const LAYER1_TOKEN_BUDGET = 800;
 const LAYER2_MAX_WORDS = 2000;
 const LAYER2_TOKEN_BUDGET = 2000;
 const LAYER3_TOKEN_BUDGET = 1000;
-const LAYER3_MATCH_THRESHOLD = 0.5;
+// Was 0.5, picked with no real calibration behind it. A stress test against
+// real manuscript content found genuinely relevant matches scoring 0.33-0.37
+// and getting wrongly excluded — 0.5 was simply too strict for short
+// beat-to-prose comparisons on this embedding model. Lowered based on that
+// evidence, not just a guess.
+const LAYER3_MATCH_THRESHOLD = 0.3;
 // Each extracted concept gets its own search for this many nearest chunks —
 // not one shared top-N across the whole beat, which would let one concept
 // (e.g. "pregnancy") crowd out another (e.g. "totem") in a single search.
