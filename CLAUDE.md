@@ -67,7 +67,13 @@ otherwise a concept with generally higher-scoring matches could still
 crowd out a less-dominant one when merging. Falls back to treating the
 whole beat as a single concept if expansion fails for any reason.
 
-- Budget: **~1,000 tokens max**
+- Budget: **whatever remains of the 4,000-token total after Layer 1,
+  Layer 2, and the fixed prompt scaffolding** — see Strict Context
+  Boundary below. Not a fixed sub-budget: a fixed 1,000-token Layer 3
+  cap routinely left hundreds of tokens on the table when Layer 1/2
+  under-used their own share, the difference between Hanami getting a
+  full chapter of surrounding context versus one isolated ~180-word
+  fragment.
 - The only layer that performs live embedding + vector search round trips
 - Match threshold is `0.3` — was `0.5`, chosen with no real calibration.
   A stress test against real manuscript content found genuinely relevant
@@ -80,16 +86,42 @@ whole beat as a single concept if expansion fails for any reason.
   accumulates, not a permanently settled constant — and a lower
   threshold does let occasional weak/borderline matches through at the
   margin, a known tradeoff of favoring recall over precision here.
+- **Chapter-aware expansion**: a raw vector match is one ~180-word chunk,
+  too thin on its own for Hanami to follow a scene. For each match that
+  clears the threshold, in round-robin priority order and deduplicated by
+  chapter, `src/services/rag.ts` fetches every chunk belonging to that
+  chunk's `chapter_number` and expands outward from the matched
+  `scene_order` (alternating forward/backward by proximity, whole-chunk
+  boundaries only — never a mid-sentence truncation) until the remaining
+  Layer 3 budget for this generation is used up. This is what lets a
+  single similarity hit surface as a real, readable scene instead of a
+  disconnected fragment. Requires `match_manuscript_chunks` to return
+  `chapter_number`/`scene_order` (migration `007_match_chunks_with_position.sql`
+  — see Database Schema below).
+- `/generate-prose/preview` surfaces exactly which chapters got expanded,
+  their token cost, best matching similarity, and which concept(s) pulled
+  them in (`expandedChapters` in the response, rendered in the test UI's
+  Preview panel) — full inspectability into what Layer 3 actually did for
+  a given generation, since retrieval finishes well under a second and
+  there's no meaningful "in progress" state to stream.
 
 ## Strict Context Boundary
 
 The **total compiled prompt payload** (Layer 1 + Layer 2 + Layer 3 +
-instructions/scaffolding) **must remain strictly under 4,000 tokens**.
+instructions/scaffolding) **must remain under ~4,000 tokens, with up to
+100 tokens of tolerance (4,100 hard ceiling)**.
 
-This is a hard cap, not a target — it exists to preserve ~28,000 tokens of
-free context headroom out of Hanami's 32k window for uninterrupted prose
-generation. Any retrieval or assembly logic that would exceed this budget
-must truncate/drop lower-priority content rather than exceed the cap.
+This exists to preserve ~28,000 tokens of free context headroom out of
+Hanami's 32k window for uninterrupted prose generation. Unlike the old
+fixed-per-layer budgets, the layers now pool this budget: Layer 1 and
+Layer 2 are measured first (by actual token usage, not their nominal
+caps), and Layer 3 receives whatever remains, up to the 4,000+100 ceiling
+— it's fine, and expected, to spend that remainder down to the tolerance
+rather than leave it unused, since unused budget here means Hanami gets
+less real context, not a safety margin worth preserving. Layer 3's
+chapter expansion (above) is greedy and stops as soon as the next whole
+chunk would exceed what's left, so it lands at or slightly under budget
+rather than over it.
 
 Priority order when trimming to fit budget: Layer 1 (Codex) > Layer 2
 (Recent History) > Layer 3 (Deep Past RAG).
@@ -157,13 +189,19 @@ Relationships tab. Managed via `/api/v1/codex/:id/relationships`.
 
 ### `match_manuscript_chunks` RPC (Layer 3)
 
-`match_manuscript_chunks(query_embedding VECTOR(1536), match_threshold FLOAT, match_count INT, target_book_id UUID) RETURNS TABLE(id UUID, raw_text TEXT, similarity FLOAT)`
+`match_manuscript_chunks(query_embedding VECTOR(1536), match_threshold FLOAT, match_count INT, target_book_id UUID) RETURNS TABLE(id UUID, raw_text TEXT, chapter_number INT, scene_order INT, similarity FLOAT)`
 
 Cosine distance search (`<=>` operator) scoped to `target_book_id`,
 filtered by `match_threshold`, ordered by similarity descending, capped at
 `match_count`. Layer 3 calls this once per expanded concept (see above)
 with `match_count = 3` and `match_threshold = 0`, applying the real
-threshold locally afterward.
+threshold locally afterward. Returns `chapter_number`/`scene_order`
+alongside each match (added in migration
+`007_match_chunks_with_position.sql`, which drops and recreates the
+function since Postgres requires that for a return-signature change) so
+Layer 3's chapter expansion (above) knows which chapter to fetch and
+where the match sits within it — without this, expansion would need a
+second round-trip per match just to look up its position.
 
 ### Indexes
 

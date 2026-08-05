@@ -28,16 +28,22 @@ function validateGenerateProseBody(body: Record<string, unknown>): string | null
   return null;
 }
 
+const SYSTEM_PROMPT_INSTRUCTIONS = [
+  "You are Hanami, a creative fiction-writing engine continuing a novel in progress.",
+  "Use the compiled context below — Codex entries, recent story history, and relevant deep-past manuscript memory — to keep characters, tone, and continuity consistent.",
+  "Do not restate or summarize this context in your response. Write only the continuation prose for the upcoming scene beat.",
+].join("\n");
+
 export function buildSystemPrompt(contextPayload: string): string {
   const context = contextPayload || "No prior codex, history, or manuscript memory is available yet.";
-  return [
-    "You are Hanami, a creative fiction-writing engine continuing a novel in progress.",
-    "Use the compiled context below — Codex entries, recent story history, and relevant deep-past manuscript memory — to keep characters, tone, and continuity consistent.",
-    "Do not restate or summarize this context in your response. Write only the continuation prose for the upcoming scene beat.",
-    "",
-    context,
-  ].join("\n");
+  return [SYSTEM_PROMPT_INSTRUCTIONS, "", context].join("\n");
 }
+
+// The fixed instructional scaffolding's token cost, reserved up front so
+// assembleContextPayload's dynamic Layer 3 budget accounts for it — without
+// this, Layer 3 could fill the payload right up to the 4,000/4,100 cap and
+// the scaffolding wrapped around it would push the real system prompt over.
+const RESERVED_SCAFFOLDING_TOKENS = estimateTokens(`${SYSTEM_PROMPT_INSTRUCTIONS}\n\n`);
 
 // Runs the same Layer 1/2/3 context assembly as /generate-prose but returns
 // the compiled payload as JSON instead of invoking Hanami — lets the test
@@ -55,11 +61,12 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
   const { userId, bookId, userSceneBeat, recentHistoryText } = body as unknown as GenerateProseBody;
 
   try {
-    const { payload, layer3Candidates } = await assembleContextPayload({
+    const { payload, layer3Candidates, expandedChapters, estimatedTotalTokens } = await assembleContextPayload({
       userId,
       bookId,
       userSceneBeat,
       recentHistoryText: recentHistoryText ?? "",
+      reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
     });
     const systemPrompt = buildSystemPrompt(payload);
 
@@ -67,7 +74,9 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
       contextPayload: payload,
       systemPrompt,
       estimatedTokens: estimateTokens(systemPrompt),
+      estimatedTotalTokens,
       layer3Candidates,
+      expandedChapters,
     });
   } catch (error) {
     console.error("generate-prose preview failed:", error);
@@ -92,6 +101,7 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
       bookId,
       userSceneBeat,
       recentHistoryText: recentHistoryText ?? "",
+      reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
     });
 
     const systemPrompt = buildSystemPrompt(payload);

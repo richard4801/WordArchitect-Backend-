@@ -204,6 +204,12 @@
     <p class="meta-line" id="previewMeta"></p>
     <pre id="previewOutput"></pre>
 
+    <p class="meta-line" style="margin-top:14px;">Layer 3 (Deep Past) — chapters expanded into the context above (a matched chunk pulls in its surrounding chapter, not just itself, until the remaining token budget runs out):</p>
+    <table>
+      <thead><tr><th>Chapter</th><th>Concept(s)</th><th>Best similarity</th><th>Tokens used</th></tr></thead>
+      <tbody id="expandedChapterTable"></tbody>
+    </table>
+
     <p class="meta-line" style="margin-top:14px;">Layer 3 (Deep Past) — nearest manuscript chunks found per searched concept, whether or not they made it into the context above:</p>
     <table>
       <thead><tr><th>Concept(s)</th><th>Similarity</th><th>Included?</th><th>Chunk preview</th></tr></thead>
@@ -524,12 +530,29 @@ async function showContextPreview(body) {
   const data = await parseJsonResponse(res);
   if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
 
-  const budgetNote = data.estimatedTokens > 4000
-    ? " — over the 4,000 token budget!"
-    : " (budget: 4,000 max)";
+  const budgetNote = data.estimatedTokens > 4100
+    ? " — over the 4,000 (+100 tolerance) token budget!"
+    : " (budget: ~4,000, up to 4,100 tolerated)";
   $("previewMeta").textContent =
     "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
   $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";
+
+  const expandedChapterTable = $("expandedChapterTable");
+  expandedChapterTable.innerHTML = "";
+  const expandedChapters = data.expandedChapters || [];
+  if (expandedChapters.length === 0) {
+    expandedChapterTable.innerHTML = '<tr><td colspan="4">No chapters were expanded into the context — either no matches cleared the 0.3 similarity threshold, or Layer 1/2 used the entire budget.</td></tr>';
+  } else {
+    for (const ch of expandedChapters) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + ch.chapterNumber + "</td>" +
+        "<td>" + escapeHtml((ch.concepts || []).join(", ")) + "</td>" +
+        "<td>" + ch.bestSimilarity.toFixed(3) + "</td>" +
+        "<td>" + ch.tokens + "</td>";
+      expandedChapterTable.appendChild(tr);
+    }
+  }
 
   const candidateTable = $("candidateTable");
   candidateTable.innerHTML = "";
@@ -542,7 +565,7 @@ async function showContextPreview(body) {
       tr.innerHTML =
         "<td>" + escapeHtml((c.concepts || []).join(", ")) + "</td>" +
         "<td>" + c.similarity.toFixed(3) + "</td>" +
-        "<td>" + (c.included ? "✅ yes" : "❌ no (below 0.5 threshold)") + "</td>" +
+        "<td>" + (c.included ? "✅ yes" : "❌ no (below 0.3 threshold)") + "</td>" +
         "<td>" + escapeHtml(c.preview) + "</td>";
       candidateTable.appendChild(tr);
     }

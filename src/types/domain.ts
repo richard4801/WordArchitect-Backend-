@@ -72,5 +72,7 @@ export interface CodexRelationship {
 export interface ManuscriptChunkMatch {
   id: string;
   raw_text: string;
+  chapter_number: number;
+  scene_order: number;
   similarity: number;
 }
