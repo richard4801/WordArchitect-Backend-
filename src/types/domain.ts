@@ -53,14 +53,6 @@ export interface CodexEntry {
   character_arc: CharacterArcStage[] | null;
   notes: string | null;
   event_year: string | null;
-  // System-maintained synthesis of every manuscript mention of this entry,
-  // built incrementally by the Codex sync job — distinct from the
-  // writer's own hand-authored `description`. See CLAUDE.md's Codex
-  // Enrichment section.
-  auto_summary: string | null;
-  // True if this entry was proposed by the sync job (found mentioned in
-  // the manuscript but not yet in the Codex) rather than created by hand.
-  auto_generated: boolean;
   created_at: string;
 }
 

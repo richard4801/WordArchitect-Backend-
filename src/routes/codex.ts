@@ -7,12 +7,6 @@ import {
   type CodexRelationshipStrength,
   type CharacterArcStage,
 } from "../types/domain.js";
-import {
-  createCodexSyncJob,
-  getCodexSyncJob,
-  stepCodexSyncJob,
-  CodexSyncJobNotFoundError,
-} from "../services/codexSync.js";
 
 export const codexRouter = Router();
 
@@ -355,73 +349,4 @@ codexRouter.delete("/codex/relationships/:relationshipId", async (req: Request, 
     return;
   }
   res.status(204).end();
-});
-
-// Creates a resumable Codex sync job: sweeps a book's already-ingested
-// manuscript_chunks, enriching existing entries' auto_summary and
-// proposing new entries for anything prominent that isn't tracked yet.
-// Fast to create (just counts chunks) — see POST .../step for the actual
-// per-chunk work, and codexSync.ts for why it's built this way.
-codexRouter.post("/codex/sync/jobs", async (req: Request, res: Response) => {
-  const body = (req.body ?? {}) as Record<string, unknown>;
-
-  if (typeof body.userId !== "string" || body.userId.trim() === "") {
-    res.status(400).json({ error: "userId is required and must be a non-empty string." });
-    return;
-  }
-  if (typeof body.bookId !== "string" || body.bookId.trim() === "") {
-    res.status(400).json({ error: "bookId is required and must be a non-empty string." });
-    return;
-  }
-
-  try {
-    const job = await createCodexSyncJob({ userId: body.userId, bookId: body.bookId });
-    res.status(201).json({ job });
-  } catch (error) {
-    console.error("codex sync job creation failed:", error);
-    res.status(502).json({ error: error instanceof Error ? error.message : "Failed to create codex sync job." });
-  }
-});
-
-// Advances a codex sync job by exactly one manuscript chunk. Call this
-// repeatedly — once per HTTP request — until status is "done".
-codexRouter.post("/codex/sync/jobs/:jobId/step", async (req: Request, res: Response) => {
-  const jobId = req.params.jobId;
-  if (!jobId) {
-    res.status(400).json({ error: "jobId is required." });
-    return;
-  }
-
-  try {
-    const job = await stepCodexSyncJob(jobId);
-    res.json({ job });
-  } catch (error) {
-    if (error instanceof CodexSyncJobNotFoundError) {
-      res.status(404).json({ error: error.message });
-      return;
-    }
-    console.error("codex sync job step failed:", error);
-    res.status(502).json({ error: "Failed to advance codex sync job. Please try again." });
-  }
-});
-
-// Read-only status check — does not advance the job.
-codexRouter.get("/codex/sync/jobs/:jobId", async (req: Request, res: Response) => {
-  const jobId = req.params.jobId;
-  if (!jobId) {
-    res.status(400).json({ error: "jobId is required." });
-    return;
-  }
-
-  try {
-    const job = await getCodexSyncJob(jobId);
-    if (!job) {
-      res.status(404).json({ error: `No codex sync job found with id ${jobId}.` });
-      return;
-    }
-    res.json({ job });
-  } catch (error) {
-    console.error("codex sync job lookup failed:", error);
-    res.status(502).json({ error: "Failed to fetch codex sync job." });
-  }
 });

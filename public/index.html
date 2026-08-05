@@ -147,24 +147,9 @@
   <div id="cStatus" class="status"></div>
 
   <table id="cTable">
-    <thead><tr><th>Name</th><th>Type</th><th>Aliases</th><th>Tier</th><th>Source</th><th>Description</th><th>Auto summary (from manuscript)</th><th class="actions">Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th>Aliases</th><th>Tier</th><th>Description</th><th class="actions">Actions</th></tr></thead>
     <tbody></tbody>
   </table>
-</fieldset>
-
-<fieldset>
-  <legend>Codex sync (auto-enrich from manuscript)</legend>
-  <p class="sub" style="margin-top:0;">Sweeps every already-ingested manuscript chunk for this Book ID: updates existing Codex entries' "Established in manuscript so far" summary with anything new it reveals, and proposes new entries for prominent characters/places/objects not yet tracked. Resumable, one chunk per step — safe for a very large manuscript, same as Bulk import.</p>
-  <button id="sStart">Start codex sync</button>
-  <button class="secondary" id="sResume" type="button" style="display:none;">Resume last sync</button>
-  <button class="secondary" id="sStop" type="button" disabled>Pause</button>
-  <div id="sStatus" class="status"></div>
-  <div id="sProgressBlock" style="display:none; margin-top:10px;">
-    <div style="background:var(--bg-soft); border:1px solid var(--border); border-radius:6px; height:10px; overflow:hidden;">
-      <div id="sProgressBar" style="background:var(--accent); height:100%; width:0%; transition:width 0.2s;"></div>
-    </div>
-    <p class="meta-line" id="sProgressText"></p>
-  </div>
 </fieldset>
 
 <fieldset>
@@ -302,9 +287,7 @@ function renderCodexTable(entries) {
       "<td>" + escapeHtml(e.entry_type) + "</td>" +
       "<td>" + escapeHtml((e.aliases || []).join(", ")) + "</td>" +
       "<td>" + escapeHtml(e.tier || "") + "</td>" +
-      "<td>" + (e.auto_generated ? "🤖 auto" : "manual") + "</td>" +
       "<td>" + escapeHtml(e.description || "") + "</td>" +
-      "<td>" + escapeHtml(e.auto_summary || "") + "</td>" +
       '<td class="actions"><button class="small secondary" data-del="' + e.id + '">Delete</button></td>';
     tbody.appendChild(tr);
   }
@@ -366,121 +349,6 @@ $("cCreate").addEventListener("click", async () => {
     setStatus($("cStatus"), String(err.message || err), "error");
   }
 });
-
-// ---- Codex sync (resumable auto-enrichment job) ----
-let codexSyncStopRequested = false;
-
-function saveLastSyncJob(bookId, jobId) {
-  localStorage.setItem("wa_sync_job", JSON.stringify({ bookId, jobId }));
-}
-function loadLastSyncJob() {
-  try {
-    return JSON.parse(localStorage.getItem("wa_sync_job") || "null");
-  } catch {
-    return null;
-  }
-}
-function clearLastSyncJob() {
-  localStorage.removeItem("wa_sync_job");
-}
-
-function updateSyncProgress(job) {
-  $("sProgressBlock").style.display = "block";
-  const pct = job.chunks_total > 0 ? Math.round((job.chunks_processed / job.chunks_total) * 100) : 0;
-  $("sProgressBar").style.width = pct + "%";
-  $("sProgressText").textContent =
-    job.chunks_processed + " / " + job.chunks_total + " chunks (" + pct + "%) — " +
-    job.entries_updated + " entries updated, " + job.entries_created + " new entries proposed";
-}
-
-function setSyncButtonsRunning(running) {
-  $("sStart").disabled = running;
-  $("sResume").disabled = running;
-  $("sStop").disabled = !running;
-}
-
-async function runCodexSyncJob(jobId, bookId) {
-  codexSyncStopRequested = false;
-  setSyncButtonsRunning(true);
-  saveLastSyncJob(bookId, jobId);
-
-  try {
-    while (true) {
-      if (codexSyncStopRequested) {
-        setStatus($("sStatus"), "Paused. Click Resume last sync to continue.");
-        break;
-      }
-
-      const res = await fetch(apiBase() + "/api/v1/codex/sync/jobs/" + jobId + "/step", { method: "POST" });
-      const data = await parseJsonResponse(res);
-      if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-
-      const job = data.job;
-      updateSyncProgress(job);
-
-      if (job.status === "failed") {
-        setStatus($("sStatus"), "Chunk failed: " + (job.error || "unknown error") + " — click Resume last sync to retry.", "error");
-        break;
-      }
-      if (job.status === "done") {
-        setStatus($("sStatus"), "Sync complete — " + job.chunks_total + " chunks swept, " + job.entries_updated + " entries updated, " + job.entries_created + " new entries proposed.", "ok");
-        clearLastSyncJob();
-        $("sResume").style.display = "none";
-        loadCodex();
-        break;
-      }
-      setStatus($("sStatus"), "Syncing...");
-    }
-  } catch (err) {
-    setStatus($("sStatus"), String(err.message || err), "error");
-  } finally {
-    setSyncButtonsRunning(false);
-  }
-}
-
-$("sStart").addEventListener("click", () => {
-  const userId = $("userId").value.trim();
-  const bookId = $("bookId").value.trim();
-  if (!userId || !bookId) { setStatus($("sStatus"), "User ID and Book ID are required.", "error"); return; }
-
-  setSyncButtonsRunning(true);
-  setStatus($("sStatus"), "Creating codex sync job...");
-
-  fetch(apiBase() + "/api/v1/codex/sync/jobs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, bookId }),
-  })
-    .then(async (res) => {
-      const data = await parseJsonResponse(res);
-      if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-      updateSyncProgress(data.job);
-      return runCodexSyncJob(data.job.id, bookId);
-    })
-    .catch((err) => {
-      setStatus($("sStatus"), String(err.message || err), "error");
-      setSyncButtonsRunning(false);
-    });
-});
-
-$("sResume").addEventListener("click", () => {
-  const saved = loadLastSyncJob();
-  if (!saved) { setStatus($("sStatus"), "No paused sync found.", "error"); return; }
-  $("bookId").value = saved.bookId;
-  runCodexSyncJob(saved.jobId, saved.bookId);
-});
-
-$("sStop").addEventListener("click", () => {
-  codexSyncStopRequested = true;
-});
-
-(function checkForResumableSync() {
-  const saved = loadLastSyncJob();
-  if (saved) {
-    $("sResume").style.display = "inline-block";
-    setStatus($("sStatus"), "Found a paused codex sync for book " + saved.bookId + ". Click Resume last sync to continue.");
-  }
-})();
 
 // ---- Manuscript ingestion ----
 $("mIngest").addEventListener("click", async () => {
