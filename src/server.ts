@@ -8,7 +8,6 @@ import { codexRouter } from "./routes/codex.js";
 import { manuscriptRouter } from "./routes/manuscript.js";
 import { mcpRouter } from "./routes/mcp.js";
 import { askRouter } from "./routes/ask.js";
-import { instructionsRouter } from "./routes/instructions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,7 +30,6 @@ app.use("/api/v1", generateProseRouter);
 app.use("/api/v1", codexRouter);
 app.use("/api/v1", manuscriptRouter);
 app.use("/api/v1", askRouter);
-app.use("/api/v1", instructionsRouter);
 app.use(mcpRouter);
 
 app.use((req: Request, res: Response) => {

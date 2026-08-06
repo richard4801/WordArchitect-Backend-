@@ -113,18 +113,6 @@
 </fieldset>
 
 <fieldset>
-  <legend>Writing Instructions (mandatory, highest priority)</legend>
-  <p class="sub" style="margin-top:0;">Saved once per Book ID. Injected into every compiled context payload — Generate, Preview, and Ask — ahead of Codex, Recent History, and manuscript memory, and its token cost is reserved before those layers see any budget, so it's the last thing trimmed, not the first. Use this for house-style/continuity rules Hanami should never violate (POV, tense, a character's fixed speech pattern, content lines it shouldn't cross), not for scene-specific detail — that belongs in the scene beat or Codex.</p>
-  <div class="row">
-    <div><textarea id="iInstructions" rows="5" placeholder="Write in third-person past tense only. Kaelen never swears, even under stress. Never resolve a scene's central tension in the same beat it's introduced."></textarea></div>
-  </div>
-  <button id="iSave">Save instructions</button>
-  <button class="secondary" id="iLoad" type="button">Reload from server</button>
-  <div id="iStatus" class="status"></div>
-  <p class="meta-line" id="iMeta"></p>
-</fieldset>
-
-<fieldset>
   <legend>Codex</legend>
 
   <div class="row">
@@ -201,6 +189,19 @@
   <div class="row">
     <div><label>Scene beat</label><textarea id="gBeat" rows="3" placeholder="Kaelen confronts the Warden at the harbor gate."></textarea></div>
   </div>
+  <p class="sub" style="margin-top:0;">Instructions for this chapter only — filled in fresh each time, never saved. Sent as explicit MUST / MUST NOT rules, placed first in the compiled context (highest priority) and the MUST NOT list is also echoed right before the scene beat itself, since a negative constraint restated closest to where generation starts is followed more reliably than one stated once further back.</p>
+  <div class="row">
+    <div>
+      <label>Instructions for this chapter (MUST)</label>
+      <textarea id="gInstructions" rows="2" placeholder="Write entirely from Kaelen's POV. Keep the pacing slow and tense."></textarea>
+      <p class="meta-line" id="gInstructionsMeta"></p>
+    </div>
+    <div>
+      <label>Avoid in this chapter (MUST NOT — negative prompt)</label>
+      <textarea id="gAvoid" rows="2" placeholder="Do not reveal Sera's pregnancy. Do not let the Warden die in this scene."></textarea>
+      <p class="meta-line" id="gAvoidMeta"></p>
+    </div>
+  </div>
   <details>
     <summary>Optional: recent history text (Layer 2 source — trailing ~2000 words used)</summary>
     <div class="row"><div><textarea id="gHistory" rows="5" placeholder="Paste the manuscript text immediately before the cursor..."></textarea></div></div>
@@ -215,6 +216,9 @@
   <div id="previewBlock" style="display:none; margin-top:16px;">
     <p class="meta-line" id="previewMeta"></p>
     <pre id="previewOutput"></pre>
+
+    <p class="meta-line" style="margin-top:14px;">User turn actually sent to Hanami (scene beat, with the MUST NOT reminder re-echoed immediately before it if set):</p>
+    <pre id="previewUserMessage"></pre>
 
     <p class="meta-line" style="margin-top:14px;">Layer 3 (Deep Past) — chapters expanded into the context above (a matched chunk pulls in its surrounding chapter, not just itself, until the remaining token budget runs out):</p>
     <table>
@@ -311,62 +315,12 @@ async function checkHealth() {
 $("apiBase").addEventListener("change", checkHealth);
 checkHealth();
 
-// ---- Writing Instructions ----
 // Rough client-side mirror of estimateTokens() in src/lib/tokenBudget.ts
-// (~4 chars/token) so the cap can be shown live while typing, without a
-// round trip.
+// (~4 chars/token) so per-field caps can be shown live while typing,
+// without a round trip.
 function estimateTokensClientSide(text) {
   return text ? Math.ceil(text.length / 4) : 0;
 }
-const INSTRUCTIONS_TOKEN_CAP = 600;
-
-function updateInstructionsMeta() {
-  const tokens = estimateTokensClientSide($("iInstructions").value);
-  const over = tokens > INSTRUCTIONS_TOKEN_CAP;
-  $("iMeta").textContent =
-    "~" + tokens + " / " + INSTRUCTIONS_TOKEN_CAP + " estimated tokens" +
-    (over ? " — will be truncated to fit the cap when compiled" : "");
-  $("iMeta").style.color = over ? "#c0392b" : "";
-}
-$("iInstructions").addEventListener("input", updateInstructionsMeta);
-
-async function loadInstructions() {
-  const bookId = $("bookId").value.trim();
-  if (!bookId) { setStatus($("iStatus"), "Enter a Book ID above to load instructions.", "error"); return; }
-  setStatus($("iStatus"), "Loading...");
-  try {
-    const res = await fetch(apiBase() + "/api/v1/instructions?bookId=" + encodeURIComponent(bookId));
-    const data = await parseJsonResponse(res);
-    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-    $("iInstructions").value = data.instructions || "";
-    updateInstructionsMeta();
-    setStatus($("iStatus"), "Loaded.", "ok");
-  } catch (err) {
-    setStatus($("iStatus"), String(err.message || err), "error");
-  }
-}
-$("iLoad").addEventListener("click", loadInstructions);
-
-$("iSave").addEventListener("click", async () => {
-  const bookId = $("bookId").value.trim();
-  if (!bookId) { setStatus($("iStatus"), "Enter a Book ID above to save instructions.", "error"); return; }
-  $("iSave").disabled = true;
-  setStatus($("iStatus"), "Saving...");
-  try {
-    const res = await fetch(apiBase() + "/api/v1/instructions", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookId, instructions: $("iInstructions").value }),
-    });
-    const data = await parseJsonResponse(res);
-    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-    setStatus($("iStatus"), "Saved. Will be injected into every generation for this Book ID from now on.", "ok");
-  } catch (err) {
-    setStatus($("iStatus"), String(err.message || err), "error");
-  } finally {
-    $("iSave").disabled = false;
-  }
-});
 
 // ---- Codex ----
 async function loadCodex() {
@@ -615,6 +569,34 @@ $("bStop").addEventListener("click", () => {
 // ---- Generate prose (streamed) ----
 let activeAbort = null;
 
+// Shared by Generate and Preview so both always send the same fields —
+// including the fresh, per-chapter MUST/MUST NOT instructions, which are
+// never saved and only ever come from these two fields at click time.
+function buildGenerateBody() {
+  const body = {
+    userId: $("userId").value.trim(),
+    bookId: $("bookId").value.trim(),
+    userSceneBeat: $("gBeat").value.trim(),
+  };
+  if ($("gHistory").value.trim()) body.recentHistoryText = $("gHistory").value;
+  if ($("gInstructions").value.trim()) body.chapterInstructions = $("gInstructions").value;
+  if ($("gAvoid").value.trim()) body.chapterAvoid = $("gAvoid").value;
+  return body;
+}
+
+const CHAPTER_INSTRUCTIONS_TOKEN_CAP = 500;
+function updateChapterInstructionsMeta() {
+  const combined = estimateTokensClientSide($("gInstructions").value) + estimateTokensClientSide($("gAvoid").value);
+  const over = combined > CHAPTER_INSTRUCTIONS_TOKEN_CAP;
+  const note = "~" + combined + " / " + CHAPTER_INSTRUCTIONS_TOKEN_CAP + " combined estimated tokens" +
+    (over ? " — will be truncated to fit when compiled" : "");
+  $("gInstructionsMeta").textContent = note;
+  $("gInstructionsMeta").style.color = over ? "#c0392b" : "";
+  $("gAvoidMeta").style.color = over ? "#c0392b" : "";
+}
+$("gInstructions").addEventListener("input", updateChapterInstructionsMeta);
+$("gAvoid").addEventListener("input", updateChapterInstructionsMeta);
+
 // Shared by the Generate flow and the standalone Preview button: fetches
 // the compiled Layer 1/2/3 context and renders it into previewBlock so you
 // can see exactly what's about to be sent to Hanami. Retrieval itself
@@ -637,6 +619,7 @@ async function showContextPreview(body) {
   $("previewMeta").textContent =
     "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
   $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";
+  $("previewUserMessage").textContent = data.userMessage || "";
 
   const expandedChapterTable = $("expandedChapterTable");
   expandedChapterTable.innerHTML = "";
@@ -676,16 +659,11 @@ async function showContextPreview(body) {
 }
 
 $("gGenerate").addEventListener("click", async () => {
-  const userId = $("userId").value.trim();
-  const bookId = $("bookId").value.trim();
-  const userSceneBeat = $("gBeat").value.trim();
-  if (!userId || !bookId || !userSceneBeat) {
+  const body = buildGenerateBody();
+  if (!body.userId || !body.bookId || !body.userSceneBeat) {
     setStatus($("gStatus"), "User ID, Book ID, and a scene beat are required.", "error");
     return;
   }
-
-  const body = { userId, bookId, userSceneBeat };
-  if ($("gHistory").value.trim()) body.recentHistoryText = $("gHistory").value;
 
   $("gOutput").textContent = "";
   $("gMeta").textContent = "";
@@ -753,16 +731,11 @@ $("gStop").addEventListener("click", () => {
 
 // ---- Context preview (Layer 1/2/3 compiled payload, no LLM call) ----
 $("gPreview").addEventListener("click", async () => {
-  const userId = $("userId").value.trim();
-  const bookId = $("bookId").value.trim();
-  const userSceneBeat = $("gBeat").value.trim();
-  if (!userId || !bookId || !userSceneBeat) {
+  const body = buildGenerateBody();
+  if (!body.userId || !body.bookId || !body.userSceneBeat) {
     setStatus($("gStatus"), "User ID, Book ID, and a scene beat are required.", "error");
     return;
   }
-
-  const body = { userId, bookId, userSceneBeat };
-  if ($("gHistory").value.trim()) body.recentHistoryText = $("gHistory").value;
 
   $("gPreview").disabled = true;
   setStatus($("gStatus"), "Compiling context...");

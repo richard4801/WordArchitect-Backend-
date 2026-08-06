@@ -24,30 +24,52 @@ bloating the LLM's context window.
 ## Dual-Layer Context Engine
 
 `POST /api/v1/generate-prose` accepts a user's scene beat and autonomously
-compiles context from three parallel layers — plus an optional, mandatory
-Writing Instructions block ranked above all three — before invoking Hanami.
+compiles context from three parallel layers — plus optional, mandatory
+per-chapter instructions ranked above all three — before invoking Hanami.
 No layer depends on manually authored summaries.
 
-### Layer 0 — Writing Instructions (Mandatory, Highest Priority)
+### Layer 0 — Instructions For This Chapter (Mandatory, Highest Priority)
 
-A per-book, writer-authored block of house-style/continuity rules Hanami
-must follow — POV, tense, a character's fixed speech pattern, a line the
-prose should never cross. Saved once via `GET/PUT /api/v1/instructions`
-(edited in the test UI's "Writing Instructions" panel, `src/services/
-bookInstructions.ts`, `book_instructions` table — one row per `book_id`,
-upserted on save) and then injected into every compiled context payload —
-`/generate-prose`, `/generate-prose/preview`, and `/ask` alike — without
-the writer having to repeat it per scene beat.
+Fresh, per-generation `MUST` / `MUST NOT` directives for the chapter about
+to be written — e.g. "write entirely from Kaelen's POV" (MUST) or "don't
+reveal Sera's pregnancy yet" (MUST NOT, i.e. a negative prompt). Entered
+directly in the test UI's Generate Prose form (`chapterInstructions` /
+`chapterAvoid` fields) alongside the scene beat, on every call — **not
+saved anywhere**. A writer fills this in fresh before writing a given
+chapter; nothing here silently carries over to the next one. (An earlier
+version of this persisted a single saved-per-book instructions block that
+was always injected — deliberately reworked into this per-generation form
+because "guides every chapter forever" and "guides the chapter I'm about
+to write" are different needs, and conflating them meant there was no way
+to say "don't do X" for just this one scene.)
 
-Ranked above Layer 1/2/3 in two ways: it's the first section in the
-compiled payload (models weight instructions near the start more heavily),
-and its token cost is measured and reserved before any other layer sees
-its budget, making it the last thing trimmed rather than the first. Capped
-at ~600 tokens (`INSTRUCTIONS_TOKEN_BUDGET` in `src/services/rag.ts`) and
-truncated if longer, so a very long saved block can't consume the entire
-4,000+100 ceiling and starve Codex/History/RAG entirely — it's meant for
-concise governing rules, not a full style guide. Empty by default; costs
-nothing when unset.
+Split into two fields rather than one free-text box specifically so a
+negative constraint is structurally unambiguous — Hanami is far more
+likely to actually enforce "don't reveal X" when it's a syntactically
+distinct `MUST NOT` rule than when it's one sentence inside a paragraph it
+can read as ambient description. Built by `buildChapterInstructionsSection`
+in `src/services/rag.ts`.
+
+Ranked above Layer 1/2/3 in three ways, not just token priority:
+- **Placement**: first section in the compiled system prompt (models
+  weight instructions near the start more heavily).
+- **Budget priority**: its token cost is measured and reserved before any
+  other layer sees its budget, making it the last thing trimmed rather
+  than the first. Capped at ~500 tokens combined (`CHAPTER_INSTRUCTIONS_
+  TOKEN_BUDGET` in `rag.ts`) and truncated if longer, so an unusually long
+  do/avoid list can't consume the entire 4,000+100 ceiling and starve
+  Codex/History/RAG entirely.
+- **Recency reinforcement**: the `MUST NOT` list is *also* echoed by
+  `buildUserMessage` in `src/routes/generateProse.ts`, restated
+  immediately before the scene beat in the user turn Hanami actually
+  writes from. Instructions closest to where generation starts are
+  weighted more heavily than the same instruction stated once further
+  back in a long prompt — this matters most for negative constraints,
+  since nothing later in generation naturally reinforces "don't."
+
+Empty by default; costs nothing when unset. Applies to `/generate-prose`
+and `/generate-prose/preview`; not sent to `/ask`, which is a retrieval
+diagnostic rather than a real generation.
 
 ### Layer 1 — Codex (Explicit Match)
 
@@ -129,8 +151,8 @@ whole beat as a single concept if expansion fails for any reason.
 
 ## Strict Context Boundary
 
-The **total compiled prompt payload** (Layer 0 Writing Instructions +
-Layer 1 + Layer 2 + Layer 3 + the fixed system-prompt scaffolding from
+The **total compiled prompt payload** (Layer 0 this-chapter's instructions
++ Layer 1 + Layer 2 + Layer 3 + the fixed system-prompt scaffolding from
 `buildSystemPrompt`/`buildAskSystemPrompt`) **must remain under ~4,000
 tokens, with up to 100 tokens of tolerance (4,100 hard ceiling)**.
 
@@ -146,8 +168,8 @@ Layer 3's chapter expansion (above) is greedy and stops as soon as the
 next whole chunk would exceed what's left, so it lands at or slightly
 under budget rather than over it.
 
-Priority order when trimming to fit budget: Layer 0 (Writing
-Instructions) > Layer 1 (Codex) > Layer 2 (Recent History) > Layer 3
+Priority order when trimming to fit budget: Layer 0 (this chapter's
+instructions) > Layer 1 (Codex) > Layer 2 (Recent History) > Layer 3
 (Deep Past RAG).
 
 ## Database Schema
@@ -155,17 +177,6 @@ Instructions) > Layer 1 (Codex) > Layer 2 (Recent History) > Layer 3
 Defined in `supabase/migrations/001_init_schema.sql`. Every table is scoped
 by `book_id` (and `user_id`) so retrieval never crosses between books or
 accounts.
-
-### `book_instructions` (Layer 0 source)
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `book_id` | UUID PK | one row per book, no separate `id`/`user_id` — upserted on save |
-| `instructions` | TEXT NOT NULL DEFAULT `''` | full text as saved; truncated to ~600 tokens only at compile time (`buildInstructionsSection` in `rag.ts`), not on write |
-| `updated_at` | TIMESTAMPTZ | default `NOW()`, bumped on every save |
-
-Added in migration `008_book_instructions.sql`. Managed via
-`GET/PUT /api/v1/instructions` (see Content Management API below).
 
 ### `codex_entries` (Layer 1 source)
 
@@ -248,11 +259,6 @@ second round-trip per match just to look up its position.
 
 Endpoints that keep the Codex and manuscript memory populated and up to date
 as a writer works — separate from `/generate-prose`'s read-only retrieval path.
-
-### Writing Instructions (`src/routes/instructions.ts`)
-
-- `GET /api/v1/instructions?bookId=` — fetch the saved instructions for a book (`{ instructions: "" }` if none saved yet)
-- `PUT /api/v1/instructions` — `{ bookId, instructions }`, upserts the single row for that book
 
 ### Codex CRUD (`src/routes/codex.ts`)
 

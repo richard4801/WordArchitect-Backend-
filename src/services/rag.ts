@@ -3,7 +3,6 @@ import { estimateTokens, truncateToTokenBudget } from "../lib/tokenBudget.js";
 import { textMentionsAnyOf } from "../lib/textMatch.js";
 import { generateEmbedding } from "./embedding.js";
 import { expandSceneBeatConcepts } from "./queryExpansion.js";
-import { getBookInstructions } from "./bookInstructions.js";
 import type { CodexEntry, ManuscriptChunkMatch } from "../types/domain.js";
 
 // The hard ceiling from CLAUDE.md's Strict Context Boundary: Layer 1 + 2 +
@@ -19,13 +18,13 @@ const TOTAL_TOKEN_BUDGET = 4000;
 const BUDGET_TOLERANCE_TOKENS = 100;
 const SECTION_SEPARATOR = "\n\n---\n\n";
 
-// Writing Instructions sit above every layer in priority — see
-// buildInstructionsSection below. Capped (unlike a hard requirement to
-// include it in full) so a very long saved instructions block can't eat
-// the entire 4,100-token ceiling and starve Codex/History/RAG outright;
-// 600 tokens is generous for house-style/continuity rules without being
-// able to crowd out actual story context.
-const INSTRUCTIONS_TOKEN_BUDGET = 600;
+// Per-chapter instructions (entered fresh before each generation, not
+// saved) sit above every retrieval layer in priority — see
+// buildChapterInstructionsSection below. Capped so an unusually long
+// do/avoid list can't eat the entire 4,100-token ceiling and starve
+// Codex/History/RAG outright; this is meant for a handful of concrete
+// directives for the chapter about to be written, not a full style guide.
+const CHAPTER_INSTRUCTIONS_TOKEN_BUDGET = 500;
 
 const LAYER1_TOKEN_BUDGET = 800;
 const LAYER2_MAX_WORDS = 2000;
@@ -50,6 +49,14 @@ export interface AssembleContextParams {
   bookId: string;
   userSceneBeat: string;
   recentHistoryText: string;
+  // Fresh, per-generation directives for the chapter about to be written —
+  // entered in the Generate Prose form, not saved anywhere. Distinct
+  // do/avoid fields rather than one free-text block so a negative
+  // constraint ("don't reveal the pregnancy yet") is structurally
+  // unambiguous rather than buried in prose Hanami might read as
+  // description instead of a rule.
+  chapterInstructions?: string;
+  chapterAvoid?: string;
   // Tokens already spoken for outside Layer 1/2/3 — i.e. the system
   // prompt's fixed instructional scaffolding, which the caller owns
   // (buildSystemPrompt in generateProse.ts) so this stays decoupled from
@@ -95,25 +102,36 @@ function formatCodexEntry(entry: Layer1CodexRow): string {
   return lines.join("\n");
 }
 
-// Writing Instructions — mandatory house-style/continuity rules a writer
-// sets once per book (via /api/v1/instructions, edited in the test UI's
-// Instructions tab). Ranked above Layer 1/2/3 in both placement (first
-// section in the compiled payload) and budget: its token cost is folded
-// into usedTokens before any other layer is measured, so it's the last
-// thing trimmed, not the first. Framed with imperative "mandatory" language
-// so it reads as a rule Hanami must follow, not ambient world context.
-async function buildInstructionsSection(bookId: string): Promise<string> {
-  const instructions = await getBookInstructions(bookId);
-  if (!instructions.trim()) return "";
+// Fresh, per-generation directives for the chapter about to be written —
+// ranked above Layer 1/2/3 in both placement (first section in the
+// compiled payload) and budget: its token cost is folded into usedTokens
+// before any other layer is measured, so it's the last thing trimmed, not
+// the first. Explicit MUST / MUST NOT lists rather than one prose block:
+// an LLM is far more likely to actually enforce a negative constraint
+// ("don't reveal the pregnancy yet") when it's a syntactically distinct
+// rule than when it's a sentence it can read past as ambient description.
+// The MUST NOT list is deliberately also echoed by the caller right
+// before the scene beat in the user turn (see buildChapterReminder in
+// generateProse.ts) — instructions near the end of the prompt, closest to
+// where generation actually starts, get weighted more heavily than the
+// same instruction stated once further back, which matters most for
+// negative constraints since there's nothing later in generation that
+// reinforces "don't."
+function buildChapterInstructionsSection(chapterInstructions?: string, chapterAvoid?: string): string {
+  const must = chapterInstructions?.trim();
+  const mustNot = chapterAvoid?.trim();
+  if (!must && !mustNot) return "";
 
-  const truncated = truncateToTokenBudget(instructions.trim(), INSTRUCTIONS_TOKEN_BUDGET);
-  return [
-    "## Writing Instructions — Mandatory, Highest Priority",
-    "",
-    "Follow these rules above the Codex, recent history, and manuscript memory below whenever they conflict.",
-    "",
-    truncated,
-  ].join("\n");
+  const lines = ["## Instructions For This Chapter — Mandatory, Highest Priority", ""];
+  lines.push("Follow these rules above the Codex, recent history, and manuscript memory below whenever they conflict.");
+  if (must) {
+    lines.push("", "MUST:", must);
+  }
+  if (mustNot) {
+    lines.push("", "MUST NOT:", mustNot);
+  }
+
+  return truncateToTokenBudget(lines.join("\n"), CHAPTER_INSTRUCTIONS_TOKEN_BUDGET);
 }
 
 // Layer 1 — Codex (Explicit Match): scans the scene beat for known
@@ -433,24 +451,25 @@ export interface AssembleContextResult {
   estimatedTotalTokens: number;
 }
 
-// Compiles the context payload for a scene beat: Writing Instructions
-// (highest priority) + Layer 1 (Codex) + Layer 2 (Recent History) + Layer 3
-// (Deep Past RAG). Instructions and Layer 1's lookup and Layer 3's
-// candidate-gathering all run concurrently (independent round trips);
-// Layer 2 is a pure local slice. Instructions is measured first, then
-// Layer 1 and 2, so Layer 3's actual token budget reflects whatever's
-// genuinely left — any budget the higher-priority sections don't use goes
-// to Layer 3 instead of being left on the table, see TOTAL_TOKEN_BUDGET
-// above for why.
+// Compiles the context payload for a scene beat: this chapter's
+// instructions (highest priority) + Layer 1 (Codex) + Layer 2 (Recent
+// History) + Layer 3 (Deep Past RAG). Layer 1's lookup and Layer 3's
+// candidate-gathering run concurrently (independent round trips); Layer 2
+// is a pure local slice, and the chapter instructions section is built
+// synchronously from the request itself (no DB round trip — it's never
+// saved). The instructions section is measured first, then Layer 1 and 2,
+// so Layer 3's actual token budget reflects whatever's genuinely left —
+// any budget the higher-priority sections don't use goes to Layer 3
+// instead of being left on the table, see TOTAL_TOKEN_BUDGET above for why.
 export async function assembleContextPayload(params: AssembleContextParams): Promise<AssembleContextResult> {
-  const { bookId, userSceneBeat, recentHistoryText, reservedTokens = 0 } = params;
+  const { bookId, userSceneBeat, recentHistoryText, chapterInstructions, chapterAvoid, reservedTokens = 0 } = params;
 
-  const [instructions, layer1, layer3Gathered] = await Promise.all([
-    buildInstructionsSection(bookId),
+  const [layer1, layer3Gathered] = await Promise.all([
     buildLayer1Codex(bookId, userSceneBeat),
     gatherLayer3Candidates(bookId, userSceneBeat),
   ]);
   const layer2 = buildLayer2RecentHistory(recentHistoryText);
+  const instructions = buildChapterInstructionsSection(chapterInstructions, chapterAvoid);
 
   const sections: string[] = [];
   let usedTokens = reservedTokens;

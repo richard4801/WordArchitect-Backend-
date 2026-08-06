@@ -10,6 +10,12 @@ interface GenerateProseBody {
   bookId: string;
   userSceneBeat: string;
   recentHistoryText?: string;
+  // Fresh, per-generation instructions for the chapter about to be
+  // written — not saved anywhere, entered on this call only. See
+  // buildChapterInstructionsSection in rag.ts for how these get priority
+  // over Codex/History/RAG in the compiled context.
+  chapterInstructions?: string;
+  chapterAvoid?: string;
 }
 
 function validateGenerateProseBody(body: Record<string, unknown>): string | null {
@@ -25,6 +31,12 @@ function validateGenerateProseBody(body: Record<string, unknown>): string | null
   if (body.recentHistoryText !== undefined && typeof body.recentHistoryText !== "string") {
     return "recentHistoryText must be a string when provided.";
   }
+  if (body.chapterInstructions !== undefined && typeof body.chapterInstructions !== "string") {
+    return "chapterInstructions must be a string when provided.";
+  }
+  if (body.chapterAvoid !== undefined && typeof body.chapterAvoid !== "string") {
+    return "chapterAvoid must be a string when provided.";
+  }
   return null;
 }
 
@@ -37,6 +49,19 @@ const SYSTEM_PROMPT_INSTRUCTIONS = [
 export function buildSystemPrompt(contextPayload: string): string {
   const context = contextPayload || "No prior codex, history, or manuscript memory is available yet.";
   return [SYSTEM_PROMPT_INSTRUCTIONS, "", context].join("\n");
+}
+
+// The MUST NOT list also appears once already, at the top of the compiled
+// context (buildChapterInstructionsSection in rag.ts). Restating it here,
+// immediately before the scene beat Hanami is about to continue from, is
+// deliberate: instructions closest to the point of generation get weighted
+// more heavily than the same instruction stated once earlier in a long
+// prompt, and that matters most for a negative constraint, since nothing
+// later in generation naturally reinforces "don't."
+export function buildUserMessage(userSceneBeat: string, chapterAvoid?: string): string {
+  const avoid = chapterAvoid?.trim();
+  if (!avoid) return userSceneBeat;
+  return [`Reminder before you write — do NOT: ${avoid}`, "", userSceneBeat].join("\n");
 }
 
 // The fixed instructional scaffolding's token cost, reserved up front so
@@ -58,7 +83,8 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
     return;
   }
 
-  const { userId, bookId, userSceneBeat, recentHistoryText } = body as unknown as GenerateProseBody;
+  const { userId, bookId, userSceneBeat, recentHistoryText, chapterInstructions, chapterAvoid } =
+    body as unknown as GenerateProseBody;
 
   try {
     const { payload, layer3Candidates, expandedChapters, estimatedTotalTokens } = await assembleContextPayload({
@@ -66,13 +92,17 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
       bookId,
       userSceneBeat,
       recentHistoryText: recentHistoryText ?? "",
+      chapterInstructions: chapterInstructions ?? "",
+      chapterAvoid: chapterAvoid ?? "",
       reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
     });
     const systemPrompt = buildSystemPrompt(payload);
+    const userMessage = buildUserMessage(userSceneBeat, chapterAvoid);
 
     res.json({
       contextPayload: payload,
       systemPrompt,
+      userMessage,
       estimatedTokens: estimateTokens(systemPrompt),
       estimatedTotalTokens,
       layer3Candidates,
@@ -93,7 +123,8 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
     return;
   }
 
-  const { userId, bookId, userSceneBeat, recentHistoryText } = body as unknown as GenerateProseBody;
+  const { userId, bookId, userSceneBeat, recentHistoryText, chapterInstructions, chapterAvoid } =
+    body as unknown as GenerateProseBody;
 
   try {
     const { payload } = await assembleContextPayload({
@@ -101,11 +132,14 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
       bookId,
       userSceneBeat,
       recentHistoryText: recentHistoryText ?? "",
+      chapterInstructions: chapterInstructions ?? "",
+      chapterAvoid: chapterAvoid ?? "",
       reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
     });
 
     const systemPrompt = buildSystemPrompt(payload);
-    await streamHanamiProse(systemPrompt, userSceneBeat, res);
+    const userMessage = buildUserMessage(userSceneBeat, chapterAvoid);
+    await streamHanamiProse(systemPrompt, userMessage, res);
   } catch (error) {
     console.error("generate-prose failed:", error);
 
