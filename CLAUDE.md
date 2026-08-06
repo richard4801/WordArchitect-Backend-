@@ -71,6 +71,43 @@ Empty by default; costs nothing when unset. Applies to `/generate-prose`
 and `/generate-prose/preview`; not sent to `/ask`, which is a retrieval
 diagnostic rather than a real generation.
 
+#### Inline (parenthetical) instructions in the scene beat
+
+A second, positional way to give Hanami a directive: wrap a note in the
+scene beat itself in `(parentheses)` — e.g. "he opens the door (describe
+the cold air first) and steps in" — to scope an instruction to that exact
+point in the scene, rather than the whole chapter (that's what
+Instructions For This Chapter, above, is for). Only `()` triggers this;
+`[]`/`{}`/`<>` are always left as plain text with no special meaning, so a
+character's own bracket usage in dialogue or narration is never misread as
+a directive. Live-highlighted in the test UI's scene beat field as you
+type (`buildBeatHighlightHtml` in `public/index.html`) so it's visually
+obvious what's being read as an instruction versus prose.
+
+`markBracketedInstructions` (`src/lib/bracketInstructions.ts`) rewrites
+each matched span into an explicit `<<DIRECTIVE: ...>>` tag before the beat
+is sent, kept exactly where the writer placed it — `buildUserMessage`
+(`generateProse.ts`) prepends a one-line explanation of the convention
+whenever at least one tag is present. Deliberately **not** part of the
+compiled context (`assembleContextPayload`) at all: the whole point is to
+put the instruction directly in the one message Hanami is actually writing
+from, not have it compete with Codex/History/RAG further up the prompt.
+
+The tag is `<<DIRECTIVE: ...>>` rather than the more obvious
+`[INSTRUCTION: ...]` — testing found Hanami (an RP-tuned model with a
+learned habit of bracketed OOC asides) would occasionally imitate a
+single-bracket-style tag and fabricate one of its own into the output,
+roughly 1 in 3-4 generations with the original format. Double angle
+brackets sit further from that learned convention and reduced it, but
+this is a mitigation, not a guarantee, so `stripLeakedDirectiveTags` in
+`src/services/llm.ts` is the actual backstop: it wraps both
+`streamHanamiProse` and `generateHanamiProse`, buffering just enough of
+the token stream to detect and drop any `<<DIRECTIVE: ...>>`-shaped span
+that leaks into the real output, whether or not the current generation
+used the syntax itself. An unterminated open tag (no closing `>>` ever
+arrives) is flushed as plain text at the end of the stream rather than
+held forever, so it fails safe rather than silently swallowing content.
+
 ### Layer 1 — Codex (Explicit Match)
 
 Direct string/alias lookup against saved character, location, and lore

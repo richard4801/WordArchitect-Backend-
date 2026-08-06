@@ -86,6 +86,40 @@
   }
   .meta-line { font-size: 0.78rem; color: var(--muted); margin-top: 8px; }
   details summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
+  /* Live highlight for (parenthetical) inline instructions in the scene
+     beat: a backdrop div sits behind the real textarea, rendering the same
+     text with matched (...) spans marked, while the textarea itself stays
+     transparent so typed text shows through normally and only the
+     highlight color comes from the backdrop beneath it. Font metrics must
+     match exactly between the two layers or the highlight drifts out of
+     alignment with the actual characters. */
+  .beat-highlight-wrap { position: relative; }
+  .beat-highlight-backdrop {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 7px 9px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow: auto;
+    pointer-events: none;
+    color: transparent;
+  }
+  .beat-highlight-backdrop mark {
+    background: rgba(109, 74, 255, 0.28);
+    color: transparent;
+    border-radius: 3px;
+  }
+  .beat-highlight-wrap textarea {
+    position: relative;
+    background: transparent;
+    line-height: 1.4;
+  }
 </style>
 </head>
 <body>
@@ -187,7 +221,13 @@
 <fieldset>
   <legend>Generate prose</legend>
   <div class="row">
-    <div><label>Scene beat</label><textarea id="gBeat" rows="3" placeholder="Kaelen confronts the Warden at the harbor gate."></textarea></div>
+    <div>
+      <label>Scene beat — wrap text in (parentheses) for an inline instruction at that exact point</label>
+      <div class="beat-highlight-wrap">
+        <div class="beat-highlight-backdrop" id="gBeatBackdrop" aria-hidden="true"></div>
+        <textarea id="gBeat" rows="3" placeholder="Kaelen confronts the Warden at the harbor gate (describe the rain first) and refuses to back down."></textarea>
+      </div>
+    </div>
   </div>
   <p class="sub" style="margin-top:0;">Instructions for this chapter only — filled in fresh each time, never saved. Sent as explicit MUST / MUST NOT rules, placed first in the compiled context (highest priority) and the MUST NOT list is also echoed right before the scene beat itself, since a negative constraint restated closest to where generation starts is followed more reliably than one stated once further back.</p>
   <div class="row">
@@ -565,6 +605,41 @@ $("bStop").addEventListener("click", () => {
     setStatus($("bStatus"), "Found a paused import for book " + saved.bookId + ". Click Resume last import to continue.");
   }
 })();
+
+// ---- Scene beat (parenthetical) instruction highlighting ----
+// Mirrors markBracketedInstructions in src/lib/bracketInstructions.ts:
+// only () triggers highlighting — any other bracket type is left as plain
+// text with no special meaning, matching what the backend actually treats
+// as an instruction.
+const BEAT_BRACKET_PATTERN = /\(([^()]*)\)/g;
+
+function buildBeatHighlightHtml(text) {
+  BEAT_BRACKET_PATTERN.lastIndex = 0;
+  let html = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = BEAT_BRACKET_PATTERN.exec(text)) !== null) {
+    html += escapeHtml(text.slice(lastIndex, match.index));
+    html += "<mark>" + escapeHtml(match[0]) + "</mark>";
+    lastIndex = match.index + match[0].length;
+  }
+  html += escapeHtml(text.slice(lastIndex));
+  // A textarea's trailing empty line has height; a div's doesn't unless it
+  // has content — without this the backdrop falls a line short and drifts
+  // out of alignment as soon as the beat ends with a newline.
+  if (text.endsWith("\n")) html += " ";
+  return html;
+}
+
+function updateBeatHighlight() {
+  $("gBeatBackdrop").innerHTML = buildBeatHighlightHtml($("gBeat").value);
+}
+$("gBeat").addEventListener("input", updateBeatHighlight);
+$("gBeat").addEventListener("scroll", () => {
+  $("gBeatBackdrop").scrollTop = $("gBeat").scrollTop;
+  $("gBeatBackdrop").scrollLeft = $("gBeat").scrollLeft;
+});
+updateBeatHighlight();
 
 // ---- Generate prose (streamed) ----
 let activeAbort = null;

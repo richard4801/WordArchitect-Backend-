@@ -1,5 +1,6 @@
 import type { Response } from "express";
 import { getEnvVar } from "../lib/env.js";
+import { DIRECTIVE_OPEN, DIRECTIVE_CLOSE } from "../lib/bracketInstructions.js";
 
 const HANAMI_MODEL = "Sao10K-L3.1-70B-Hanami-x1";
 const TEMPERATURE = 0.85;
@@ -77,6 +78,59 @@ async function* streamHanamiTokens(
   }
 }
 
+// Finds the longest suffix of `text` that's also a prefix of `pattern` —
+// i.e. how much of a partial match could still complete into `pattern` if
+// more text arrives. Used to hold back exactly that much when streaming,
+// so a tag split across two token chunks (e.g. "<<DIREC" + "TIVE: ...")
+// is never emitted piecemeal before it's known whether it's really a tag.
+function longestPartialSuffixMatch(text: string, pattern: string): number {
+  const max = Math.min(text.length, pattern.length - 1);
+  for (let len = max; len > 0; len--) {
+    if (text.endsWith(pattern.slice(0, len))) return len;
+  }
+  return 0;
+}
+
+// Backstop against Hanami imitating and echoing its own <<DIRECTIVE: ...>>
+// tag into the actual prose (observed in testing — an RP-tuned model has a
+// learned habit of bracketed OOC asides, and a fabricated tag of its own
+// can slip through even with an explicit "never do this" instruction).
+// Buffers only while a potential tag might be forming, so normal streaming
+// is unaffected outside that rare case; a genuine tag span (open...close)
+// is dropped entirely rather than passed through.
+async function* stripLeakedDirectiveTags(tokens: AsyncGenerator<string>): AsyncGenerator<string> {
+  let buffer = "";
+  for await (const token of tokens) {
+    buffer += token;
+
+    while (true) {
+      const openIndex = buffer.indexOf(DIRECTIVE_OPEN);
+      if (openIndex === -1) {
+        const holdBack = longestPartialSuffixMatch(buffer, DIRECTIVE_OPEN);
+        if (buffer.length > holdBack) {
+          yield buffer.slice(0, buffer.length - holdBack);
+          buffer = buffer.slice(buffer.length - holdBack);
+        }
+        break;
+      }
+
+      if (openIndex > 0) {
+        yield buffer.slice(0, openIndex);
+        buffer = buffer.slice(openIndex);
+      }
+
+      const closeIndex = buffer.indexOf(DIRECTIVE_CLOSE);
+      if (closeIndex === -1) {
+        // Tag has started but hasn't fully arrived — wait for more tokens
+        // rather than risk emitting a partial tag.
+        break;
+      }
+      buffer = buffer.slice(closeIndex + DIRECTIVE_CLOSE.length);
+    }
+  }
+  if (buffer) yield buffer;
+}
+
 // Streams Hanami prose generation chunk-by-chunk directly onto the Express
 // response as it arrives — used by /generate-prose for the browser test UI.
 export async function streamHanamiProse(systemPrompt: string, userPrompt: string, res: Response): Promise<void> {
@@ -85,7 +139,7 @@ export async function streamHanamiProse(systemPrompt: string, userPrompt: string
   res.setHeader("Connection", "keep-alive");
 
   try {
-    for await (const token of streamHanamiTokens(systemPrompt, userPrompt)) {
+    for await (const token of stripLeakedDirectiveTags(streamHanamiTokens(systemPrompt, userPrompt))) {
       res.write(token);
     }
   } finally {
@@ -109,7 +163,7 @@ export async function generateHanamiProse(
   temperature?: number
 ): Promise<string> {
   let full = "";
-  for await (const token of streamHanamiTokens(systemPrompt, userPrompt, temperature)) {
+  for await (const token of stripLeakedDirectiveTags(streamHanamiTokens(systemPrompt, userPrompt, temperature))) {
     full += token;
   }
   return full;

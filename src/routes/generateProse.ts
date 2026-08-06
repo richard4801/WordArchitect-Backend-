@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { assembleContextPayload } from "../services/rag.js";
 import { streamHanamiProse, generateHanamiProse } from "../services/llm.js";
 import { estimateTokens } from "../lib/tokenBudget.js";
+import { markBracketedInstructions } from "../lib/bracketInstructions.js";
 
 export const generateProseRouter = Router();
 
@@ -58,10 +59,30 @@ export function buildSystemPrompt(contextPayload: string): string {
 // more heavily than the same instruction stated once earlier in a long
 // prompt, and that matters most for a negative constraint, since nothing
 // later in generation naturally reinforces "don't."
+//
+// Bracketed (parenthetical) notes inside the beat itself are rewritten
+// into explicit [INSTRUCTION: ...] tags by markBracketedInstructions —
+// deliberately kept out of the compiled context (assembleContextPayload)
+// entirely, since the point is to put them directly in the one message
+// Hanami is actually writing from, not have them compete for attention
+// with Codex/History/RAG further up the prompt.
 export function buildUserMessage(userSceneBeat: string, chapterAvoid?: string): string {
+  const { text: beatWithDirectives, instructionCount } = markBracketedInstructions(userSceneBeat);
+  const parts: string[] = [];
+
   const avoid = chapterAvoid?.trim();
-  if (!avoid) return userSceneBeat;
-  return [`Reminder before you write — do NOT: ${avoid}`, "", userSceneBeat].join("\n");
+  if (avoid) {
+    parts.push(`Reminder before you write — do NOT: ${avoid}`, "");
+  }
+  if (instructionCount > 0) {
+    parts.push(
+      "The scene beat below contains <<DIRECTIVE: ...>> tags at specific points. Each is an instruction for exactly that moment in the scene — follow it silently. Never write the tag's text, punctuation, or brackets into your response, and never invent or add a <<DIRECTIVE: ...>> tag of your own anywhere in your output.",
+      ""
+    );
+  }
+  parts.push(beatWithDirectives);
+
+  return parts.join("\n");
 }
 
 // The fixed instructional scaffolding's token cost, reserved up front so
