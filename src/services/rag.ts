@@ -3,6 +3,7 @@ import { estimateTokens, truncateToTokenBudget } from "../lib/tokenBudget.js";
 import { textMentionsAnyOf } from "../lib/textMatch.js";
 import { generateEmbedding } from "./embedding.js";
 import { expandSceneBeatConcepts } from "./queryExpansion.js";
+import { getBookInstructions } from "./bookInstructions.js";
 import type { CodexEntry, ManuscriptChunkMatch } from "../types/domain.js";
 
 // The hard ceiling from CLAUDE.md's Strict Context Boundary: Layer 1 + 2 +
@@ -17,6 +18,14 @@ const TOTAL_TOKEN_BUDGET = 4000;
 // not fine to blow past this by more than a small margin.
 const BUDGET_TOLERANCE_TOKENS = 100;
 const SECTION_SEPARATOR = "\n\n---\n\n";
+
+// Writing Instructions sit above every layer in priority — see
+// buildInstructionsSection below. Capped (unlike a hard requirement to
+// include it in full) so a very long saved instructions block can't eat
+// the entire 4,100-token ceiling and starve Codex/History/RAG outright;
+// 600 tokens is generous for house-style/continuity rules without being
+// able to crowd out actual story context.
+const INSTRUCTIONS_TOKEN_BUDGET = 600;
 
 const LAYER1_TOKEN_BUDGET = 800;
 const LAYER2_MAX_WORDS = 2000;
@@ -84,6 +93,27 @@ function formatCodexEntry(entry: Layer1CodexRow): string {
   }
 
   return lines.join("\n");
+}
+
+// Writing Instructions — mandatory house-style/continuity rules a writer
+// sets once per book (via /api/v1/instructions, edited in the test UI's
+// Instructions tab). Ranked above Layer 1/2/3 in both placement (first
+// section in the compiled payload) and budget: its token cost is folded
+// into usedTokens before any other layer is measured, so it's the last
+// thing trimmed, not the first. Framed with imperative "mandatory" language
+// so it reads as a rule Hanami must follow, not ambient world context.
+async function buildInstructionsSection(bookId: string): Promise<string> {
+  const instructions = await getBookInstructions(bookId);
+  if (!instructions.trim()) return "";
+
+  const truncated = truncateToTokenBudget(instructions.trim(), INSTRUCTIONS_TOKEN_BUDGET);
+  return [
+    "## Writing Instructions — Mandatory, Highest Priority",
+    "",
+    "Follow these rules above the Codex, recent history, and manuscript memory below whenever they conflict.",
+    "",
+    truncated,
+  ].join("\n");
 }
 
 // Layer 1 — Codex (Explicit Match): scans the scene beat for known
@@ -403,16 +433,20 @@ export interface AssembleContextResult {
   estimatedTotalTokens: number;
 }
 
-// Compiles the three-layer context payload for a scene beat. Layer 1's
-// lookup and Layer 3's candidate-gathering run concurrently (both are
-// independent round trips); Layer 2 is a pure local slice. Layer 3's
-// actual token budget is computed only after Layer 1 and 2's real usage
-// is known, so any budget they don't use goes to Layer 3 instead of being
-// left on the table — see TOTAL_TOKEN_BUDGET above for why.
+// Compiles the context payload for a scene beat: Writing Instructions
+// (highest priority) + Layer 1 (Codex) + Layer 2 (Recent History) + Layer 3
+// (Deep Past RAG). Instructions and Layer 1's lookup and Layer 3's
+// candidate-gathering all run concurrently (independent round trips);
+// Layer 2 is a pure local slice. Instructions is measured first, then
+// Layer 1 and 2, so Layer 3's actual token budget reflects whatever's
+// genuinely left — any budget the higher-priority sections don't use goes
+// to Layer 3 instead of being left on the table, see TOTAL_TOKEN_BUDGET
+// above for why.
 export async function assembleContextPayload(params: AssembleContextParams): Promise<AssembleContextResult> {
   const { bookId, userSceneBeat, recentHistoryText, reservedTokens = 0 } = params;
 
-  const [layer1, layer3Gathered] = await Promise.all([
+  const [instructions, layer1, layer3Gathered] = await Promise.all([
+    buildInstructionsSection(bookId),
     buildLayer1Codex(bookId, userSceneBeat),
     gatherLayer3Candidates(bookId, userSceneBeat),
   ]);
@@ -421,6 +455,10 @@ export async function assembleContextPayload(params: AssembleContextParams): Pro
   const sections: string[] = [];
   let usedTokens = reservedTokens;
 
+  if (instructions) {
+    sections.push(instructions);
+    usedTokens += estimateTokens(instructions) + estimateTokens(SECTION_SEPARATOR);
+  }
   if (layer1) {
     const section = `## Codex — Relevant Characters, Locations & Lore\n\n${layer1}`;
     sections.push(section);

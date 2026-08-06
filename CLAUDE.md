@@ -24,8 +24,30 @@ bloating the LLM's context window.
 ## Dual-Layer Context Engine
 
 `POST /api/v1/generate-prose` accepts a user's scene beat and autonomously
-compiles context from three parallel layers before invoking Hanami. No layer
-depends on manually authored summaries.
+compiles context from three parallel layers — plus an optional, mandatory
+Writing Instructions block ranked above all three — before invoking Hanami.
+No layer depends on manually authored summaries.
+
+### Layer 0 — Writing Instructions (Mandatory, Highest Priority)
+
+A per-book, writer-authored block of house-style/continuity rules Hanami
+must follow — POV, tense, a character's fixed speech pattern, a line the
+prose should never cross. Saved once via `GET/PUT /api/v1/instructions`
+(edited in the test UI's "Writing Instructions" panel, `src/services/
+bookInstructions.ts`, `book_instructions` table — one row per `book_id`,
+upserted on save) and then injected into every compiled context payload —
+`/generate-prose`, `/generate-prose/preview`, and `/ask` alike — without
+the writer having to repeat it per scene beat.
+
+Ranked above Layer 1/2/3 in two ways: it's the first section in the
+compiled payload (models weight instructions near the start more heavily),
+and its token cost is measured and reserved before any other layer sees
+its budget, making it the last thing trimmed rather than the first. Capped
+at ~600 tokens (`INSTRUCTIONS_TOKEN_BUDGET` in `src/services/rag.ts`) and
+truncated if longer, so a very long saved block can't consume the entire
+4,000+100 ceiling and starve Codex/History/RAG entirely — it's meant for
+concise governing rules, not a full style guide. Empty by default; costs
+nothing when unset.
 
 ### Layer 1 — Codex (Explicit Match)
 
@@ -107,30 +129,43 @@ whole beat as a single concept if expansion fails for any reason.
 
 ## Strict Context Boundary
 
-The **total compiled prompt payload** (Layer 1 + Layer 2 + Layer 3 +
-instructions/scaffolding) **must remain under ~4,000 tokens, with up to
-100 tokens of tolerance (4,100 hard ceiling)**.
+The **total compiled prompt payload** (Layer 0 Writing Instructions +
+Layer 1 + Layer 2 + Layer 3 + the fixed system-prompt scaffolding from
+`buildSystemPrompt`/`buildAskSystemPrompt`) **must remain under ~4,000
+tokens, with up to 100 tokens of tolerance (4,100 hard ceiling)**.
 
 This exists to preserve ~28,000 tokens of free context headroom out of
-Hanami's 32k window for uninterrupted prose generation. Unlike the old
-fixed-per-layer budgets, the layers now pool this budget: Layer 1 and
-Layer 2 are measured first (by actual token usage, not their nominal
-caps), and Layer 3 receives whatever remains, up to the 4,000+100 ceiling
-— it's fine, and expected, to spend that remainder down to the tolerance
-rather than leave it unused, since unused budget here means Hanami gets
-less real context, not a safety margin worth preserving. Layer 3's
-chapter expansion (above) is greedy and stops as soon as the next whole
-chunk would exceed what's left, so it lands at or slightly under budget
-rather than over it.
+Hanami's 32k window for uninterrupted prose generation. The layers pool
+this budget rather than each getting a fixed slice: Layer 0, then Layer 1,
+then Layer 2 are measured in that order (by actual token usage, not their
+nominal caps), and Layer 3 receives whatever remains, up to the 4,000+100
+ceiling — it's fine, and expected, to spend that remainder down to the
+tolerance rather than leave it unused, since unused budget here means
+Hanami gets less real context, not a safety margin worth preserving.
+Layer 3's chapter expansion (above) is greedy and stops as soon as the
+next whole chunk would exceed what's left, so it lands at or slightly
+under budget rather than over it.
 
-Priority order when trimming to fit budget: Layer 1 (Codex) > Layer 2
-(Recent History) > Layer 3 (Deep Past RAG).
+Priority order when trimming to fit budget: Layer 0 (Writing
+Instructions) > Layer 1 (Codex) > Layer 2 (Recent History) > Layer 3
+(Deep Past RAG).
 
 ## Database Schema
 
 Defined in `supabase/migrations/001_init_schema.sql`. Every table is scoped
 by `book_id` (and `user_id`) so retrieval never crosses between books or
 accounts.
+
+### `book_instructions` (Layer 0 source)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `book_id` | UUID PK | one row per book, no separate `id`/`user_id` — upserted on save |
+| `instructions` | TEXT NOT NULL DEFAULT `''` | full text as saved; truncated to ~600 tokens only at compile time (`buildInstructionsSection` in `rag.ts`), not on write |
+| `updated_at` | TIMESTAMPTZ | default `NOW()`, bumped on every save |
+
+Added in migration `008_book_instructions.sql`. Managed via
+`GET/PUT /api/v1/instructions` (see Content Management API below).
 
 ### `codex_entries` (Layer 1 source)
 
@@ -213,6 +248,11 @@ second round-trip per match just to look up its position.
 
 Endpoints that keep the Codex and manuscript memory populated and up to date
 as a writer works — separate from `/generate-prose`'s read-only retrieval path.
+
+### Writing Instructions (`src/routes/instructions.ts`)
+
+- `GET /api/v1/instructions?bookId=` — fetch the saved instructions for a book (`{ instructions: "" }` if none saved yet)
+- `PUT /api/v1/instructions` — `{ bookId, instructions }`, upserts the single row for that book
 
 ### Codex CRUD (`src/routes/codex.ts`)
 
