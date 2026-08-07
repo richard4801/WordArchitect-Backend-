@@ -688,9 +688,9 @@ async function showContextPreview(body) {
   const data = await parseJsonResponse(res);
   if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
 
-  const budgetNote = data.estimatedTokens > 4100
-    ? " — over the 4,000 (+100 tolerance) token budget!"
-    : " (budget: ~4,000, up to 4,100 tolerated)";
+  const budgetNote = data.estimatedTokens > 6100
+    ? " — over the 6,000 (+100 tolerance) token budget!"
+    : " (budget: ~6,000, up to 6,100 tolerated)";
   $("previewMeta").textContent =
     "~" + data.estimatedTokens + " estimated tokens" + budgetNote;
   $("previewOutput").textContent = data.systemPrompt || "(empty — no Codex, history, or manuscript memory matched yet)";

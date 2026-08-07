@@ -57,7 +57,7 @@ Ranked above Layer 1/2/3 in three ways, not just token priority:
   other layer sees its budget, making it the last thing trimmed rather
   than the first. Capped at ~500 tokens combined (`CHAPTER_INSTRUCTIONS_
   TOKEN_BUDGET` in `rag.ts`) and truncated if longer, so an unusually long
-  do/avoid list can't consume the entire 4,000+100 ceiling and starve
+  do/avoid list can't consume the entire 6,000+100 ceiling and starve
   Codex/History/RAG entirely.
 - **Recency reinforcement**: the `MUST NOT` list is *also* echoed by
   `buildUserMessage` in `src/routes/generateProse.ts`, restated
@@ -148,7 +148,7 @@ otherwise a concept with generally higher-scoring matches could still
 crowd out a less-dominant one when merging. Falls back to treating the
 whole beat as a single concept if expansion fails for any reason.
 
-- Budget: **whatever remains of the 4,000-token total after Layer 1,
+- Budget: **whatever remains of the 6,000-token total after Layer 1,
   Layer 2, and the fixed prompt scaffolding** — see Strict Context
   Boundary below. Not a fixed sub-budget: a fixed 1,000-token Layer 3
   cap routinely left hundreds of tokens on the table when Layer 1/2
@@ -190,14 +190,26 @@ whole beat as a single concept if expansion fails for any reason.
 
 The **total compiled prompt payload** (Layer 0 this-chapter's instructions
 + Layer 1 + Layer 2 + Layer 3 + the fixed system-prompt scaffolding from
-`buildSystemPrompt`/`buildAskSystemPrompt`) **must remain under ~4,000
-tokens, with up to 100 tokens of tolerance (4,100 hard ceiling)**.
+`buildSystemPrompt`/`buildAskSystemPrompt`) **must remain under ~6,000
+tokens, with up to 100 tokens of tolerance (6,100 hard ceiling)**.
 
-This exists to preserve ~28,000 tokens of free context headroom out of
-Hanami's 32k window for uninterrupted prose generation. The layers pool
-this budget rather than each getting a fixed slice: Layer 0, then Layer 1,
-then Layer 2 are measured in that order (by actual token usage, not their
-nominal caps), and Layer 3 receives whatever remains, up to the 4,000+100
+Raised from an original 4,000 after checking real usage against a live
+172-chapter book: a realistic "continue writing" beat with pasted recent
+history was landing at 4,095-4,096/4,100 — maxed out — and squeezing a
+second genuinely relevant chapter down to ~100 tokens purely because the
+budget ran out, not because it was less relevant. At 6,000, the same beats
+landed at 5,933-6,031/6,100 and both got three full expanded chapters
+instead of two full plus a fragment. Not a permanently settled number —
+worth re-checking against real usage again if it starts happening at 6,000
+too, the same way 4,000 did.
+
+This exists to preserve context headroom out of Hanami's 32k window for
+uninterrupted prose generation (~26,000 tokens free at the current 6,000
+cap) — raising it further has a real ceiling, since the compiled context
+and the generated chapter share the same 32k window. The layers pool this
+budget rather than each getting a fixed slice: Layer 0, then Layer 1, then
+Layer 2 are measured in that order (by actual token usage, not their
+nominal caps), and Layer 3 receives whatever remains, up to the 6,000+100
 ceiling — it's fine, and expected, to spend that remainder down to the
 tolerance rather than leave it unused, since unused budget here means
 Hanami gets less real context, not a safety margin worth preserving.
@@ -389,7 +401,7 @@ a custom connector for brainstorming sessions with the writer.
 
 **Why this exists**: Hanami has no content guardrails but a small (32k)
 context window and no judgment — it only ever sees what the automatic
-Layer 1/2/3 pipeline finds, bounded by the 4,000-token budget. Claude has
+Layer 1/2/3 pipeline finds, bounded by the 6,000-token budget. Claude has
 much more context and real reasoning, but won't write the content this
 platform needs. The MCP server lets Claude do the understanding — reading
 broadly across the Codex and manuscript, catching inconsistencies a single

@@ -87,14 +87,14 @@ export function buildUserMessage(userSceneBeat: string, chapterAvoid?: string): 
 
 // The fixed instructional scaffolding's token cost, reserved up front so
 // assembleContextPayload's dynamic Layer 3 budget accounts for it — without
-// this, Layer 3 could fill the payload right up to the 4,000/4,100 cap and
+// this, Layer 3 could fill the payload right up to the 6,000/6,100 cap and
 // the scaffolding wrapped around it would push the real system prompt over.
 const RESERVED_SCAFFOLDING_TOKENS = estimateTokens(`${SYSTEM_PROMPT_INSTRUCTIONS}\n\n`);
 
 // Runs the same Layer 1/2/3 context assembly as /generate-prose but returns
 // the compiled payload as JSON instead of invoking Hanami — lets the test
 // UI (and other callers) inspect exactly what would be sent as the system
-// prompt, and confirm it stays under the 4,000-token budget from CLAUDE.md.
+// prompt, and confirm it stays under the 6,000-token budget from CLAUDE.md.
 generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const validationError = validateGenerateProseBody(body);
@@ -191,7 +191,7 @@ function validateDirectGenerateBody(body: Record<string, unknown>): string | nul
 
 // Bypasses Layer 1/2/3 assembly entirely: the caller (an MCP client like
 // Claude, which can hold and reason over far more manuscript/Codex
-// context than the automatic pipeline's fixed 4,000-token budget allows)
+// context than the automatic pipeline's fixed 6,000-token budget allows)
 // supplies the fully-compiled context directly, and this just runs it
 // straight to Hanami. No userId/bookId needed — this endpoint never
 // touches Supabase at all, purely a Hanami passthrough. Returns the

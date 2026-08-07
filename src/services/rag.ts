@@ -12,8 +12,14 @@ import type { CodexEntry, ManuscriptChunkMatch } from "../types/domain.js";
 // instead of going to Layer 3 — the difference between a full chapter of
 // context and one isolated fragment. Layer 3 now gets whatever's left
 // after Layer 1/2/scaffolding, not a fixed slice.
-const TOTAL_TOKEN_BUDGET = 4000;
-// It's fine to land slightly over 4,000 rather than leave budget unused —
+// Raised from 4,000 to 6,000 based on real usage against a live 172-chapter
+// book: a realistic "continue writing" beat with pasted recent history was
+// landing at 4,095-4,096/4,100 — maxed out — and squeezing a second
+// relevant chapter down to ~100 tokens purely because the budget ran out,
+// not because it was less relevant. Still leaves ~26,000 tokens of
+// headroom in Hanami's 32k window for the actual generated chapter.
+const TOTAL_TOKEN_BUDGET = 6000;
+// It's fine to land slightly over budget rather than leave it unused —
 // not fine to blow past this by more than a small margin.
 const BUDGET_TOLERANCE_TOKENS = 100;
 const SECTION_SEPARATOR = "\n\n---\n\n";
@@ -21,7 +27,7 @@ const SECTION_SEPARATOR = "\n\n---\n\n";
 // Per-chapter instructions (entered fresh before each generation, not
 // saved) sit above every retrieval layer in priority — see
 // buildChapterInstructionsSection below. Capped so an unusually long
-// do/avoid list can't eat the entire 4,100-token ceiling and starve
+// do/avoid list can't eat the entire 6,100-token ceiling and starve
 // Codex/History/RAG outright; this is meant for a handful of concrete
 // directives for the chapter about to be written, not a full style guide.
 const CHAPTER_INSTRUCTIONS_TOKEN_BUDGET = 500;
