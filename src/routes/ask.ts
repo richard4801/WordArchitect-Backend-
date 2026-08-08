@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { assembleContextPayload } from "../services/rag.js";
 import { generateHanamiProse } from "../services/llm.js";
 import { estimateTokens } from "../lib/tokenBudget.js";
+import { getBookFacts, formatBookFactsSection } from "../services/bookFacts.js";
 
 export const askRouter = Router();
 
@@ -30,7 +31,8 @@ function validateAskBody(body: Record<string, unknown>): string | null {
 // instead of surfacing it.
 const ASK_SYSTEM_INSTRUCTIONS = [
   "You are a precise story-continuity assistant answering a question about a novel in progress.",
-  "Answer using ONLY the compiled context below — Codex entries and manuscript memory. Do not invent or infer details that are not explicitly present in it.",
+  "Answer using ONLY the compiled context below — Book Facts, Codex entries, and manuscript memory. Do not invent or infer details that are not explicitly present in it.",
+  "Book Facts are exact, computed facts about the manuscript's structure (e.g. the highest chapter number written). If the question is about the manuscript's structure or progress, prefer Book Facts over inferring from Codex/manuscript memory.",
   "Be as specific as the context allows (names, numbers, exact wording) rather than vague or general.",
   "If the exact answer isn't present, share the closest relevant detail that is, and say plainly what's missing — do not just refuse.",
   "Only say the context has nothing relevant if it truly doesn't touch the question at all.",
@@ -70,21 +72,26 @@ askRouter.post("/ask", async (req: Request, res: Response) => {
   const { userId, bookId, question } = body as unknown as AskBody;
 
   try {
+    const bookFacts = await getBookFacts(bookId);
+    const bookFactsSection = formatBookFactsSection(bookFacts);
+    const bookFactsTokens = estimateTokens(bookFactsSection) + estimateTokens("\n\n---\n\n");
+
     const { payload, layer3Candidates, expandedChapters, estimatedTotalTokens } = await assembleContextPayload({
       userId,
       bookId,
       userSceneBeat: question,
       recentHistoryText: "",
-      reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
+      reservedTokens: RESERVED_SCAFFOLDING_TOKENS + bookFactsTokens,
     });
 
-    const systemPrompt = buildAskSystemPrompt(payload);
+    const fullContext = [bookFactsSection, payload].filter(Boolean).join("\n\n---\n\n");
+    const systemPrompt = buildAskSystemPrompt(fullContext);
     const answer = await generateHanamiProse(systemPrompt, question, ASK_TEMPERATURE);
 
     res.json({
       answer,
-      contextPayload: payload,
-      estimatedTotalTokens,
+      contextPayload: fullContext,
+      estimatedTotalTokens: estimatedTotalTokens + bookFactsTokens,
       layer3Candidates,
       expandedChapters,
     });

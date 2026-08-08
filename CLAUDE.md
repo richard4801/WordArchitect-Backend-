@@ -221,6 +221,33 @@ Priority order when trimming to fit budget: Layer 0 (this chapter's
 instructions) > Layer 1 (Codex) > Layer 2 (Recent History) > Layer 3
 (Deep Past RAG).
 
+## `POST /api/v1/ask` — Retrieval Accuracy Diagnostic
+
+Not prose generation: asks Hanami a direct factual question using the same
+Layer 1/3 retrieval `/generate-prose` relies on (Layer 2 is skipped — a
+question has no cursor position), instructed via a stricter system prompt
+to answer only from the compiled context and say plainly when it can't,
+at a low temperature (0.2, vs. prose generation's 0.85) since precision
+matters more than creative variation here. Exists to separate two
+failure modes that look identical from prose output alone: retrieval
+finding the wrong/no context, vs. Hanami failing to use context it was
+actually given. Built in `src/routes/ask.ts`.
+
+**Book Facts**: prepended ahead of Codex/manuscript memory, computed via
+the `get_book_facts` RPC (`src/services/bookFacts.ts`) rather than
+retrieval — highest chapter number written, total chapters ingested,
+total manuscript chunks. Exists because a question like "what's the last
+chapter written?" is an aggregate fact about the corpus, not something
+vector similarity can answer: there's no meaningful "closest match" to
+the concept of "lastness," so retrieval-based questioning answered it
+with a different, essentially arbitrary chapter on every attempt. Must be
+a server-side SQL aggregate, not a client-side fetch-and-reduce — an
+earlier version fetched all `manuscript_chunks` rows for the book and
+computed `MAX`/`COUNT DISTINCT` in JS, which is silently wrong on any book
+with more than 1,000 chunks because PostgREST caps an unbounded
+`.select()` at 1,000 rows by default. Caught via a real 2,303-chunk book
+reporting chapter 313 as the highest instead of the real 377.
+
 ## Database Schema
 
 Defined in `supabase/migrations/001_init_schema.sql`. Every table is scoped
@@ -297,6 +324,16 @@ function since Postgres requires that for a return-signature change) so
 Layer 3's chapter expansion (above) knows which chapter to fetch and
 where the match sits within it — without this, expansion would need a
 second round-trip per match just to look up its position.
+
+### `get_book_facts` RPC (`/ask`'s Book Facts)
+
+`get_book_facts(target_book_id UUID) RETURNS TABLE(highest_chapter INT, total_chapters INT, total_chunks INT)`
+
+Single SQL aggregate (`MAX`, `COUNT(DISTINCT chapter_number)`, `COUNT(*)`)
+scoped to `target_book_id`, added in migration `010_book_facts.sql`.
+Deliberately a server-side aggregate rather than fetching rows to compute
+in JS — see Book Facts above for why that was tried first and was
+silently wrong past 1,000 chunks.
 
 ### Indexes
 
