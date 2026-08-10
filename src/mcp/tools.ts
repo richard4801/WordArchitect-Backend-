@@ -13,6 +13,7 @@ import {
   listSceneDraftSessions,
   finishSceneDraftSession,
 } from "../services/sceneDraftSessions.js";
+import { diffDrafts } from "../lib/textDiff.js";
 import { VALID_CODEX_ENTRY_TYPES } from "../types/domain.js";
 import type { CodexEntryType, ManuscriptChunkMatch } from "../types/domain.js";
 
@@ -287,7 +288,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Generate Prose (Direct)",
       description:
-        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise.",
+        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed.",
       inputSchema: {
         sceneBeat: z.string().describe("The scene beat to write"),
         compiledContext: z
@@ -338,7 +339,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Record Scene Draft Iteration",
       description:
-        "Logs one generate-critique pass in a scene draft session: the instruction you actually gave Hanami (MUST/MUST NOT directives, bracketed beat notes — be specific, not vague), the draft it produced, your honest critique of it, which plot points it satisfied, and what's still wrong. Call this after every generate_prose_direct call you make as part of a session, not just the last one — the point is a real audit trail the writer can inspect, not a single final summary. Updates the session's current draft and checklist. If you're going to revise again, take the draftText you just recorded here and paste it verbatim into your next generate_prose_direct call — Hanami is stateless and won't remember writing it, so this tool call is what carries that continuity forward, not Hanami's own memory. Consider pausing to check in with the writer after a few passes rather than iterating indefinitely without one.",
+        "Logs one generate-critique pass in a scene draft session: the instruction you actually gave Hanami (MUST/MUST NOT directives, bracketed beat notes — be specific, not vague), the draft it produced, your honest critique of it, which plot points it satisfied, and what's still wrong. Call this after every generate_prose_direct call you make as part of a session, not just the last one — the point is a real audit trail the writer can inspect, not a single final summary. Updates the session's current draft and checklist. The response includes diffFromPrevious — an automatic word-level diff (format: {-removed-} / {+added+}) against the draft before this pass. Read it before trusting your own satisfiedPlotPoints claim: Hanami can silently drop or alter content outside the change you asked for even at narrow scope, and this is caught by checking the diff, not by re-reading the whole draft. If you're going to revise again, take the draftText you just recorded here and paste it verbatim into your next generate_prose_direct call — Hanami is stateless and won't remember writing it, so this tool call is what carries that continuity forward, not Hanami's own memory. Consider pausing to check in with the writer after a few passes rather than iterating indefinitely without one.",
       inputSchema: {
         sessionId: z.string().describe("The scene draft session ID"),
         draftText: z.string().describe("The draft Hanami produced this pass"),
@@ -353,7 +354,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ sessionId, draftText, instructionsGiven, critique, satisfiedPlotPoints, openIssues }) => {
       try {
-        const session = await recordSceneDraftIteration({
+        const result = await recordSceneDraftIteration({
           sessionId,
           draftText,
           instructionsGiven,
@@ -361,7 +362,28 @@ export function registerWordArchitectTools(server: McpServer): void {
           satisfiedPlotPoints,
           openIssues,
         });
-        return textResult(JSON.stringify(session, null, 2));
+        return textResult(JSON.stringify(result, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "diff_drafts",
+    {
+      title: "Diff Drafts",
+      description:
+        "Word-level diff between two pieces of text (format: {-removed-} / {+added+}, plus word-added/word-removed counts). Use this to verify a Hanami revision actually did what you asked and nothing else — e.g. diff a locked paragraph before/after a pass that was only supposed to touch a different paragraph, or diff the full scene against an earlier accepted version before finishing a session. record_scene_draft_iteration already returns this automatically against the previous draft in a session; call this tool directly for any other comparison — two arbitrary drafts, a single paragraph in isolation, or a draft against manuscript memory.",
+      inputSchema: {
+        oldText: z.string().describe("The earlier version"),
+        newText: z.string().describe("The later version to compare against it"),
+      },
+    },
+    async ({ oldText, newText }) => {
+      try {
+        const result = diffDrafts(oldText, newText);
+        return textResult(JSON.stringify(result, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -373,7 +395,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Get Scene Draft Session",
       description:
-        "Fetches a scene draft session's current state (draft, plot-point checklist, open issues) plus the full pass-by-pass history. Use this to resume a session — including one started in a different conversation — before continuing to iterate. Hanami itself remembers none of this; if you continue revising, paste the returned current_draft verbatim into your next generate_prose_direct call so Hanami has something concrete to revise from.",
+        "Fetches a scene draft session's current state (draft, plot-point checklist, open issues) plus the full pass-by-pass history. Each iteration includes diffFromPrevious — the word-level diff against the pass before it — so resuming shows the actual history of what changed each pass, not just critique text. Use this to resume a session — including one started in a different conversation — before continuing to iterate. Hanami itself remembers none of this; if you continue revising, paste the returned current_draft verbatim into your next generate_prose_direct call so Hanami has something concrete to revise from.",
       inputSchema: { sessionId: z.string().describe("The scene draft session ID") },
     },
     async ({ sessionId }) => {

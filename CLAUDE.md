@@ -500,6 +500,54 @@ and `record_scene_draft_iteration`'s tool descriptions both instruct
 Claude to paste the current draft verbatim into the next call when
 revising, rather than relying on memory Hanami doesn't have.
 
+**Findings from the first real supervised session** (10 real iterations
+against a live book, not synthetic testing): the workflow held up, but
+surfaced two real gaps and confirmed two Hanami behavior patterns worth
+knowing.
+
+Gaps, both addressed by `diff_drafts` (`src/lib/textDiff.ts`, word-level
+diff, `{-removed-}` / `{+added+}` format via the `diff` package):
+- Hanami silently dropped a clause during a revision pass, and nothing
+  caught it except a human manually re-reading the full draft — slow and
+  easy to miss. `record_scene_draft_iteration` now automatically diffs
+  the new draft against the one before it and returns `diffFromPrevious`
+  in its response, so a silent drop is visible the moment the pass is
+  logged, not just if someone thinks to check.
+- Resuming a session meant reading critique text but not seeing the
+  actual before/after of each pass. `get_scene_draft_session` now
+  includes `diffFromPrevious` on every iteration (computed from the
+  already-stored draft texts, nothing new persisted) — resuming shows
+  real history, not just a summary.
+- Deliberately *not* built: a server-side check that inspects `draftText`
+  and second-guesses whether a claimed `satisfiedPlotPoints` entry is
+  "really" there. That's Claude's judgment to exercise, not something to
+  fake with keyword/semantic heuristics the tool can't actually back up —
+  the same principle that's kept Hanami's own role honest all along.
+  Surfacing the diff automatically closes the practical gap instead:
+  the miss got caught by manual comparison once; an unmissable diff at
+  the point of logging is what makes that reliable instead of lucky.
+
+Hanami behavior patterns, folded into `generate_prose_direct`'s tool
+description since they're operating knowledge Claude should carry in
+rather than rediscover per project:
+- Scope discipline degrades sharply past roughly one paragraph per call
+  — a multi-paragraph pass is meaningfully more likely to drop or alter
+  content outside the intended change than a single-paragraph pass.
+- It invents small unestablished physical details (a scar, an object, an
+  expression) even under a general "avoid embellishment" instruction —
+  avoiding this needs to be explicit and specific nearly every call, not
+  assumed as default behavior.
+- Neither is 100% reliable even at narrow scope — a leak into a
+  supposedly untouched paragraph happened once even at single-paragraph
+  scope — which is exactly why diffing the result matters more than
+  trusting the scoped instruction was followed.
+
+Also surfaced, but not a tool/code issue: thin Codex coverage for
+secondary characters central to a book's arcs means the automatic Layer 1
+pipeline has nothing to inject for them regardless of retrieval quality —
+a data-entry gap the writer/Claude needs to close via `create_codex_entry`,
+not something a retrieval or prompting fix can compensate for.
+
 ### Tools
 
 Read (safe to call freely):
@@ -540,9 +588,14 @@ Supervised drafting (see "Supervised drafting" above; state lives in
 - `record_scene_draft_iteration` — `{ sessionId, draftText, instructionsGiven?, critique?, satisfiedPlotPoints?, openIssues? }`
   — call after every `generate_prose_direct` pass made as part of a
   session, not just the final one; `openIssues` replaces the previous
-  list rather than appending
+  list rather than appending; response includes `diffFromPrevious`
+  (automatic word-level diff against the prior draft)
+- `diff_drafts` — `{ oldText, newText }` — standalone word-level diff for
+  any comparison outside the automatic one above (e.g. verifying a
+  supposedly-untouched paragraph really wasn't touched)
 - `get_scene_draft_session` — `{ sessionId }` — current state plus the
-  full pass-by-pass history, for resuming
+  full pass-by-pass history, each iteration including `diffFromPrevious`
+  against the pass before it, for resuming
 - `list_scene_draft_sessions` — `{ bookId, status? }` — most recently
   updated first, for finding a session to resume
 - `finish_scene_draft_session` — `{ sessionId, finalDraft? }` — marks a
