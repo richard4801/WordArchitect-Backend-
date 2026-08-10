@@ -6,6 +6,13 @@ import { generateHanamiProse } from "../services/llm.js";
 import { buildSystemPrompt } from "../routes/generateProse.js";
 import { assembleContextPayload } from "../services/rag.js";
 import { ingestManuscriptText } from "../services/manuscriptIngest.js";
+import {
+  startSceneDraftSession,
+  recordSceneDraftIteration,
+  getSceneDraftSession,
+  listSceneDraftSessions,
+  finishSceneDraftSession,
+} from "../services/sceneDraftSessions.js";
 import { VALID_CODEX_ENTRY_TYPES } from "../types/domain.js";
 import type { CodexEntryType, ManuscriptChunkMatch } from "../types/domain.js";
 
@@ -28,7 +35,12 @@ function errorResult(message: string) {
 // unsupervised; generate_prose_direct is the payoff — it hands Hanami
 // exactly the context Claude and the writer already agreed on, bypassing
 // the automatic Layer 1/2/3 pipeline entirely so nothing gets lost
-// between "Claude understood this" and "Hanami wrote it."
+// between "Claude understood this" and "Hanami wrote it." The
+// start/record/get/list/finish_scene_draft_session tools go one step
+// further: instead of a single generate_prose_direct handoff, Claude can
+// supervise Hanami across multiple generate-critique-redirect passes on
+// one scene, with progress persisted so a session survives past the
+// conversation that started it.
 export function registerWordArchitectTools(server: McpServer): void {
   server.registerTool(
     "list_codex_entries",
@@ -288,6 +300,128 @@ export function registerWordArchitectTools(server: McpServer): void {
         const systemPrompt = buildSystemPrompt(compiledContext);
         const prose = await generateHanamiProse(systemPrompt, sceneBeat);
         return textResult(prose);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "start_scene_draft_session",
+    {
+      title: "Start Scene Draft Session",
+      description:
+        "Starts a supervised drafting session for one scene beat — use this instead of a single generate_prose_direct call when you intend to iterate with Hanami (generate, critique against the plot points from brainstorming, redirect, regenerate) rather than accept the first draft. Persists the plot-point checklist and progress so the session can be resumed later, even in a different conversation, via list_scene_draft_sessions / get_scene_draft_session. Returns the new session's ID — pass this to record_scene_draft_iteration after each pass.",
+      inputSchema: {
+        userId: z.string().describe("The user's ID"),
+        bookId: z.string().describe("The book's ID"),
+        sceneBeat: z.string().describe("The scene beat being drafted"),
+        plotPoints: z
+          .array(z.string())
+          .describe("The concrete beats/moments this scene must hit, from your brainstorming with the writer — each becomes a checklist item you mark satisfied as drafts land them"),
+        chapterNumber: z.number().int().optional().describe("Chapter number this scene belongs to, if known"),
+        label: z.string().optional().describe("Short human-readable label for this session"),
+      },
+    },
+    async ({ userId, bookId, sceneBeat, plotPoints, chapterNumber, label }) => {
+      try {
+        const session = await startSceneDraftSession({ userId, bookId, sceneBeat, plotPoints, chapterNumber, label });
+        return textResult(JSON.stringify(session, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "record_scene_draft_iteration",
+    {
+      title: "Record Scene Draft Iteration",
+      description:
+        "Logs one generate-critique pass in a scene draft session: the instruction you actually gave Hanami (MUST/MUST NOT directives, bracketed beat notes — be specific, not vague), the draft it produced, your honest critique of it, which plot points it satisfied, and what's still wrong. Call this after every generate_prose_direct call you make as part of a session, not just the last one — the point is a real audit trail the writer can inspect, not a single final summary. Updates the session's current draft and checklist. Consider pausing to check in with the writer after a few passes rather than iterating indefinitely without one.",
+      inputSchema: {
+        sessionId: z.string().describe("The scene draft session ID"),
+        draftText: z.string().describe("The draft Hanami produced this pass"),
+        instructionsGiven: z.string().optional().describe("The actual MUST/MUST NOT/bracketed instructions you gave Hanami for this pass"),
+        critique: z.string().optional().describe("Your assessment of this draft — what it got right, what you're redirecting and why"),
+        satisfiedPlotPoints: z
+          .array(z.string())
+          .optional()
+          .describe("Plot point descriptions (must match ones from startSceneDraftSession) that this draft satisfies"),
+        openIssues: z.array(z.string()).optional().describe("Current outstanding issues with the draft — replaces the previous list, not additive"),
+      },
+    },
+    async ({ sessionId, draftText, instructionsGiven, critique, satisfiedPlotPoints, openIssues }) => {
+      try {
+        const session = await recordSceneDraftIteration({
+          sessionId,
+          draftText,
+          instructionsGiven,
+          critique,
+          satisfiedPlotPoints,
+          openIssues,
+        });
+        return textResult(JSON.stringify(session, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_scene_draft_session",
+    {
+      title: "Get Scene Draft Session",
+      description:
+        "Fetches a scene draft session's current state (draft, plot-point checklist, open issues) plus the full pass-by-pass history. Use this to resume a session — including one started in a different conversation — before continuing to iterate.",
+      inputSchema: { sessionId: z.string().describe("The scene draft session ID") },
+    },
+    async ({ sessionId }) => {
+      try {
+        const result = await getSceneDraftSession(sessionId);
+        return textResult(JSON.stringify(result, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "list_scene_draft_sessions",
+    {
+      title: "List Scene Draft Sessions",
+      description:
+        "Lists scene draft sessions for a book (most recently updated first), without full iteration history. Use this to find an in-progress session to resume — e.g. when the writer asks to continue a scene you were working on together.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        status: z.enum(["in_progress", "done", "abandoned"]).optional().describe("Optional filter by status"),
+      },
+    },
+    async ({ bookId, status }) => {
+      try {
+        const sessions = await listSceneDraftSessions(bookId, status);
+        return textResult(JSON.stringify(sessions, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "finish_scene_draft_session",
+    {
+      title: "Finish Scene Draft Session",
+      description:
+        "Marks a scene draft session done once you and the writer are satisfied with the draft. This does not save it into permanent manuscript memory — call save_manuscript_scene separately once the writer actually accepts it, since finishing a draft session and accepting prose into canon are different moments.",
+      inputSchema: {
+        sessionId: z.string().describe("The scene draft session ID"),
+        finalDraft: z.string().optional().describe("The final draft text, if it differs from the last recorded iteration"),
+      },
+    },
+    async ({ sessionId, finalDraft }) => {
+      try {
+        const session = await finishSceneDraftSession(sessionId, finalDraft);
+        return textResult(JSON.stringify(session, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

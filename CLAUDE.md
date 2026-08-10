@@ -462,6 +462,24 @@ reach it. `generate_prose_direct` exists specifically to close that gap —
 it skips Layer 1/2/3 entirely and sends Hanami exactly the context Claude
 (and the writer, in conversation) already compiled.
 
+**Supervised drafting, not just a single handoff**: a single
+`generate_prose_direct` call accepts whatever Hanami returns on the first
+try. The `*_scene_draft_session` tools let Claude instead supervise —
+generate, check the draft against the plot points agreed on in
+brainstorming, redirect with a sharper instruction (the same MUST/MUST
+NOT and `(bracketed)` beat-note conventions `/generate-prose` uses),
+regenerate — across as many passes as it takes, pausing to check in with
+the writer periodically rather than looping unsupervised. Progress
+(current draft, plot-point checklist, open issues, and a full pass-by-pass
+log) is persisted in `scene_draft_sessions`/`scene_draft_iterations`
+(migration `011_scene_draft_sessions.sql`) specifically so a session
+survives past the conversation that started it — closing it, coming back
+later, even in a different Claude session, and resuming exactly where it
+left off via `get_scene_draft_session`. The iteration log is also the
+transparency mechanism: the writer can see exactly what instruction
+produced each draft and why Claude redirected it, not just a final
+summary.
+
 ### Tools
 
 Read (safe to call freely):
@@ -494,6 +512,23 @@ Generation:
   handoff problem" above. Buffers Hanami's full response and returns it
   as one result rather than streaming, since the caller is a tool result,
   not a live browser connection (`generateHanamiProse` in `llm.ts`).
+
+Supervised drafting (see "Supervised drafting" above; state lives in
+`scene_draft_sessions`/`scene_draft_iterations`, not conversation memory):
+- `start_scene_draft_session` — `{ userId, bookId, sceneBeat, plotPoints, chapterNumber?, label? }`
+  — plotPoints is the checklist from brainstorming; returns a sessionId
+- `record_scene_draft_iteration` — `{ sessionId, draftText, instructionsGiven?, critique?, satisfiedPlotPoints?, openIssues? }`
+  — call after every `generate_prose_direct` pass made as part of a
+  session, not just the final one; `openIssues` replaces the previous
+  list rather than appending
+- `get_scene_draft_session` — `{ sessionId }` — current state plus the
+  full pass-by-pass history, for resuming
+- `list_scene_draft_sessions` — `{ bookId, status? }` — most recently
+  updated first, for finding a session to resume
+- `finish_scene_draft_session` — `{ sessionId, finalDraft? }` — marks a
+  session done; deliberately does not call `save_manuscript_scene` itself,
+  since "Claude and the writer are satisfied with this draft" and "the
+  writer has accepted it into canon" are different moments
 
 ### Auth
 
