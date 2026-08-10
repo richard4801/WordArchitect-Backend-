@@ -2,6 +2,10 @@ import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { generateEmbedding } from "./embedding.js";
 
 const DEFAULT_TARGET_WORDS_PER_CHUNK = 180;
+// How many chunks to embed + insert concurrently at once. High enough to
+// meaningfully cut wall-clock time for a full chapter, low enough that a
+// very long chapter's chunks don't all fire at OpenAI in a single burst.
+const INGEST_BATCH_SIZE = 8;
 
 // A "paragraph" (from the blank-line split below) bigger than this multiple
 // of targetWords is treated as unsegmented text — e.g. a whole chapter
@@ -224,35 +228,55 @@ export async function ingestManuscriptText(
     throw new Error("ingestManuscriptText: rawText contained no non-empty paragraphs");
   }
 
+  // scene_order is assigned up front, before any async work, so ordering
+  // reflects each chunk's position in the text regardless of which
+  // embed+insert call happens to finish first once run concurrently.
+  const plannedChunks = chunks.map((chunkText, index) => ({
+    chunkText,
+    sceneOrder: nextSceneOrder + index,
+  }));
+
+  // Embedding + inserting was originally one chunk at a time in a single
+  // sequential loop — for a full chapter (20-40+ chunks) that's the same
+  // number of sequential round trips to OpenAI *and* Supabase, which in
+  // testing took ~4s for embeddings alone on a 20-chunk chapter and is
+  // slower still with the per-chunk insert also in the critical path —
+  // long enough to plausibly exceed an MCP tool call's timeout, making a
+  // live, reachable server look "unreachable" from the caller's side.
+  // Batched instead of fully unbounded so a very long chapter (50+ chunks)
+  // doesn't fire an enormous burst at OpenAI's rate limits in one go.
   const ingested: IngestedManuscriptChunk[] = [];
+  for (let i = 0; i < plannedChunks.length; i += INGEST_BATCH_SIZE) {
+    const batch = plannedChunks.slice(i, i + INGEST_BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async ({ chunkText, sceneOrder }) => {
+        const embedding = await generateEmbedding(chunkText);
+        const { data, error } = await supabase
+          .from("manuscript_chunks")
+          .insert({
+            user_id: userId,
+            book_id: bookId,
+            chapter_number: chapterNumber,
+            scene_order: sceneOrder,
+            raw_text: chunkText,
+            embedding,
+          })
+          .select("id, chapter_number, scene_order")
+          .single();
 
-  for (const chunkText of chunks) {
-    const embedding = await generateEmbedding(chunkText);
-    const { data, error } = await supabase
-      .from("manuscript_chunks")
-      .insert({
-        user_id: userId,
-        book_id: bookId,
-        chapter_number: chapterNumber,
-        scene_order: nextSceneOrder,
-        raw_text: chunkText,
-        embedding,
+        if (error) {
+          throw new Error(`Failed to store manuscript chunk (scene_order ${sceneOrder}): ${error.message}`);
+        }
+
+        return {
+          id: data.id,
+          chapter_number: data.chapter_number,
+          scene_order: data.scene_order,
+          word_count: chunkText.split(/\s+/).filter(Boolean).length,
+        };
       })
-      .select("id, chapter_number, scene_order")
-      .single();
-
-    if (error) {
-      throw new Error(`Failed to store manuscript chunk (scene_order ${nextSceneOrder}): ${error.message}`);
-    }
-
-    ingested.push({
-      id: data.id,
-      chapter_number: data.chapter_number,
-      scene_order: data.scene_order,
-      word_count: chunkText.split(/\s+/).filter(Boolean).length,
-    });
-
-    nextSceneOrder += 1;
+    );
+    ingested.push(...batchResults);
   }
 
   return ingested;

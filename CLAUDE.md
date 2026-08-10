@@ -380,6 +380,19 @@ manuscript is written — call it whenever a scene/chapter is finished (or
 once AI-generated prose from `/generate-prose` is accepted) so future
 generations can recall it.
 
+Chunks within one chapter are embedded and stored in concurrent batches
+of `INGEST_BATCH_SIZE` (8), not one at a time — `scene_order` is assigned
+to every chunk up front, before any async work starts, so ordering stays
+correct regardless of which embed+insert call happens to finish first.
+Was fully sequential originally: for a full chapter (20-40+ chunks) that
+meant the same number of sequential round trips to OpenAI *and* Supabase
+in one request, slow enough (~4s+ for embeddings alone on a 20-chunk
+chapter, measured; slower still with the per-chunk insert also in the
+critical path) to plausibly exceed an MCP tool call's timeout — making a
+live, reachable server look "unreachable" to Claude when `save_manuscript_
+scene` tried to save a real chapter. Batched rather than fully unbounded
+so a very long chapter's chunks don't all fire at OpenAI in one burst.
+
 `chunkManuscriptText` splits on blank-line paragraph breaks first; any
 resulting block still more than 2x the target chunk size (e.g. a whole
 chapter pasted with single line breaks and no blank lines at all) is force-
