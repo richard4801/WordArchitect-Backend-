@@ -79,6 +79,25 @@ mcpRouter.post("/mcp", requireMcpAuth, async (req: Request, res: Response) => {
       await server.connect(transport as Parameters<typeof server.connect>[0]);
       await transport.handleRequest(req, res, req.body);
       return;
+    } else if (sessionId) {
+      // A session ID was supplied but isn't in the in-memory map — most
+      // commonly because a redeploy restarted the process and wiped it
+      // (see the module-level comment on `transports` above). Per the MCP
+      // Streamable HTTP spec this is a 404, not a 400: a well-behaved
+      // client treats 404 on a session-bearing request as "this session
+      // expired, discard it and silently re-initialize," whereas a 400
+      // reads as a generic, unrecoverable error. Collapsing both into 400
+      // (the previous behavior) meant a client had no way to distinguish
+      // "your session is gone, just reconnect" from "something is broken,"
+      // which is exactly the failure mode observed in practice: every tool
+      // call failing after a redeploy, surviving even a manual connector
+      // toggle, because the client had no signal telling it to reinitialize.
+      res.status(404).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Session not found" },
+        id: null,
+      });
+      return;
     } else {
       res.status(400).json({
         jsonrpc: "2.0",
@@ -105,8 +124,14 @@ mcpRouter.post("/mcp", requireMcpAuth, async (req: Request, res: Response) => {
 // notifications; DELETE lets a client explicitly end its session.
 async function handleSessionRequest(req: Request, res: Response): Promise<void> {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  if (!sessionId || !transports[sessionId]) {
-    res.status(400).send("Invalid or missing session ID");
+  if (!sessionId) {
+    res.status(400).send("Missing session ID");
+    return;
+  }
+  // Present but unrecognized (e.g. a redeploy wiped it) — 404, not 400,
+  // same reasoning as the POST handler above.
+  if (!transports[sessionId]) {
+    res.status(404).send("Session not found");
     return;
   }
   await transports[sessionId].handleRequest(req, res);

@@ -632,6 +632,22 @@ session, held in an in-memory map keyed by `Mcp-Session-Id`. Fine for a
 single Render instance with no horizontal scaling; would need to move to
 a shared store if that ever changes.
 
+Every deploy restarts the process and wipes this map — any conversation
+whose session predates the deploy now carries a session ID the server no
+longer recognizes. A session ID that's present but unrecognized returns
+**404** ("Session not found"), not 400 — per the MCP Streamable HTTP
+spec, 404 on a session-bearing request is the signal a well-behaved
+client uses to silently discard the session and re-initialize, whereas
+400 reads as a generic, unrecoverable error. These used to be collapsed
+into one 400 response for both "session expired" and "genuinely
+malformed request," which left a client with no way to tell "just
+reconnect" from "something is broken" — diagnosed after every MCP tool
+call started failing for an active writer mid-session, surviving even a
+manual connector toggle, confirmed by testing the exact same request
+directly against production: a fresh `initialize` + `tools/call` worked
+immediately, proving the server itself was healthy and the problem was
+specifically the client having no recovery signal for a stale session.
+
 ## Development Stages
 
 1. Repository & Architectural Blueprint (this document)
