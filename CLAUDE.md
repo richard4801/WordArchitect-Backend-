@@ -141,11 +141,21 @@ and the totem"), and embedding the whole beat as one blended query lets
 one topic crowd out the other; searching each concept separately gives
 both a fair shot. Each concept is embedded via `text-embedding-3-small`
 and matched against previously embedded manuscript chunks using the
-cosine similarity RPC `match_manuscript_chunks`, then results are
-interleaved round-robin across concepts (best-of-A, best-of-B, ...,
-second-best-of-A, ...) rather than pooled and sorted by raw similarity —
-otherwise a concept with generally higher-scoring matches could still
-crowd out a less-dominant one when merging. Falls back to treating the
+cosine similarity RPC `match_manuscript_chunks`. Which matches *qualify*
+is decided by interleaving round-robin across concepts (best-of-A,
+best-of-B, ..., second-best-of-A, ...) rather than pooling and sorting by
+raw similarity — otherwise a concept with generally higher-scoring
+matches could crowd a less-dominant one out of consideration entirely.
+Once selected, though, the qualifying matches are re-sorted by similarity
+before anything gets expanded/budgeted (`gatherLayer3Candidates` in
+`rag.ts`) — round-robin order and similarity order are different things,
+and using round-robin order for budget allocation was a real bug: a
+concept's weaker match (an incidental background detail, going first
+purely because it's that concept's turn) could consume a full chapter's
+worth of budget before a different concept's genuinely central match
+ever got expanded, confirmed against a real generation where the scene's
+actual subject got squeezed to a ~300-token fragment while a barely-
+relevant background detail got a full chapter. Falls back to treating the
 whole beat as a single concept if expansion fails for any reason.
 
 - Budget: **whatever remains of the 6,000-token total after Layer 1,
@@ -169,9 +179,9 @@ whole beat as a single concept if expansion fails for any reason.
   margin, a known tradeoff of favoring recall over precision here.
 - **Chapter-aware expansion**: a raw vector match is one ~180-word chunk,
   too thin on its own for Hanami to follow a scene. For each match that
-  clears the threshold, in round-robin priority order and deduplicated by
-  chapter, `src/services/rag.ts` fetches every chunk belonging to that
-  chunk's `chapter_number` and expands outward from the matched
+  clears the threshold, in similarity-ranked order (highest first) and
+  deduplicated by chapter, `src/services/rag.ts` fetches every chunk
+  belonging to that chunk's `chapter_number` and expands outward from the matched
   `scene_order` (alternating forward/backward by proximity, whole-chunk
   boundaries only — never a mid-sentence truncation) until the remaining
   Layer 3 budget for this generation is used up. This is what lets a

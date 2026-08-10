@@ -319,9 +319,25 @@ async function gatherLayer3Candidates(bookId: string, sceneBeat: string): Promis
   const concepts = await expandSceneBeatConcepts(sceneBeat);
   const conceptMatches = await searchConcepts(bookId, concepts);
 
+  // selectFairlyAcrossConcepts decides WHICH matches qualify — round-robin
+  // so a strongly-covered concept can't crowd a weaker one out of
+  // consideration entirely. But its output order is round order (A's
+  // best, B's best, A's 2nd-best, ...), not similarity order, and
+  // assembleLayer3Text spends the token budget greedily in whatever order
+  // it receives matches. Left as round order, a concept's weaker match
+  // (e.g. an incidental background detail, similarity 0.55) could get a
+  // full chapter's worth of budget before a different concept's actually-
+  // central match (similarity 0.62+) ever gets a turn — confirmed against
+  // real generations, where a scene's core subject was squeezed to a
+  // ~300-token fragment while a barely-relevant background detail got a
+  // full chapter. Re-sorting by similarity here keeps round-robin's
+  // fairness at selection time while making sure budget always goes to
+  // the most relevant matches first at assembly time.
+  const winningMatches = selectFairlyAcrossConcepts(conceptMatches).sort((a, b) => b.similarity - a.similarity);
+
   return {
     candidates: buildDiagnosticCandidates(conceptMatches),
-    winningMatches: selectFairlyAcrossConcepts(conceptMatches),
+    winningMatches,
   };
 }
 
@@ -406,13 +422,14 @@ interface Layer3Assembled {
   expandedChapters: ExpandedChapterInfo[];
 }
 
-// Budget-constrained assembly phase: walks the round-robin-ranked winning
-// matches in priority order and expands each into its full surrounding
-// chapter (deduplicated — a chapter is only expanded once even if
-// multiple concepts pointed into it) until budgetTokens runs out. Greedy
-// and whole-chunk-boundary-only (no mid-sentence truncation) so it's fine
-// to land slightly under budget on the last candidate that doesn't fit,
-// rather than cut prose off mid-thought.
+// Budget-constrained assembly phase: walks the winning matches in
+// similarity order (highest first — see gatherLayer3Candidates for why
+// this isn't round-robin/selection order) and expands each into its full
+// surrounding chapter (deduplicated — a chapter is only expanded once
+// even if multiple concepts pointed into it) until budgetTokens runs out.
+// Greedy and whole-chunk-boundary-only (no mid-sentence truncation) so
+// it's fine to land slightly under budget on the last candidate that
+// doesn't fit, rather than cut prose off mid-thought.
 async function assembleLayer3Text(bookId: string, gathered: Layer3Gathered, budgetTokens: number): Promise<Layer3Assembled> {
   const candidatesById = new Map(gathered.candidates.map((c) => [c.id, c]));
   const blocks: string[] = [];
