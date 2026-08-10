@@ -480,6 +480,26 @@ transparency mechanism: the writer can see exactly what instruction
 produced each draft and why Claude redirected it, not just a final
 summary.
 
+**Every Hanami call is stateless — deliberately not a persistent chat
+session.** `generateHanamiProse`/`streamHanamiProse` send exactly one
+system message and one user message per call; Hanami has no memory of
+any previous call, including its own prior drafts. A true multi-turn
+session (replaying the full growing conversation on every revision) was
+considered and rejected: it would resend the entire prior conversation —
+compiled context plus every previous draft — on each successive pass,
+growing fast enough to crowd out the 6,000+100 budget and the generation
+itself within a few revisions, without making Hanami any better at
+self-correcting (it still has no judgment, whether or not it can "see"
+its own prior text — and models tend to anchor on a flawed prior attempt
+rather than genuinely re-approach it). A fresh, sharply-worded instruction
+each call — the same MUST/MUST NOT and recency-reinforcement techniques
+already used elsewhere — is both cheaper and more reliable. The practical
+continuity a real session would have given Hanami (seeing its own last
+draft) is still available at a fraction of the cost: `generate_prose_direct`
+and `record_scene_draft_iteration`'s tool descriptions both instruct
+Claude to paste the current draft verbatim into the next call when
+revising, rather than relying on memory Hanami doesn't have.
+
 ### Tools
 
 Read (safe to call freely):
