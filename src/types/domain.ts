@@ -115,3 +115,44 @@ export interface Book {
   created_at: string;
   updated_at: string;
 }
+
+export interface ManuscriptPart {
+  id: string;
+  book_id: string;
+  title: string;
+  order_index: number;
+  created_at: string;
+}
+
+// Loosely typed on purpose — matches the frontend's ChapterParagraph
+// shape ({ id, text, emphasis?, break?, comments?, ... }) but isn't
+// validated field-by-field server-side since that shape isn't fully
+// settled yet (see manuscriptChapters.ts's isParagraphsArray).
+export interface ChapterParagraph {
+  id: string;
+  text: string;
+  [key: string]: unknown;
+}
+
+export interface ManuscriptChapter {
+  id: string;
+  user_id: string;
+  book_id: string;
+  part_id: string | null;
+  number: number;
+  title: string | null;
+  heading: string | null;
+  complete: boolean;
+  paragraphs: ChapterParagraph[];
+  synced_to_memory_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ManuscriptScene {
+  id: string;
+  chapter_id: string;
+  title: string;
+  order_index: number;
+  created_at: string;
+}

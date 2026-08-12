@@ -424,11 +424,63 @@ Deliberately a server-side aggregate rather than fetching rows to compute
 in JS — see Book Facts above for why that was tried first and was
 silently wrong past 1,000 chunks.
 
+### `manuscript_parts` / `manuscript_chapters` / `manuscript_scenes` (rich-editor content)
+
+Added in migration `015_manuscript_chapters.sql` to close the frontend's own
+biggest documented gap: its rich-text chapter editor (paragraphs with
+emphasis/breaks/inline comments) had real formatting but nothing on this
+backend to save to — "All changes saved" was decorative, never actually
+false.
+
+Deliberately a separate set of tables from `manuscript_chunks`, not a
+reuse of it. `manuscript_chunks` is a *derived* RAG index — ~180-word
+chunks, purpose-built for Layer 2/3 retrieval. These tables are the
+*editable source of truth* for a chapter's full rich content — one row
+per chapter — independent of how that content later gets chunked for
+retrieval. Conflating the two would mean warping either the editor's data
+model to fit chunk boundaries, or retrieval chunking to fit editor
+pagination, and neither side actually needs that.
+
+| Table | Column | Type | Notes |
+| --- | --- | --- | --- |
+| `manuscript_parts` | `id` | UUID PK | |
+| | `book_id` | UUID NOT NULL | |
+| | `title` | VARCHAR(255) NOT NULL | |
+| | `order_index` | INT NOT NULL | default `0` |
+| | `created_at` | TIMESTAMPTZ | default `NOW()` |
+| `manuscript_chapters` | `id` | UUID PK | |
+| | `user_id`, `book_id` | UUID NOT NULL | |
+| | `part_id` | UUID | FK → `manuscript_parts(id)` ON DELETE SET NULL |
+| | `number` | INT NOT NULL | UNIQUE with `book_id`; the same chapter-numbering space `manuscript_chunks.chapter_number` uses |
+| | `title` | TEXT | e.g. "The Harbor Gate" |
+| | `heading` | TEXT | editor-facing display heading, e.g. "Chapter One" — kept separate from `title` per the frontend's `ChapterBody` shape |
+| | `complete` | BOOLEAN NOT NULL | default `false` |
+| | `paragraphs` | JSONB NOT NULL | array of `{ id, text, emphasis?, break?, comments?, ... }`, matching the frontend's `ChapterParagraph` shape; validated only loosely server-side (`isParagraphsArray` in `manuscriptChapters.ts` — array of objects with string `id`/`text`, everything else passes through) since inline comment threads are naturally nested per-paragraph data and the exact shape isn't fully settled on the frontend yet |
+| | `synced_to_memory_at` | TIMESTAMPTZ | null until the first sync (see below); lets a UI show "has unsynced edits" by comparing against `updated_at` |
+| | `created_at`, `updated_at` | TIMESTAMPTZ | |
+| `manuscript_scenes` | `id` | UUID PK | |
+| | `chapter_id` | UUID NOT NULL | FK → `manuscript_chapters(id)` ON DELETE CASCADE |
+| | `title` | VARCHAR(255) NOT NULL | |
+| | `order_index` | INT NOT NULL | default `0` |
+| | `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+`manuscript_scenes` is a writer-authored navigation marker within a
+chapter, not to be confused with `manuscript_chunks.scene_order` — a
+RAG chunk position assigned automatically during ingestion.
+
+No foreign key to `books(id)` on `manuscript_parts`/`manuscript_chapters`
+— same reasoning as `codex_entries`/`manuscript_chunks` (see `013_books.sql`):
+a real `book_id` already in use may not yet have a corresponding `books`
+row, and a FK here would block legitimate writes for it. `part_id` and
+`chapter_id` above *are* real foreign keys, since those referenced tables
+are wholly new with no pre-existing data to conflict with.
+
 ### Indexes
 
 - `idx_codex_entries_book_id`, `idx_manuscript_chunks_book_id` — B-tree, scope every retrieval query to one book
 - `idx_codex_entries_embedding`, `idx_manuscript_chunks_embedding` — HNSW (`vector_cosine_ops`), back the cosine-distance searches above
 - `idx_codex_relationships_book_id`, `idx_codex_relationships_from_entry`, `idx_codex_relationships_to_entry` — B-tree
+- `idx_manuscript_parts_book_id`, `idx_manuscript_chapters_book_id`, `idx_manuscript_chapters_part_id`, `idx_manuscript_scenes_chapter_id` — B-tree
 
 ## Content Management API
 
@@ -567,6 +619,60 @@ Defined in `src/services/manuscriptImportJob.ts` /
 `003_manuscript_import_jobs.sql` and `004_import_job_chapters.sql`). Not
 safe against two callers stepping the same job concurrently (no row-level
 claim/lock) — fine while the only caller is a single sequential poller.
+
+### Manuscript Chapters — rich-editor persistence (`src/routes/manuscriptChapters.ts`)
+
+The editor's actual save path — everything above (`/manuscript/chunks`,
+`/manuscript/bulk-import*`) writes directly to the RAG-optimized
+`manuscript_chunks` index. This is the separate CRUD surface for the
+chapter content itself (see the `manuscript_chapters`/`manuscript_parts`/
+`manuscript_scenes` schema above for why the two are deliberately not the
+same table).
+
+**Parts:**
+- `GET /api/v1/manuscript/parts?bookId=`
+- `POST /api/v1/manuscript/parts` — `{ bookId, title, orderIndex? }`
+- `PATCH /api/v1/manuscript/parts/:id`
+- `DELETE /api/v1/manuscript/parts/:id` — chapters referencing this part
+  have `part_id` set to `NULL`, never deleted as a side effect
+
+**Chapters:**
+- `GET /api/v1/manuscript/chapters?bookId=` — metadata only (no
+  `paragraphs`), for a chapter list/navigation view
+- `GET /api/v1/manuscript/chapters/:id` — full content (including
+  `paragraphs`) plus its scene markers
+- `POST /api/v1/manuscript/chapters` — `{ userId, bookId, number, partId?,
+  title?, heading?, complete?, paragraphs? }`; `number` must be unique per
+  book (409 on conflict)
+- `PATCH /api/v1/manuscript/chapters/:id` — the editor's autosave
+  endpoint. Deliberately cheap: it only ever writes this one row, never
+  touches `manuscript_chunks` or makes an embedding call, so autosaving on
+  every keystroke/pause costs nothing beyond a normal database write
+- `DELETE /api/v1/manuscript/chapters/:id` — deletes only this chapter's
+  editor content and its scene markers (cascades). Does **not** touch
+  `manuscript_chunks` — content already synced into Deep Past memory
+  stays retrievable even if its editor row is later removed, the same
+  non-cascading principle as `DELETE /books/:id`
+
+**Sync to memory:**
+- `POST /api/v1/manuscript/chapters/:id/sync-to-memory` — the explicit,
+  writer-triggered bridge from this chapter's editor content into Layer
+  2/3 retrieval memory. Joins the chapter's current `paragraphs` into
+  plain text, **deletes** any existing `manuscript_chunks` rows for that
+  `book_id` + chapter `number`, then re-runs the normal chunk/embed/store
+  pipeline (`ingestManuscriptText`) against the fresh text — replacing
+  rather than appending, so re-syncing an edited chapter can never leave
+  stale/duplicate chunks from a previous draft sitting in memory alongside
+  the current one. Sets `synced_to_memory_at`. Deliberately not automatic
+  on every autosave — an "Accept into manuscript memory"-style writer
+  action, since every keystroke triggering a fresh embedding pass would be
+  wasteful and would spam `manuscript_chunks` with in-progress drafts.
+
+**Scenes:**
+- `GET /api/v1/manuscript/chapters/:chapterId/scenes`
+- `POST /api/v1/manuscript/chapters/:chapterId/scenes` — `{ title, orderIndex? }`
+- `PATCH /api/v1/manuscript/scenes/:id`
+- `DELETE /api/v1/manuscript/scenes/:id`
 
 ## MCP Server
 
