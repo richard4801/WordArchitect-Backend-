@@ -334,7 +334,7 @@ accounts.
 | `book_id` | UUID NOT NULL | |
 | `name` | VARCHAR(255) NOT NULL | |
 | `aliases` | VARCHAR(255)[] | alternate names/titles scanned during Layer 1 match |
-| `entry_type` | VARCHAR(50) NOT NULL | CHECK: `character` \| `location` \| `item` \| `lore` \| `nation` \| `culture` \| `magic` \| `faction` \| `religion` \| `history` |
+| `entry_type` | VARCHAR(50) NOT NULL | `character`, or any worldbuilding category key. No longer a fixed `CHECK` enum as of migration `016_world_categories.sql` — see World Categories below |
 | `description` | TEXT NOT NULL | overview/summary; the only field always injected on a Layer 1 match |
 | `embedding` | VECTOR(1536) | reserved for future semantic Codex lookup; not used by Layer 1's deterministic string match |
 | `tier` | VARCHAR(20) | CHECK: `main` \| `supporting` \| `minor` \| `extra` |
@@ -353,6 +353,7 @@ accounts.
 | `cultural_background` | JSONB | object, e.g. `{ origin, upbringing, education, beliefs, languages }`; shape not strictly enforced server-side |
 | `strengths`, `weaknesses` | TEXT[] | human-facing only |
 | `created_at` | TIMESTAMPTZ | default `NOW()` |
+| `updated_at` | TIMESTAMPTZ | default `NOW()`, set on every `PATCH`/`update_codex_entry` call. Added in migration `016_world_categories.sql` — `codex_entries` never had one, needed for the frontend's "last updated" display (Character and `WorldEntry.updatedHours` both need it) |
 
 Managed entirely through `POST/GET/PATCH/DELETE /api/v1/codex` (see below). Only
 `description` + condensed `personality_traits`/`motivations` ever reach Hanami's
@@ -369,6 +370,54 @@ objects" / "an object" (`isObjectArray`/`isPlainObject` in
 `src/routes/codex.ts`), not against specific required keys — their exact
 shape isn't settled on the frontend yet, and a strict schema would just
 reject legitimate writes once it inevitably falls out of sync.
+
+### `world_categories` (worldbuilding category metadata)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `book_id` | UUID NOT NULL | |
+| `key` | VARCHAR(100) NOT NULL | slug, UNIQUE with `book_id`; the value stored in `codex_entries.entry_type` for entries in this category |
+| `name` | VARCHAR(255) NOT NULL | display name, e.g. "Ship Technology" |
+| `description` | TEXT | |
+| `color` | VARCHAR(50) | |
+| `icon` | VARCHAR(100) | |
+| `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+Added in migration `016_world_categories.sql`, which also **dropped**
+`codex_entries`' `entry_type` `CHECK` constraint — closing the gap between
+that constraint's original fixed list (`character` \| `location` \| `item`
+\| `lore` \| `nation` \| `culture` \| `magic` \| `faction` \| `religion` \|
+`history`, from migration `002_expand_codex_schema.sql`) and the
+frontend's open-ended, user-creatable `WorldCategoryKey` system (its
+`NewCategoryInput` lets a writer create arbitrary new categories with a
+slugified key, color, and icon — a closed enum can't represent that).
+
+Worldbuilding entries themselves are **not** a separate table — they
+already live in `codex_entries` (the non-`character` `entry_type` values
+above, including real production data predating this migration). Forking
+a dedicated table would have meant either migrating that real data or
+losing Layer 1's explicit name/alias-match coverage of it for no real
+benefit — Layer 1 (`src/services/rag.ts`) already scans `codex_entries`
+by name/alias regardless of `entry_type`, and nothing there needed to
+change. `entry_type` is now validated at the application layer as "any
+non-empty string" (`src/routes/codex.ts`) rather than a closed list;
+`world_categories` only ever adds presentation metadata (name/color/icon)
+for a key, it never gates whether an `entry_type` is "valid".
+
+This table only stores categories that have been explicitly created (with
+custom color/icon/description). `GET /api/v1/world-categories?bookId=`
+(`listWorldCategories` in `src/routes/worldCategories.ts`) merges these
+rows with any `entry_type` already in real use on the book's
+`codex_entries` that has no matching row here yet — so a book's
+pre-existing `nation`/`culture`/`magic`/`faction`/`religion`/`history`
+entries show up as categories immediately (with a derived display name,
+title-cased from the key) rather than being invisible until someone
+manually backfills a row for them. Deleting a category (`DELETE
+/api/v1/world-categories/:id`) only removes its metadata row —
+`codex_entries` rows keep their `entry_type` string as-is and just fall
+back to the derived display, the same non-cascading principle used
+everywhere else in this schema.
 
 ### `codex_relationships` (character bonds)
 
@@ -481,6 +530,7 @@ are wholly new with no pre-existing data to conflict with.
 - `idx_codex_entries_embedding`, `idx_manuscript_chunks_embedding` — HNSW (`vector_cosine_ops`), back the cosine-distance searches above
 - `idx_codex_relationships_book_id`, `idx_codex_relationships_from_entry`, `idx_codex_relationships_to_entry` — B-tree
 - `idx_manuscript_parts_book_id`, `idx_manuscript_chapters_book_id`, `idx_manuscript_chapters_part_id`, `idx_manuscript_scenes_chapter_id` — B-tree
+- `idx_world_categories_book_id` — B-tree
 
 ## Content Management API
 
@@ -533,6 +583,36 @@ sets and existing data are reconciled.
 - `GET /api/v1/codex/:id/relationships` — list relationships involving an entry (either direction)
 - `POST /api/v1/codex/:id/relationships` — create a relationship from `:id` to another entry
 - `DELETE /api/v1/codex/relationships/:relationshipId` — delete a relationship
+
+`entryType` accepts `character` or any worldbuilding category key — see
+World Categories below rather than a fixed list.
+
+### World Categories CRUD (`src/routes/worldCategories.ts`)
+
+- `GET /api/v1/world-categories?bookId=` — every category for a book:
+  explicit `world_categories` rows merged with any `entry_type` already in
+  use on the book's `codex_entries` that has no metadata row yet (see the
+  `world_categories` schema section above for why). Derived entries carry
+  `is_derived: true` and an empty `id`/`created_at`
+- `POST /api/v1/world-categories` — `{ bookId, name, key?, description?,
+  color?, icon? }`; `key` is auto-slugified from `name` when omitted
+  (lowercase, non-alphanumeric runs collapsed to `-`), matching the
+  frontend's own `NewCategoryInput` slugification so a category created
+  from either side lands on the same key. 409 if the key already exists
+  for this book
+- `PATCH /api/v1/world-categories/:id` — `name`/`description`/`color`/
+  `icon` only; `key` is immutable once created since existing
+  `codex_entries.entry_type` values reference it by string, and renaming
+  it would silently orphan them
+- `DELETE /api/v1/world-categories/:id` — deletes only the category's
+  metadata row; `codex_entries` rows using its key keep that value and
+  fall back to a derived display (see above), never cascaded
+
+Mirrored on the MCP surface as `list_world_categories` and
+`create_world_category` (`src/mcp/tools.ts`) so Claude can check what
+categories already exist before proposing an `entryType` for
+`create_codex_entry`, and create new ones the same way a writer would
+from the frontend.
 
 ### Manuscript ingestion (`src/routes/manuscript.ts`, `src/services/manuscriptIngest.ts`)
 
@@ -796,6 +876,9 @@ Read (safe to call freely):
 - `preview_automatic_context` — `{ userId, bookId, sceneBeat }` — runs the
   same Layer 1/2/3 compilation `/generate-prose` would use, as a reference
   point before deciding whether Claude can do better
+- `list_world_categories` — `{ bookId }` — every worldbuilding category
+  for a book, including derived ones (see World Categories CRUD above);
+  check this before guessing an `entryType`
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
@@ -805,6 +888,8 @@ meant to be called when the writer has actively confirmed the change in
 the conversation, never speculatively — nothing here should ever write
 unsupervised):
 - `create_codex_entry`, `update_codex_entry`
+- `create_world_category` — `{ bookId, name, key?, description?, color?,
+  icon? }`, same auto-slugify behavior as `POST /api/v1/world-categories`
 - `save_manuscript_scene` — ingests accepted prose into permanent
   manuscript memory via the existing `ingestManuscriptText` pipeline, so
   it's there for future generations (Claude-assisted or automatic) too

@@ -1,8 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import {
-  VALID_CODEX_ENTRY_TYPES as VALID_ENTRY_TYPES,
-  type CodexEntryType,
   type CodexTier,
   type CodexRelationshipStrength,
   type CharacterArcStage,
@@ -88,8 +86,11 @@ function buildEntryPayload(
     payload.name = body.name;
   }
   if (requireCore || body.entryType !== undefined) {
-    if (typeof body.entryType !== "string" || !VALID_ENTRY_TYPES.includes(body.entryType as CodexEntryType)) {
-      return { payload, error: `entryType must be one of: ${VALID_ENTRY_TYPES.join(", ")}.` };
+    // Open-ended: entryType is 'character' or any worldbuilding category
+    // key (see world_categories / worldCategories.ts) — no longer a fixed
+    // enum, since the frontend lets writers create their own categories.
+    if (typeof body.entryType !== "string" || body.entryType.trim() === "") {
+      return { payload, error: "entryType is required and must be a non-empty string." };
     }
     payload.entry_type = body.entryType;
   }
@@ -331,6 +332,7 @@ codexRouter.patch("/codex/:id", async (req: Request, res: Response) => {
     res.status(400).json({ error: "No updatable fields were provided." });
     return;
   }
+  payload.updated_at = new Date().toISOString();
 
   const supabase = getSupabaseClient();
   const { data, error } = await supabase

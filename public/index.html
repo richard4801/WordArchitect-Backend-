@@ -174,16 +174,17 @@
 
   <div class="row">
     <div><label>Name</label><input id="cName" placeholder="Kaelen Voss" /></div>
-    <div><label>Entry type</label>
-      <select id="cType">
+    <div><label>Entry type (character, or any worldbuilding category key)</label>
+      <input id="cType" list="cTypeSuggestions" placeholder="character" value="character" />
+      <datalist id="cTypeSuggestions">
         <option>character</option><option>location</option><option>item</option>
         <option>lore</option><option>nation</option><option>culture</option>
         <option>magic</option><option>faction</option><option>religion</option><option>history</option>
-      </select>
+      </datalist>
     </div>
     <div><label>Tier</label>
       <select id="cTier">
-        <option value="">(none)</option><option>main</option><option>supporting</option><option>minor</option>
+        <option value="">(none)</option><option>main</option><option>supporting</option><option>minor</option><option>extra</option>
       </select>
     </div>
   </div>
@@ -206,6 +207,26 @@
   <table id="cTable">
     <thead><tr><th>Name</th><th>Type</th><th>Aliases</th><th>Tier</th><th>Description</th><th class="actions">Actions</th></tr></thead>
     <tbody></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
+  <legend>Worldbuilding Categories</legend>
+  <p class="sub" style="margin-top:0;">Categories are open-ended per book — create any you like, then use its key as "Entry type" above when adding a Codex entry. Categories already in use with no metadata row yet (e.g. this book's pre-existing nation/culture/magic/faction/religion/history entries) show up automatically below with a derived name.</p>
+  <div class="row">
+    <div><label>Name</label><input id="wcName" placeholder="Ship Technology" /></div>
+    <div><label>Key (optional, auto-slugified from name)</label><input id="wcKey" placeholder="ship-technology" /></div>
+    <div><label>Color (optional)</label><input id="wcColor" placeholder="#6d4aff" /></div>
+  </div>
+  <div class="row">
+    <div><label>Description (optional)</label><input id="wcDescription" placeholder="Worldbuilding notes on how ships work in this setting" /></div>
+  </div>
+  <button id="wcCreate">Create category</button>
+  <button class="secondary" id="wcRefresh" type="button">Refresh list</button>
+  <div id="wcStatus" class="status"></div>
+  <table style="margin-top:10px;">
+    <thead><tr><th>Name</th><th>Key</th><th>Color</th><th>Source</th><th class="actions">Actions</th></tr></thead>
+    <tbody id="wcTable"></tbody>
   </table>
 </fieldset>
 
@@ -603,6 +624,84 @@ $("cCreate").addEventListener("click", async () => {
     loadCodex();
   } catch (err) {
     setStatus($("cStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Worldbuilding Categories ----
+async function loadWorldCategories() {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("wcStatus"), "Enter a Book ID above to list categories.", "error"); return; }
+  setStatus($("wcStatus"), "Loading...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/world-categories?bookId=" + encodeURIComponent(bookId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderWorldCategoriesTable(data.categories || []);
+    setStatus($("wcStatus"), (data.categories || []).length + " categories loaded.", "ok");
+  } catch (err) {
+    setStatus($("wcStatus"), String(err.message || err), "error");
+  }
+}
+
+function renderWorldCategoriesTable(categories) {
+  const tbody = $("wcTable");
+  tbody.innerHTML = "";
+  for (const c of categories) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + escapeHtml(c.name) + "</td>" +
+      "<td>" + escapeHtml(c.key) + "</td>" +
+      "<td>" + escapeHtml(c.color || "") + "</td>" +
+      "<td>" + (c.is_derived ? "derived (in use, no metadata yet)" : "custom") + "</td>" +
+      '<td class="actions">' + (c.is_derived ? "" : '<button class="small secondary" data-del="' + c.id + '">Delete</button>') + "</td>";
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this category? Entries using its key keep that value but lose the custom name/color/icon.")) return;
+      const id = btn.getAttribute("data-del");
+      try {
+        const res = await fetch(apiBase() + "/api/v1/world-categories/" + id, { method: "DELETE" });
+        if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status);
+        loadWorldCategories();
+      } catch (err) {
+        setStatus($("wcStatus"), String(err.message || err), "error");
+      }
+    });
+  });
+}
+
+$("wcRefresh").addEventListener("click", loadWorldCategories);
+
+$("wcCreate").addEventListener("click", async () => {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("wcStatus"), "Book ID is required.", "error"); return; }
+
+  const body = {
+    bookId,
+    name: $("wcName").value.trim(),
+  };
+  if ($("wcKey").value.trim()) body.key = $("wcKey").value.trim();
+  if ($("wcColor").value.trim()) body.color = $("wcColor").value.trim();
+  if ($("wcDescription").value.trim()) body.description = $("wcDescription").value.trim();
+
+  setStatus($("wcStatus"), "Creating...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/world-categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    setStatus($("wcStatus"), "Created “" + data.category.name + "” (" + data.category.key + ").", "ok");
+    $("wcName").value = "";
+    $("wcKey").value = "";
+    $("wcColor").value = "";
+    $("wcDescription").value = "";
+    loadWorldCategories();
+  } catch (err) {
+    setStatus($("wcStatus"), String(err.message || err), "error");
   }
 });
 

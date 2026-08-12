@@ -1,16 +1,18 @@
-export type CodexEntryType =
-  | "character"
-  | "location"
-  | "item"
-  | "lore"
-  | "nation"
-  | "culture"
-  | "magic"
-  | "faction"
-  | "religion"
-  | "history";
+// entry_type used to be a fixed CHECK-constrained enum (see migration
+// 002_expand_codex_schema.sql). Migration 016_world_categories.sql drops
+// that constraint: entry_type is now an open-ended worldbuilding category
+// key, matching the frontend's user-creatable WorldCategoryKey, validated
+// at the application layer as "any non-empty string" (src/routes/codex.ts)
+// rather than a closed list. 'character' remains a plain value with no
+// special DB-level treatment — nothing branches on it structurally, since
+// Layer 1 (rag.ts) matches by name/alias for every entry_type equally.
+export type CodexEntryType = string;
 
-export const VALID_CODEX_ENTRY_TYPES: CodexEntryType[] = [
+// The original fixed set, kept only as a reference list for UI defaults/
+// suggestions (e.g. a test harness dropdown) — no longer enforced
+// anywhere. See world_categories (src/routes/worldCategories.ts) for the
+// real per-book category metadata (display name, color, icon).
+export const KNOWN_CODEX_ENTRY_TYPES = [
   "character",
   "location",
   "item",
@@ -21,7 +23,7 @@ export const VALID_CODEX_ENTRY_TYPES: CodexEntryType[] = [
   "faction",
   "religion",
   "history",
-];
+] as const;
 
 export type CodexTier = "main" | "supporting" | "minor" | "extra";
 
@@ -77,6 +79,22 @@ export interface CodexEntry {
   weaknesses: string[] | null;
   internal_conflict: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+export interface WorldCategory {
+  id: string;
+  book_id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  icon: string | null;
+  created_at: string;
+  // true when this row wasn't found in world_categories and was
+  // synthesized from a distinct entry_type already in use (see
+  // src/routes/worldCategories.ts) — no id/created_at in that case.
+  is_derived?: boolean;
 }
 
 export type CodexRelationshipStrength = "strong" | "moderate" | "tense" | "weak";

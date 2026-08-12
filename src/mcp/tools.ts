@@ -14,8 +14,9 @@ import {
   finishSceneDraftSession,
 } from "../services/sceneDraftSessions.js";
 import { diffDrafts } from "../lib/textDiff.js";
-import { VALID_CODEX_ENTRY_TYPES } from "../types/domain.js";
-import type { CodexEntryType, ManuscriptChunkMatch } from "../types/domain.js";
+import { KNOWN_CODEX_ENTRY_TYPES } from "../types/domain.js";
+import type { ManuscriptChunkMatch } from "../types/domain.js";
+import { listWorldCategories, slugify } from "../routes/worldCategories.js";
 
 const SEARCH_MATCH_COUNT = 8;
 
@@ -52,9 +53,11 @@ export function registerWordArchitectTools(server: McpServer): void {
       inputSchema: {
         bookId: z.string().describe("The book's ID"),
         entryType: z
-          .enum(VALID_CODEX_ENTRY_TYPES as [CodexEntryType, ...CodexEntryType[]])
+          .string()
           .optional()
-          .describe("Optional filter by entry type"),
+          .describe(
+            `Optional filter by entry type — 'character' or a worldbuilding category key (common ones: ${KNOWN_CODEX_ENTRY_TYPES.join(", ")}, but a book may have custom ones too — see list_world_categories)`
+          ),
       },
     },
     async ({ bookId, entryType }) => {
@@ -80,6 +83,69 @@ export function registerWordArchitectTools(server: McpServer): void {
       const { data, error } = await supabase.from("codex_entries").select("*").eq("id", entryId).maybeSingle();
       if (error) return errorResult(`Failed to fetch codex entry: ${error.message}`);
       if (!data) return errorResult(`No codex entry found with id ${entryId}`);
+      return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  server.registerTool(
+    "list_world_categories",
+    {
+      title: "List World Categories",
+      description:
+        "List this book's worldbuilding categories (locations, factions, lore, magic systems, or any custom category the writer has created) — each with its key, display name, color, and icon. Includes categories that only exist implicitly (an entry_type already in use on some codex_entries row but with no category metadata yet) with a derived display name, so this always reflects reality even before a category is formally created. Call this before create_codex_entry or create_world_category to see what categories already exist rather than guessing a key.",
+      inputSchema: { bookId: z.string().describe("The book's ID") },
+    },
+    async ({ bookId }) => {
+      try {
+        const categories = await listWorldCategories(bookId);
+        return textResult(JSON.stringify(categories, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "create_world_category",
+    {
+      title: "Create World Category",
+      description:
+        "Create a new worldbuilding category for this book (e.g. 'Ship Technology', 'Political Factions') — only call this after the writer has confirmed they want a new category, not speculatively. key is auto-derived from name (lowercase, hyphenated) if not given. Once created, use this category's key as entryType when calling create_codex_entry for entries that belong to it.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        name: z.string().describe("Display name, e.g. 'Ship Technology'"),
+        key: z.string().optional().describe("Slug key; auto-derived from name if omitted"),
+        description: z.string().optional(),
+        color: z.string().optional(),
+        icon: z.string().optional(),
+      },
+    },
+    async ({ bookId, name, key, description, color, icon }) => {
+      const resolvedKey = slugify(key ?? name);
+      if (resolvedKey === "") {
+        return errorResult("Could not derive a valid category key from name — provide one explicitly.");
+      }
+
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from("world_categories")
+        .insert({
+          book_id: bookId,
+          key: resolvedKey,
+          name,
+          description: description ?? null,
+          color: color ?? null,
+          icon: icon ?? null,
+        })
+        .select("*")
+        .single();
+
+      if (error) {
+        if (error.code === "23505") {
+          return errorResult(`A category with key "${resolvedKey}" already exists for this book.`);
+        }
+        return errorResult(`Failed to create world category: ${error.message}`);
+      }
       return textResult(JSON.stringify(data, null, 2));
     }
   );
@@ -272,7 +338,11 @@ export function registerWordArchitectTools(server: McpServer): void {
         userId: z.string().describe("The user's ID"),
         bookId: z.string().describe("The book's ID"),
         name: z.string().describe("The entry's name"),
-        entryType: z.enum(VALID_CODEX_ENTRY_TYPES as [CodexEntryType, ...CodexEntryType[]]),
+        entryType: z
+          .string()
+          .describe(
+            `'character', or a worldbuilding category key (common ones: ${KNOWN_CODEX_ENTRY_TYPES.join(", ")}; check list_world_categories first for this book's actual custom categories, or invent a short lowercase-hyphenated key and it'll show up as a new category once used)`
+          ),
         description: z.string().describe("Overview/summary — the only field always injected into generation context"),
         ...codexFieldsSchema,
       },
@@ -316,6 +386,7 @@ export function registerWordArchitectTools(server: McpServer): void {
       if (Object.keys(payload).length === 0) {
         return errorResult("No fields provided to update.");
       }
+      payload.updated_at = new Date().toISOString();
 
       const supabase = getSupabaseClient();
       const { data, error } = await supabase.from("codex_entries").update(payload).eq("id", entryId).select("*").maybeSingle();
