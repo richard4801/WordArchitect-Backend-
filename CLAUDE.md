@@ -258,6 +258,67 @@ with more than 1,000 chunks because PostgREST caps an unbounded
 `.select()` at 1,000 rows by default. Caught via a real 2,303-chunk book
 reporting chapter 313 as the highest instead of the real 377.
 
+## Banned Terms (Ghost Editor)
+
+A writer can ban a word or phrase per book — via the test UI's Banned
+Terms panel, or `GET/POST /api/v1/banned-terms` and
+`DELETE /api/v1/banned-terms/:id` — and Hanami is guaranteed to never
+produce it again, checked on every `/generate-prose` call.
+
+**Why there's no cheap path**: the obvious-sounding mechanism —
+suppress the word at the token level via `logit_bias` so Hanami
+literally cannot generate it, at zero extra cost — does not work on this
+stack. Confirmed by direct testing against the real Infermatic API:
+temperature 0, the exact real token IDs for a test word (verified with
+Llama 3's actual tokenizer), maximum suppression (-100), and the output
+was byte-for-byte identical to an unbiased request across repeated
+trials. `logit_bias` is silently not honored somewhere in the LiteLLM
+proxy / inference chain. It also wouldn't have been safe even if it
+worked: most English words are multiple subword tokens, and the pieces
+are frequently shared with unrelated vocabulary — "shiver" decomposes to
+"sh" + "iver," and both fragments are common pieces of many other words
+entirely. Suppressing either would have collateral effects far beyond
+the one word intended. So there is exactly one enforcement mechanism
+here, used for both single words and full phrases — no fast path, no
+free path.
+
+**How it actually works** (`src/services/ghostEditor.ts`): when a book
+has at least one banned term, `/generate-prose` buffers the full
+generation (`generateHanamiProse`, not the live token stream) instead of
+streaming it directly, splits it into paragraphs, and checks each one
+(case-insensitive substring match — deliberately not strict word-
+boundary matching, so banning "delve" also catches "delved"; a writer
+wanting full conjugation coverage bans multiple literal forms rather
+than relying on a stemmer this doesn't have). Any paragraph containing a
+banned term gets regenerated via a narrowly-scoped Hanami call — only
+that paragraph, with the surrounding paragraphs supplied as context-only
+— re-checked after each attempt, up to 3 tries, before being accepted.
+Paragraph-level scope is deliberate, not arbitrary: it matches the
+project's established finding that Hanami's scope discipline holds up
+well around one paragraph per call and degrades sharply beyond it (see
+the MCP Server section's supervised-drafting findings), so this reuses
+the same "narrow scope, verify, retry" pattern already proven to work
+rather than inventing a new one.
+
+**The real cost, stated plainly**: for a book with banned terms
+configured, `/generate-prose` loses live token-by-token streaming —
+the writer sees the finished, already-clean text appear once generation
+and any needed corrections are done, not prose typing out in real time.
+This is the honest tradeoff for the actual guarantee ("never see a
+banned term on screen") instead of the originally-imagined free one. A
+book with zero banned terms is completely unaffected — same live
+streaming as always, zero added latency, zero extra calls; the banned-
+terms lookup is the only overhead, one cheap query per generation.
+
+A generation's correction report (which paragraphs were rewritten, what
+was found, how many attempts, whether it was ultimately resolved) is
+appended to the stream after a `<<<GHOST_EDITOR_REPORT>>>` marker
+(`GHOST_EDITOR_REPORT_MARKER` in `generateProse.ts`) that the test UI
+strips out and renders as its own table rather than showing as raw text
+in the prose output — the same transparency principle as the diff
+tooling elsewhere in this project: show what actually happened, not just
+a claim that it worked.
+
 ## Database Schema
 
 Defined in `supabase/migrations/001_init_schema.sql`. Every table is scoped

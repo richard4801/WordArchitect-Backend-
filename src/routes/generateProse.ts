@@ -3,6 +3,8 @@ import { assembleContextPayload } from "../services/rag.js";
 import { streamHanamiProse, generateHanamiProse } from "../services/llm.js";
 import { estimateTokens } from "../lib/tokenBudget.js";
 import { markBracketedInstructions } from "../lib/bracketInstructions.js";
+import { listBannedTerms } from "../services/bannedTerms.js";
+import { enforceBannedTerms } from "../services/ghostEditor.js";
 
 export const generateProseRouter = Router();
 
@@ -135,6 +137,13 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
   }
 });
 
+// Precedes a trailing JSON blob the test UI strips out of the raw prose
+// stream and renders separately — see the Ghost Editor block below for why
+// this only ever gets appended when a book actually has banned terms
+// configured, and never touches the response for anyone who doesn't use
+// the feature.
+export const GHOST_EDITOR_REPORT_MARKER = "\n\n<<<GHOST_EDITOR_REPORT>>>";
+
 generateProseRouter.post("/generate-prose", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const validationError = validateGenerateProseBody(body);
@@ -160,7 +169,41 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
 
     const systemPrompt = buildSystemPrompt(payload);
     const userMessage = buildUserMessage(userSceneBeat, chapterAvoid);
-    await streamHanamiProse(systemPrompt, userMessage, res);
+
+    const bannedTerms = await listBannedTerms(bookId);
+
+    if (bannedTerms.length === 0) {
+      // No banned terms configured for this book — identical to the
+      // original behavior, live token-by-token streaming, zero added cost.
+      await streamHanamiProse(systemPrompt, userMessage, res);
+      return;
+    }
+
+    // Banned terms exist: there is no generation-time way to guarantee a
+    // banned word/phrase never appears (confirmed — logit_bias isn't
+    // honored by the Infermatic API, and wouldn't safely suppress whole
+    // words even if it were, since most words are multiple subword tokens
+    // sharing pieces with unrelated vocabulary). The only mechanism that
+    // actually works is detect-then-regenerate, which means the full
+    // generation has to be buffered and checked before anything is shown
+    // — this trades live streaming for a guarantee the writer never sees
+    // a banned term land on screen, only for books that opted into it.
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const rawProse = await generateHanamiProse(systemPrompt, userMessage);
+    const { finalText, corrections } = await enforceBannedTerms({
+      text: rawProse,
+      bannedTerms: bannedTerms.map((t) => t.term),
+      systemPrompt,
+    });
+
+    res.write(finalText);
+    if (corrections.length > 0) {
+      res.write(GHOST_EDITOR_REPORT_MARKER + JSON.stringify(corrections));
+    }
+    res.end();
   } catch (error) {
     console.error("generate-prose failed:", error);
 

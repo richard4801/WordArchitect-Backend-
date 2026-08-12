@@ -219,6 +219,21 @@
 </fieldset>
 
 <fieldset>
+  <legend>Banned Terms (Ghost Editor)</legend>
+  <p class="sub" style="margin-top:0;">Ban a word or phrase for this Book ID and Hanami will never produce it again — checked against every full generation, and any paragraph that contains a banned term gets silently regenerated (with verification, up to 3 attempts) before you ever see it. There's no free "erase from vocabulary" shortcut for this — confirmed against the real API that generation-time token suppression isn't honored and wouldn't safely target whole words anyway — so this only activates (and only costs the extra regeneration time) for books that actually have banned terms set.</p>
+  <div class="row">
+    <div><label>Ban a word or phrase</label><input id="tTerm" placeholder="a cold shiver ran down her spine" /></div>
+  </div>
+  <button id="tAdd">Ban</button>
+  <button class="secondary" id="tRefresh" type="button">Refresh list</button>
+  <div id="tStatus" class="status"></div>
+  <table style="margin-top:10px;">
+    <thead><tr><th>Banned term</th><th>Added</th><th></th></tr></thead>
+    <tbody id="tTable"></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
   <legend>Generate prose</legend>
   <div class="row">
     <div>
@@ -252,6 +267,14 @@
   <div id="gStatus" class="status"></div>
   <p class="meta-line" id="gMeta"></p>
   <div class="prose-output" id="gOutput"></div>
+
+  <div id="gGhostEditorBlock" style="display:none; margin-top:12px;">
+    <p class="meta-line">Ghost Editor — paragraphs regenerated to remove banned terms before you saw them:</p>
+    <table>
+      <thead><tr><th>Paragraph</th><th>Banned term(s) found</th><th>Attempts</th><th>Resolved?</th></tr></thead>
+      <tbody id="gGhostEditorTable"></tbody>
+    </table>
+  </div>
 
   <div id="previewBlock" style="display:none; margin-top:16px;">
     <p class="meta-line" id="previewMeta"></p>
@@ -641,8 +664,116 @@ $("gBeat").addEventListener("scroll", () => {
 });
 updateBeatHighlight();
 
+// ---- Banned Terms (Ghost Editor) ----
+async function loadBannedTerms() {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("tStatus"), "Enter a Book ID above to load banned terms.", "error"); return; }
+  setStatus($("tStatus"), "Loading...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/banned-terms?bookId=" + encodeURIComponent(bookId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderBannedTermsTable(data.terms || []);
+    setStatus($("tStatus"), (data.terms || []).length + " banned term(s) loaded.", "ok");
+  } catch (err) {
+    setStatus($("tStatus"), String(err.message || err), "error");
+  }
+}
+
+function renderBannedTermsTable(terms) {
+  const tbody = $("tTable");
+  tbody.innerHTML = "";
+  for (const t of terms) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + escapeHtml(t.term) + "</td>" +
+      "<td>" + escapeHtml(new Date(t.created_at).toLocaleString()) + "</td>" +
+      '<td class="actions"><button class="small secondary" data-unban="' + t.id + '">Unban</button></td>';
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-unban]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-unban");
+      try {
+        const res = await fetch(apiBase() + "/api/v1/banned-terms/" + id, { method: "DELETE" });
+        if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status);
+        loadBannedTerms();
+      } catch (err) {
+        setStatus($("tStatus"), String(err.message || err), "error");
+      }
+    });
+  });
+}
+
+$("tRefresh").addEventListener("click", loadBannedTerms);
+
+$("tAdd").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  const term = $("tTerm").value.trim();
+  if (!userId || !bookId || !term) {
+    setStatus($("tStatus"), "User ID, Book ID, and a word/phrase to ban are required.", "error");
+    return;
+  }
+  $("tAdd").disabled = true;
+  setStatus($("tStatus"), "Banning...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/banned-terms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, bookId, term }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    $("tTerm").value = "";
+    await loadBannedTerms();
+    setStatus($("tStatus"), "Banned. Applies to every generation for this Book ID from now on.", "ok");
+  } catch (err) {
+    setStatus($("tStatus"), String(err.message || err), "error");
+  } finally {
+    $("tAdd").disabled = false;
+  }
+});
+
 // ---- Generate prose (streamed) ----
 let activeAbort = null;
+
+// Must match GHOST_EDITOR_REPORT_MARKER in src/routes/generateProse.ts —
+// precedes a trailing JSON blob of corrections appended to the raw prose
+// stream only when the book has banned terms and at least one paragraph
+// needed regenerating. Stripped from the visible output and rendered as
+// its own report instead of shown as raw text.
+const GHOST_EDITOR_REPORT_MARKER = "\n\n<<<GHOST_EDITOR_REPORT>>>";
+
+function renderGhostEditorReport(rawBuffer) {
+  const markerIndex = rawBuffer.indexOf(GHOST_EDITOR_REPORT_MARKER);
+  if (markerIndex === -1) {
+    $("gGhostEditorBlock").style.display = "none";
+    return;
+  }
+
+  let corrections = [];
+  try {
+    corrections = JSON.parse(rawBuffer.slice(markerIndex + GHOST_EDITOR_REPORT_MARKER.length));
+  } catch (err) {
+    console.warn("Failed to parse Ghost Editor report:", err);
+    $("gGhostEditorBlock").style.display = "none";
+    return;
+  }
+
+  const tbody = $("gGhostEditorTable");
+  tbody.innerHTML = "";
+  for (const c of corrections) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>#" + (c.paragraphIndex + 1) + "</td>" +
+      "<td>" + escapeHtml((c.bannedTermsFound || []).join(", ")) + "</td>" +
+      "<td>" + c.attempts + "</td>" +
+      "<td>" + (c.resolved ? "✅ yes" : "⚠️ no — still present after max attempts") + "</td>";
+    tbody.appendChild(tr);
+  }
+  $("gGhostEditorBlock").style.display = "block";
+}
 
 // Shared by Generate and Preview so both always send the same fields —
 // including the fresh, per-chapter MUST/MUST NOT instructions, which are
@@ -742,6 +873,7 @@ $("gGenerate").addEventListener("click", async () => {
 
   $("gOutput").textContent = "";
   $("gMeta").textContent = "";
+  $("gGhostEditorBlock").style.display = "none";
   $("gGenerate").disabled = true;
   $("gStop").disabled = false;
   setStatus($("gStatus"), "Compiling context...");
@@ -774,15 +906,20 @@ $("gGenerate").addEventListener("click", async () => {
     setStatus($("gStatus"), "Streaming...", "ok");
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
+    let rawBuffer = "";
 
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       const text = decoder.decode(value, { stream: true });
       charCount += text.length;
-      $("gOutput").textContent += text;
+      rawBuffer += text;
+      const markerIndex = rawBuffer.indexOf(GHOST_EDITOR_REPORT_MARKER);
+      $("gOutput").textContent = markerIndex === -1 ? rawBuffer : rawBuffer.slice(0, markerIndex);
       $("gOutput").scrollTop = $("gOutput").scrollHeight;
     }
+
+    renderGhostEditorReport(rawBuffer);
 
     const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
     setStatus($("gStatus"), "Done.", "ok");
