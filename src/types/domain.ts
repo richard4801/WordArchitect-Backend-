@@ -76,3 +76,19 @@ export interface ManuscriptChunkMatch {
   scene_order: number;
   similarity: number;
 }
+
+export interface Book {
+  id: string;
+  user_id: string;
+  title: string;
+  tagline: string | null;
+  genre: string | null;
+  subgenres: string[] | null;
+  pov: string | null;
+  tense: string | null;
+  target_words: number | null;
+  status: string;
+  cover_url: string | null;
+  created_at: string;
+  updated_at: string;
+}

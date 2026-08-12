@@ -9,6 +9,7 @@ import { manuscriptRouter } from "./routes/manuscript.js";
 import { mcpRouter } from "./routes/mcp.js";
 import { askRouter } from "./routes/ask.js";
 import { bannedTermsRouter } from "./routes/bannedTerms.js";
+import { booksRouter } from "./routes/books.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,6 +33,7 @@ app.use("/api/v1", codexRouter);
 app.use("/api/v1", manuscriptRouter);
 app.use("/api/v1", askRouter);
 app.use("/api/v1", bannedTermsRouter);
+app.use("/api/v1", booksRouter);
 app.use(mcpRouter);
 
 app.use((req: Request, res: Response) => {

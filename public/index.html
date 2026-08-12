@@ -147,6 +147,29 @@
 </fieldset>
 
 <fieldset>
+  <legend>Projects (Books)</legend>
+  <p class="sub" style="margin-top:0;">A project's own metadata — title, genre, POV, tense, status. Everything else in this app (Codex, manuscript, generation, banned terms) is scoped by the Book ID a project creates here. Click a row below to load its Book ID into the field above.</p>
+  <div class="row">
+    <div><label>Title</label><input id="pTitle" placeholder="The Ironmaw Throne" /></div>
+    <div><label>Genre</label><input id="pGenre" placeholder="Fantasy romance" /></div>
+    <div><label>Status</label><input id="pStatusInput" placeholder="active" /></div>
+  </div>
+  <div class="row">
+    <div><label>Tagline</label><input id="pTagline" placeholder="One-line pitch" /></div>
+    <div><label>POV</label><input id="pPov" placeholder="Third limited" /></div>
+    <div><label>Tense</label><input id="pTense" placeholder="Past" /></div>
+    <div><label>Target words</label><input id="pTargetWords" type="number" placeholder="90000" /></div>
+  </div>
+  <button id="pCreate">Create project</button>
+  <button class="secondary" id="pRefresh" type="button">Refresh list</button>
+  <div id="pStatus" class="status"></div>
+  <table style="margin-top:10px;">
+    <thead><tr><th>Title</th><th>Genre</th><th>Status</th><th>Chapters</th><th></th></tr></thead>
+    <tbody id="pTable"></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
   <legend>Codex</legend>
 
   <div class="row">
@@ -384,6 +407,115 @@ checkHealth();
 function estimateTokensClientSide(text) {
   return text ? Math.ceil(text.length / 4) : 0;
 }
+
+// ---- Projects (Books) ----
+async function loadProjects() {
+  const userId = $("userId").value.trim();
+  if (!userId) { setStatus($("pStatus"), "Enter a User ID above to load projects.", "error"); return; }
+  setStatus($("pStatus"), "Loading...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/books?userId=" + encodeURIComponent(userId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    await renderProjectsTable(data.books || []);
+    setStatus($("pStatus"), (data.books || []).length + " project(s) loaded.", "ok");
+  } catch (err) {
+    setStatus($("pStatus"), String(err.message || err), "error");
+  }
+}
+
+async function renderProjectsTable(books) {
+  const tbody = $("pTable");
+  tbody.innerHTML = "";
+  for (const b of books) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + escapeHtml(b.title) + "</td>" +
+      "<td>" + escapeHtml(b.genre || "") + "</td>" +
+      "<td>" + escapeHtml(b.status || "") + "</td>" +
+      '<td id="pChapters-' + b.id + '">…</td>' +
+      '<td class="actions">' +
+      '<button class="small secondary" data-select="' + b.id + '">Use</button> ' +
+      '<button class="small secondary" data-del="' + b.id + '">Delete</button>' +
+      "</td>";
+    tbody.appendChild(tr);
+  }
+
+  tbody.querySelectorAll("[data-select]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $("bookId").value = btn.getAttribute("data-select");
+      $("bookId").dispatchEvent(new Event("change"));
+      setStatus($("pStatus"), "Book ID loaded above.", "ok");
+    });
+  });
+  tbody.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this project's metadata? Codex/manuscript data for its Book ID is NOT deleted.")) return;
+      const id = btn.getAttribute("data-del");
+      try {
+        const res = await fetch(apiBase() + "/api/v1/books/" + id, { method: "DELETE" });
+        if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status);
+        loadProjects();
+      } catch (err) {
+        setStatus($("pStatus"), String(err.message || err), "error");
+      }
+    });
+  });
+
+  // Chapter counts are a separate lookup per book (get_book_facts), fetched
+  // after the row renders so a slow one doesn't block the whole list.
+  for (const b of books) {
+    fetch(apiBase() + "/api/v1/books/" + b.id)
+      .then((r) => r.json())
+      .then((d) => {
+        const cell = document.getElementById("pChapters-" + b.id);
+        if (cell) cell.textContent = d.stats ? String(d.stats.totalChapters) : "—";
+      })
+      .catch(() => {
+        const cell = document.getElementById("pChapters-" + b.id);
+        if (cell) cell.textContent = "—";
+      });
+  }
+}
+
+$("pRefresh").addEventListener("click", loadProjects);
+
+$("pCreate").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const title = $("pTitle").value.trim();
+  if (!userId || !title) {
+    setStatus($("pStatus"), "User ID (above) and a title are required.", "error");
+    return;
+  }
+
+  const body = { userId, title };
+  if ($("pTagline").value.trim()) body.tagline = $("pTagline").value.trim();
+  if ($("pGenre").value.trim()) body.genre = $("pGenre").value.trim();
+  if ($("pPov").value.trim()) body.pov = $("pPov").value.trim();
+  if ($("pTense").value.trim()) body.tense = $("pTense").value.trim();
+  if ($("pStatusInput").value.trim()) body.status = $("pStatusInput").value.trim();
+  if ($("pTargetWords").value.trim()) body.targetWords = Number($("pTargetWords").value.trim());
+
+  $("pCreate").disabled = true;
+  setStatus($("pStatus"), "Creating...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/books", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    $("pTitle").value = "";
+    $("pTagline").value = "";
+    await loadProjects();
+    setStatus($("pStatus"), "Created. Click Use to load its Book ID above.", "ok");
+  } catch (err) {
+    setStatus($("pStatus"), String(err.message || err), "error");
+  } finally {
+    $("pCreate").disabled = false;
+  }
+});
 
 // ---- Codex ----
 async function loadCodex() {

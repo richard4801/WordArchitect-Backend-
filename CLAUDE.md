@@ -417,6 +417,42 @@ silently wrong past 1,000 chunks.
 Endpoints that keep the Codex and manuscript memory populated and up to date
 as a writer works — separate from `/generate-prose`'s read-only retrieval path.
 
+### Projects/Books CRUD (`src/routes/books.ts`)
+
+Every other table in this schema (`codex_entries`, `manuscript_chunks`,
+`banned_terms`, `scene_draft_sessions`) scopes itself by `book_id`, but
+until migration `013_books.sql` nothing actually created, listed, or
+stored a book's own metadata — `book_id` was just a bare UUID other
+tables referenced, generated externally. This is what a real frontend's
+"Projects" feature reads/writes; the `books.id` a project creates here
+*is* the `bookId` used everywhere else in this API.
+
+- `GET /api/v1/books?userId=` — list a user's projects
+- `GET /api/v1/books/:id` — fetch one, plus best-effort manuscript stats
+  (`highestChapter`/`totalChapters`/`totalChunks` from the same
+  `get_book_facts` RPC `/ask`'s Book Facts uses) since chapter count is
+  derived from ingested manuscript data, not stored on the book row
+  itself — falls back to nulls/zeros rather than failing the whole
+  request if a brand-new project has no manuscript yet
+- `POST /api/v1/books` — create (`userId`, `title` required; `tagline`,
+  `genre`, `subgenres`, `pov`, `tense`, `targetWords`, `status`,
+  `coverUrl` all optional)
+- `PATCH /api/v1/books/:id` — partial update
+- `DELETE /api/v1/books/:id` — deletes only the project's own metadata
+  row. Deliberately does not cascade to Codex/manuscript/banned-terms/
+  scene-draft data for that `book_id` — there's no foreign key to
+  cascade through (see below) — so deleting a project can never
+  silently wipe its story content as an unreviewed side effect.
+
+No `CHECK` constraint on `status`/`pov`/`tense`: a real frontend's exact
+enum values for these aren't settled yet, and a mismatched constraint
+would just reject legitimate writes rather than protect anything. No
+foreign key from `codex_entries.book_id` etc. to `books.id` either —
+those tables already hold real production data referencing `book_id`s
+that predate this table, and adding a FK now risks breaking that data
+rather than protecting it. Both are worth revisiting once the real value
+sets and existing data are reconciled.
+
 ### Codex CRUD (`src/routes/codex.ts`)
 
 - `GET /api/v1/codex?bookId=&entryType=&tier=` — list entries for a book
