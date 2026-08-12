@@ -21,6 +21,39 @@ bloating the LLM's context window.
 - **Embedding model**: OpenAI `text-embedding-3-small` (1536 dimensions) — used to index both manuscript text and Codex profiles
 - **Creative generation engine**: Hanami (Llama 3.1 70B merge), hosted via the Infermatic API, 32k token context window
 
+## Frontend Integration Reference
+
+Fast lookup for wiring the frontend's mock-store entities to real
+endpoints — see Content Management API below for full request/response
+detail on each. Every route is prefixed `/api/v1` and takes/returns JSON.
+Almost everything is scoped by `bookId` (a real UUID from `POST /books`,
+not the frontend's mock project IDs), and most writes also take `userId`.
+
+| Frontend entity | Backend surface | Notes |
+| --- | --- | --- |
+| Project | Books CRUD (`/books`) | `books.id` *is* the `bookId` every other entity below is scoped by |
+| Character | Codex CRUD (`/codex`), `entryType: "character"` | rich profile fields per the `codex_entries` schema above |
+| Worldbuilding categories | World Categories CRUD (`/world-categories`) | open-ended, user-creatable |
+| Worldbuilding entries (`WorldEntry`) | Codex CRUD (`/codex`), `entryType: <category key>` | same table/endpoints as Character, different `entryType` |
+| Notes | Notes CRUD (`/notes`) | `mine` is not a stored field — compare `note.userId` to the viewer |
+| Manuscript/Chapters (rich editor) | Manuscript Chapters CRUD (`/manuscript/parts`, `/manuscript/chapters`, `/manuscript/chapters/:id/scenes`) | `PATCH /manuscript/chapters/:id` is the autosave endpoint; `POST .../sync-to-memory` is a separate, explicit "accept into AI memory" action |
+| Outliner (Beat/Act) | *not built* | confirmed low priority/deferred |
+| Dashboard-only stats (today's progress, AI insights, activity feed) | *not built* | frontend's own decision to keep these mock for now |
+
+**Known gaps, not yet resolved — flag before this goes live with real users:**
+- **No authentication on `/api/v1/*`.** Every route trusts whatever
+  `userId`/`bookId` the caller sends — there's no session/token tying a
+  request to a real logged-in account, so anyone who knows or guesses a
+  `bookId` can read or write that book's data. Fine for local test-harness
+  use (`public/index.html`); not fine once a real hosted frontend with
+  real user data is pointed at it. Only the separate `/mcp` surface
+  requires a bearer token (`MCP_API_KEY`).
+- **No documented deployed base URL.** Nothing in this repo records where
+  the backend is actually hosted (Render is referenced architecturally —
+  see the resumable bulk import section — but no live URL is checked in
+  anywhere); the frontend integration needs the real URL supplied
+  out-of-band, not guessed.
+
 ## Dual-Layer Context Engine
 
 `POST /api/v1/generate-prose` accepts a user's scene beat and autonomously
