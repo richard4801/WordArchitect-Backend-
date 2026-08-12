@@ -23,11 +23,18 @@ export const VALID_CODEX_ENTRY_TYPES: CodexEntryType[] = [
   "history",
 ];
 
-export type CodexTier = "main" | "supporting" | "minor";
+export type CodexTier = "main" | "supporting" | "minor" | "extra";
 
 export interface CharacterArcStage {
   stage: string;
   description: string;
+}
+
+export interface CodexNote {
+  title: string;
+  body: string;
+  date?: string | null;
+  pinned?: boolean;
 }
 
 export interface CodexEntry {
@@ -49,10 +56,26 @@ export interface CodexEntry {
   physical_description: string[] | null;
   personality_traits: string[] | null;
   motivations: string[] | null;
-  background: string | null;
+  background: string[] | null;
   character_arc: CharacterArcStage[] | null;
-  notes: string | null;
+  notes: CodexNote[] | null;
   event_year: string | null;
+  nickname: string | null;
+  epithet: string | null;
+  status: string | null;
+  alignment: string | null;
+  pov_character: boolean;
+  archetype: string | null;
+  favorites: number;
+  motivation: string | null;
+  goal: string | null;
+  fear: string | null;
+  secret: string | null;
+  life_events: Record<string, unknown>[] | null;
+  cultural_background: Record<string, unknown> | null;
+  strengths: string[] | null;
+  weaknesses: string[] | null;
+  internal_conflict: string | null;
   created_at: string;
 }
 

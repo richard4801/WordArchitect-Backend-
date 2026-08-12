@@ -337,13 +337,21 @@ accounts.
 | `entry_type` | VARCHAR(50) NOT NULL | CHECK: `character` \| `location` \| `item` \| `lore` \| `nation` \| `culture` \| `magic` \| `faction` \| `religion` \| `history` |
 | `description` | TEXT NOT NULL | overview/summary; the only field always injected on a Layer 1 match |
 | `embedding` | VECTOR(1536) | reserved for future semantic Codex lookup; not used by Layer 1's deterministic string match |
-| `tier` | VARCHAR(20) | CHECK: `main` \| `supporting` \| `minor` |
+| `tier` | VARCHAR(20) | CHECK: `main` \| `supporting` \| `minor` \| `extra` |
 | `quote`, `image_url`, `age`, `gender`, `role_in_story`, `occupation`, `location_name` | TEXT/VARCHAR | human-facing profile fields, CRUD-only — not injected into Layer 1 |
 | `physical_description`, `motivations` | TEXT[] | bullet-list fields; `motivations` (top 3) is condensed into Layer 1 alongside `personality_traits` |
 | `personality_traits` | VARCHAR(100)[] | condensed into Layer 1 as a short `Traits: ...` line |
-| `background`, `notes` | TEXT | human-facing only, not injected into Layer 1 |
+| `background` | TEXT[] | bullet-list field, human-facing only, not injected into Layer 1. Was a single TEXT column until migration `014_character_expansion.sql`, matching the frontend's Character shape (`background: string[]`); an existing free-text value became a one-element array rather than being guessed apart at paragraph breaks, which risked mangling real data based on formatting assumptions that might not hold |
+| `notes` | JSONB | array of `{ title, body, date?, pinned? }`, human-facing only. Was a single TEXT column until the same migration; an existing free-text value became a single `{ title: 'Notes', body: <old text>, date: <created_at>, pinned: false }` note rather than being dropped |
 | `character_arc` | JSONB | array of `{ stage, description }`; human-facing only |
 | `event_year` | VARCHAR(50) | for `history`-type entries (timeline events) |
+| `nickname`, `epithet`, `status`, `alignment`, `archetype` | VARCHAR | human-facing profile fields, CRUD-only — not injected into Layer 1 |
+| `pov_character` | BOOLEAN NOT NULL | default `false`; whether this character is a POV character for the book |
+| `favorites` | INT NOT NULL | default `0` |
+| `motivation`, `goal`, `fear`, `secret`, `internal_conflict` | TEXT | singular human-facing fields, distinct from the `motivations` list above — human-facing only |
+| `life_events` | JSONB | array of event objects; shape not strictly enforced server-side (frontend's `LifeEvent` shape isn't settled) |
+| `cultural_background` | JSONB | object, e.g. `{ origin, upbringing, education, beliefs, languages }`; shape not strictly enforced server-side |
+| `strengths`, `weaknesses` | TEXT[] | human-facing only |
 | `created_at` | TIMESTAMPTZ | default `NOW()` |
 
 Managed entirely through `POST/GET/PATCH/DELETE /api/v1/codex` (see below). Only
@@ -351,6 +359,16 @@ Managed entirely through `POST/GET/PATCH/DELETE /api/v1/codex` (see below). Only
 prompt — the richer fields exist for a human-facing Codex UI (character sheets,
 worldbuilding pages) and stay out of the token budget regardless of how much
 detail a writer stores.
+
+Added in migration `014_character_expansion.sql` to close the frontend's
+biggest documented editable gap for Character (per its own CLAUDE.md,
+`src/lib/character-data.ts`): most of the fields above previously existed
+only in the frontend's seed data, with nothing to save to on this side.
+`life_events`/`cultural_background` are validated only as "an array of
+objects" / "an object" (`isObjectArray`/`isPlainObject` in
+`src/routes/codex.ts`), not against specific required keys — their exact
+shape isn't settled on the frontend yet, and a strict schema would just
+reject legitimate writes once it inevitably falls out of sync.
 
 ### `codex_relationships` (character bonds)
 

@@ -167,8 +167,18 @@ export function registerWordArchitectTools(server: McpServer): void {
     }
   );
 
-  const tierSchema = z.enum(["main", "supporting", "minor"]);
+  const tierSchema = z.enum(["main", "supporting", "minor", "extra"]);
   const characterArcSchema = z.array(z.object({ stage: z.string(), description: z.string() }));
+  const notesSchema = z.array(
+    z.object({
+      title: z.string(),
+      body: z.string(),
+      date: z.string().optional(),
+      pinned: z.boolean().optional(),
+    })
+  );
+  const objectArraySchema = z.array(z.record(z.string(), z.unknown()));
+  const plainObjectSchema = z.record(z.string(), z.unknown());
 
   // Every optional field codex_entries actually has, matching what
   // PATCH /api/v1/codex/:id already supports (src/routes/codex.ts). Keep
@@ -188,10 +198,26 @@ export function registerWordArchitectTools(server: McpServer): void {
     physicalDescription: z.array(z.string()).optional(),
     personalityTraits: z.array(z.string()).optional(),
     motivations: z.array(z.string()).optional(),
-    background: z.string().optional(),
+    background: z.array(z.string()).optional().describe("Array of background bullet points/paragraphs"),
     characterArc: characterArcSchema.optional().describe("Array of { stage, description } objects"),
-    notes: z.string().optional(),
+    notes: notesSchema.optional().describe("Array of { title, body, date?, pinned? } objects"),
     eventYear: z.string().optional(),
+    nickname: z.string().optional(),
+    epithet: z.string().optional(),
+    status: z.string().optional(),
+    alignment: z.string().optional(),
+    povCharacter: z.boolean().optional(),
+    archetype: z.string().optional(),
+    favorites: z.number().optional(),
+    motivation: z.string().optional(),
+    goal: z.string().optional(),
+    fear: z.string().optional(),
+    secret: z.string().optional(),
+    lifeEvents: objectArraySchema.optional().describe("Array of life-event objects — shape not strictly enforced"),
+    culturalBackground: plainObjectSchema.optional().describe("Object such as { origin, upbringing, education, beliefs, languages } — shape not strictly enforced"),
+    strengths: z.array(z.string()).optional(),
+    weaknesses: z.array(z.string()).optional(),
+    internalConflict: z.string().optional(),
   };
 
   function toCodexPayload(fields: Record<string, unknown>): Record<string, unknown> {
@@ -213,6 +239,22 @@ export function registerWordArchitectTools(server: McpServer): void {
       characterArc: "character_arc",
       notes: "notes",
       eventYear: "event_year",
+      nickname: "nickname",
+      epithet: "epithet",
+      status: "status",
+      alignment: "alignment",
+      povCharacter: "pov_character",
+      archetype: "archetype",
+      favorites: "favorites",
+      motivation: "motivation",
+      goal: "goal",
+      fear: "fear",
+      secret: "secret",
+      lifeEvents: "life_events",
+      culturalBackground: "cultural_background",
+      strengths: "strengths",
+      weaknesses: "weaknesses",
+      internalConflict: "internal_conflict",
     };
     for (const [key, column] of Object.entries(map)) {
       if (fields[key] !== undefined) payload[column] = fields[key];

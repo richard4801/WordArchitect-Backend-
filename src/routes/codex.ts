@@ -6,15 +6,20 @@ import {
   type CodexTier,
   type CodexRelationshipStrength,
   type CharacterArcStage,
+  type CodexNote,
 } from "../types/domain.js";
 
 export const codexRouter = Router();
 
-const VALID_TIERS: CodexTier[] = ["main", "supporting", "minor"];
+const VALID_TIERS: CodexTier[] = ["main", "supporting", "minor", "extra"];
 const VALID_STRENGTHS: CodexRelationshipStrength[] = ["strong", "moderate", "tense", "weak"];
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isCharacterArc(value: unknown): value is CharacterArcStage[] {
@@ -28,6 +33,30 @@ function isCharacterArc(value: unknown): value is CharacterArcStage[] {
         typeof (item as Record<string, unknown>).description === "string"
     )
   );
+}
+
+// notes is an array of { title, body, date?, pinned? } — date/pinned are
+// optional so a caller can omit them without the whole entry being rejected.
+function isNotesArray(value: unknown): value is CodexNote[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => {
+      if (typeof item !== "object" || item === null) return false;
+      const note = item as Record<string, unknown>;
+      if (typeof note.title !== "string" || typeof note.body !== "string") return false;
+      if (note.date !== undefined && note.date !== null && typeof note.date !== "string") return false;
+      if (note.pinned !== undefined && typeof note.pinned !== "boolean") return false;
+      return true;
+    })
+  );
+}
+
+// life_events/cultural_background shapes aren't settled on the frontend
+// yet (see CLAUDE.md) — validated loosely as JSON objects/arrays-of-objects
+// rather than against specific required fields, so a legitimate but
+// not-yet-documented shape isn't rejected.
+function isObjectArray(value: unknown): value is Record<string, unknown>[] {
+  return Array.isArray(value) && value.every((item) => isPlainObject(item));
 }
 
 // Maps the request body's camelCase fields onto codex_entries' snake_case
@@ -130,8 +159,8 @@ function buildEntryPayload(
     payload.motivations = body.motivations;
   }
   if (body.background !== undefined) {
-    if (body.background !== null && typeof body.background !== "string")
-      return { payload, error: "background must be a string." };
+    if (body.background !== null && !isStringArray(body.background))
+      return { payload, error: "background must be an array of strings." };
     payload.background = body.background;
   }
   if (body.characterArc !== undefined) {
@@ -140,13 +169,89 @@ function buildEntryPayload(
     payload.character_arc = body.characterArc;
   }
   if (body.notes !== undefined) {
-    if (body.notes !== null && typeof body.notes !== "string") return { payload, error: "notes must be a string." };
+    if (body.notes !== null && !isNotesArray(body.notes))
+      return { payload, error: "notes must be an array of { title, body, date?, pinned? } objects." };
     payload.notes = body.notes;
   }
   if (body.eventYear !== undefined) {
     if (body.eventYear !== null && typeof body.eventYear !== "string")
       return { payload, error: "eventYear must be a string." };
     payload.event_year = body.eventYear;
+  }
+  if (body.nickname !== undefined) {
+    if (body.nickname !== null && typeof body.nickname !== "string")
+      return { payload, error: "nickname must be a string." };
+    payload.nickname = body.nickname;
+  }
+  if (body.epithet !== undefined) {
+    if (body.epithet !== null && typeof body.epithet !== "string")
+      return { payload, error: "epithet must be a string." };
+    payload.epithet = body.epithet;
+  }
+  if (body.status !== undefined) {
+    if (body.status !== null && typeof body.status !== "string")
+      return { payload, error: "status must be a string." };
+    payload.status = body.status;
+  }
+  if (body.alignment !== undefined) {
+    if (body.alignment !== null && typeof body.alignment !== "string")
+      return { payload, error: "alignment must be a string." };
+    payload.alignment = body.alignment;
+  }
+  if (body.povCharacter !== undefined) {
+    if (typeof body.povCharacter !== "boolean") return { payload, error: "povCharacter must be a boolean." };
+    payload.pov_character = body.povCharacter;
+  }
+  if (body.archetype !== undefined) {
+    if (body.archetype !== null && typeof body.archetype !== "string")
+      return { payload, error: "archetype must be a string." };
+    payload.archetype = body.archetype;
+  }
+  if (body.favorites !== undefined) {
+    if (typeof body.favorites !== "number") return { payload, error: "favorites must be a number." };
+    payload.favorites = body.favorites;
+  }
+  if (body.motivation !== undefined) {
+    if (body.motivation !== null && typeof body.motivation !== "string")
+      return { payload, error: "motivation must be a string." };
+    payload.motivation = body.motivation;
+  }
+  if (body.goal !== undefined) {
+    if (body.goal !== null && typeof body.goal !== "string") return { payload, error: "goal must be a string." };
+    payload.goal = body.goal;
+  }
+  if (body.fear !== undefined) {
+    if (body.fear !== null && typeof body.fear !== "string") return { payload, error: "fear must be a string." };
+    payload.fear = body.fear;
+  }
+  if (body.secret !== undefined) {
+    if (body.secret !== null && typeof body.secret !== "string") return { payload, error: "secret must be a string." };
+    payload.secret = body.secret;
+  }
+  if (body.lifeEvents !== undefined) {
+    if (body.lifeEvents !== null && !isObjectArray(body.lifeEvents))
+      return { payload, error: "lifeEvents must be an array of objects." };
+    payload.life_events = body.lifeEvents;
+  }
+  if (body.culturalBackground !== undefined) {
+    if (body.culturalBackground !== null && !isPlainObject(body.culturalBackground))
+      return { payload, error: "culturalBackground must be an object." };
+    payload.cultural_background = body.culturalBackground;
+  }
+  if (body.strengths !== undefined) {
+    if (body.strengths !== null && !isStringArray(body.strengths))
+      return { payload, error: "strengths must be an array of strings." };
+    payload.strengths = body.strengths;
+  }
+  if (body.weaknesses !== undefined) {
+    if (body.weaknesses !== null && !isStringArray(body.weaknesses))
+      return { payload, error: "weaknesses must be an array of strings." };
+    payload.weaknesses = body.weaknesses;
+  }
+  if (body.internalConflict !== undefined) {
+    if (body.internalConflict !== null && typeof body.internalConflict !== "string")
+      return { payload, error: "internalConflict must be a string." };
+    payload.internal_conflict = body.internalConflict;
   }
 
   return { payload, error: null };
