@@ -23,6 +23,13 @@ bloating the LLM's context window.
 
 ## Frontend Integration Reference
 
+**Base URL: `https://wordarchitect-backend.onrender.com`** — every path
+below is relative to this (e.g. `POST /books` = `POST
+https://wordarchitect-backend.onrender.com/api/v1/books`). Render's free
+tier spins down on inactivity, so the first request after a quiet period
+can take several seconds to wake it up; not a bug, just cold-start
+latency to plan the UI around (a loading state, or a keep-alive ping).
+
 Fast lookup for wiring the frontend's mock-store entities to real
 endpoints — see Content Management API below for full request/response
 detail on each. Every route is prefixed `/api/v1` and takes/returns JSON.
@@ -40,19 +47,14 @@ not the frontend's mock project IDs), and most writes also take `userId`.
 | Outliner (Beat/Act) | *not built* | confirmed low priority/deferred |
 | Dashboard-only stats (today's progress, AI insights, activity feed) | *not built* | frontend's own decision to keep these mock for now |
 
-**Known gaps, not yet resolved — flag before this goes live with real users:**
-- **No authentication on `/api/v1/*`.** Every route trusts whatever
-  `userId`/`bookId` the caller sends — there's no session/token tying a
-  request to a real logged-in account, so anyone who knows or guesses a
-  `bookId` can read or write that book's data. Fine for local test-harness
-  use (`public/index.html`); not fine once a real hosted frontend with
-  real user data is pointed at it. Only the separate `/mcp` surface
-  requires a bearer token (`MCP_API_KEY`).
-- **No documented deployed base URL.** Nothing in this repo records where
-  the backend is actually hosted (Render is referenced architecturally —
-  see the resumable bulk import section — but no live URL is checked in
-  anywhere); the frontend integration needs the real URL supplied
-  out-of-band, not guessed.
+**Known gap, deliberately accepted for now — revisit once real user
+accounts exist:** no authentication on `/api/v1/*`. Every route trusts
+whatever `userId`/`bookId` the caller sends — there's no session/token
+tying a request to a real logged-in account, so anyone who knows or
+guesses a `bookId` can read or write that book's data. Acceptable at this
+MVP/single-user stage; only the separate `/mcp` surface requires a bearer
+token (`MCP_API_KEY`). Add real auth in a follow-up pass, not silently —
+this is a conscious tradeoff, not an oversight.
 
 ## Dual-Layer Context Engine
 
