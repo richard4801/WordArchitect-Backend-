@@ -59,32 +59,56 @@ ALTER TABLE codex_entries
 -- ============================================================================
 -- 3. background: TEXT -> TEXT[]
 -- ============================================================================
+--
+-- Guarded by a data_type check (rather than a bare ALTER) so this whole
+-- migration is safe to run more than once. A bare USING clause comparing
+-- `background = ''` breaks with "malformed array literal" if background
+-- has already been converted to TEXT[] by an earlier run — Postgres
+-- reports the array type as 'ARRAY' (not 'text') in information_schema,
+-- so the block below only fires while the column is still TEXT.
 
-ALTER TABLE codex_entries
-  ALTER COLUMN background TYPE TEXT[]
-  USING (
-    CASE
-      WHEN background IS NULL OR background = '' THEN NULL
-      ELSE ARRAY[background]
-    END
-  );
+DO $$
+BEGIN
+  IF (
+    SELECT data_type FROM information_schema.columns
+    WHERE table_name = 'codex_entries' AND column_name = 'background'
+  ) = 'text' THEN
+    ALTER TABLE codex_entries
+      ALTER COLUMN background TYPE TEXT[]
+      USING (
+        CASE
+          WHEN background IS NULL OR background = '' THEN NULL
+          ELSE ARRAY[background]
+        END
+      );
+  END IF;
+END $$;
 
 -- ============================================================================
 -- 4. notes: TEXT -> JSONB (array of { title, body, date, pinned })
 -- ============================================================================
+-- Same re-run guard as background above.
 
-ALTER TABLE codex_entries
-  ALTER COLUMN notes TYPE JSONB
-  USING (
-    CASE
-      WHEN notes IS NULL OR notes = '' THEN NULL
-      ELSE jsonb_build_array(
-        jsonb_build_object(
-          'title', 'Notes',
-          'body', notes,
-          'date', to_char(created_at, 'YYYY-MM-DD'),
-          'pinned', false
-        )
-      )
-    END
-  );
+DO $$
+BEGIN
+  IF (
+    SELECT data_type FROM information_schema.columns
+    WHERE table_name = 'codex_entries' AND column_name = 'notes'
+  ) = 'text' THEN
+    ALTER TABLE codex_entries
+      ALTER COLUMN notes TYPE JSONB
+      USING (
+        CASE
+          WHEN notes IS NULL OR notes = '' THEN NULL
+          ELSE jsonb_build_array(
+            jsonb_build_object(
+              'title', 'Notes',
+              'body', notes,
+              'date', to_char(created_at, 'YYYY-MM-DD'),
+              'pinned', false
+            )
+          )
+        END
+      );
+  END IF;
+END $$;
