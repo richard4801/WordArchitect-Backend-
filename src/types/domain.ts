@@ -174,3 +174,33 @@ export interface ManuscriptScene {
   order_index: number;
   created_at: string;
 }
+
+export type NoteCategory =
+  | "World Building"
+  | "Character"
+  | "Plot"
+  | "Research"
+  | "Inspiration"
+  | "Magic System";
+
+export const VALID_NOTE_CATEGORIES: NoteCategory[] = [
+  "World Building",
+  "Character",
+  "Plot",
+  "Research",
+  "Inspiration",
+  "Magic System",
+];
+
+export interface Note {
+  id: string;
+  user_id: string;
+  book_id: string;
+  title: string;
+  excerpt: string;
+  category: NoteCategory;
+  pinned: boolean;
+  comments: number;
+  created_at: string;
+  updated_at: string;
+}

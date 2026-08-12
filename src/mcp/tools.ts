@@ -14,8 +14,8 @@ import {
   finishSceneDraftSession,
 } from "../services/sceneDraftSessions.js";
 import { diffDrafts } from "../lib/textDiff.js";
-import { KNOWN_CODEX_ENTRY_TYPES } from "../types/domain.js";
-import type { ManuscriptChunkMatch } from "../types/domain.js";
+import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
+import type { ManuscriptChunkMatch, NoteCategory } from "../types/domain.js";
 import { listWorldCategories, slugify } from "../routes/worldCategories.js";
 
 const SEARCH_MATCH_COUNT = 8;
@@ -146,6 +146,65 @@ export function registerWordArchitectTools(server: McpServer): void {
         }
         return errorResult(`Failed to create world category: ${error.message}`);
       }
+      return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  server.registerTool(
+    "list_notes",
+    {
+      title: "List Notes",
+      description:
+        "List this book's quick notes (brainstorming captures — worldbuilding ideas, plot threads, research, inspiration) — the same notes the writer captures via the frontend's Quick Notes composer or notes modal. Pinned notes first, then most recently updated. Use this to catch up on brainstorming context from outside the current conversation before proposing new Codex entries or categories.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        category: z.enum(VALID_NOTE_CATEGORIES as [NoteCategory, ...NoteCategory[]]).optional(),
+      },
+    },
+    async ({ bookId, category }) => {
+      const supabase = getSupabaseClient();
+      let query = supabase.from("notes").select("*").eq("book_id", bookId);
+      if (category) query = query.eq("category", category);
+
+      const { data, error } = await query
+        .order("pinned", { ascending: false })
+        .order("updated_at", { ascending: false });
+      if (error) return errorResult(`Failed to list notes: ${error.message}`);
+      return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  server.registerTool(
+    "create_note",
+    {
+      title: "Create Note",
+      description:
+        "Capture a quick note for the writer — e.g. a brainstorming idea worth remembering that doesn't belong in the Codex yet. Only call this when the writer has actually asked you to jot something down, not speculatively as a running log of the conversation.",
+      inputSchema: {
+        userId: z.string().describe("The user's ID"),
+        bookId: z.string().describe("The book's ID"),
+        title: z.string(),
+        excerpt: z.string().describe("The note's body text"),
+        category: z.enum(VALID_NOTE_CATEGORIES as [NoteCategory, ...NoteCategory[]]),
+        pinned: z.boolean().optional(),
+      },
+    },
+    async ({ userId, bookId, title, excerpt, category, pinned }) => {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from("notes")
+        .insert({
+          user_id: userId,
+          book_id: bookId,
+          title,
+          excerpt,
+          category,
+          pinned: pinned ?? false,
+        })
+        .select("*")
+        .single();
+
+      if (error) return errorResult(`Failed to create note: ${error.message}`);
       return textResult(JSON.stringify(data, null, 2));
     }
   );

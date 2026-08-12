@@ -434,6 +434,41 @@ everywhere else in this schema.
 Not currently surfaced to Layer 1 — purely for the human-facing Codex UI's
 Relationships tab. Managed via `/api/v1/codex/:id/relationships`.
 
+### `notes` (quick brainstorming captures)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | `gen_random_uuid()` |
+| `user_id` | UUID NOT NULL | the note's author |
+| `book_id` | UUID NOT NULL | |
+| `title` | VARCHAR(255) NOT NULL | |
+| `excerpt` | TEXT NOT NULL | the note's body |
+| `category` | VARCHAR(50) NOT NULL | CHECK: `World Building` \| `Character` \| `Plot` \| `Research` \| `Inspiration` \| `Magic System` |
+| `pinned` | BOOLEAN NOT NULL | default `false` |
+| `comments` | INT NOT NULL | default `0`; a plain stored counter, not backed by a real comments table — nothing in the frontend's documented `Note` shape describes individual comment records, same pattern as `codex_entries.favorites` |
+| `created_at`, `updated_at` | TIMESTAMPTZ | default `NOW()` |
+
+Added in migration `017_notes.sql` for the frontend's Quick Notes composer
+/ notes modal (`Note { id, title, excerpt, category, date, dateRank,
+comments, pinned, mine }`). Unlike Worldbuilding's category system,
+`category` here is `CHECK`-constrained to a fixed set rather than
+open-ended — the frontend's documented values are sourced from real type
+definitions, not placeholder seed data, and nothing in its `NewNoteInput`
+suggests a writer can invent new categories the way `NewCategoryInput`
+does for worldbuilding.
+
+`mine` from the frontend type is deliberately **not** a stored column —
+it's relative to whoever is viewing ("is this my note"), not an inherent
+property of the note itself. `user_id` is stored instead (the same
+pattern every other table in this schema uses), and "mine" is just
+`note.user_id === the viewer's user_id`, computed by whichever layer
+knows who's currently viewing.
+
+Managed via `GET/POST/PATCH/DELETE /api/v1/notes` (see below), mirrored
+on the MCP surface as `list_notes`/`create_note` since a writer's
+brainstorming notes are exactly the kind of context a Claude session
+should be able to read and add to.
+
 ### `manuscript_chunks` (Layer 2/3 source)
 
 | Column | Type | Notes |
@@ -531,6 +566,7 @@ are wholly new with no pre-existing data to conflict with.
 - `idx_codex_relationships_book_id`, `idx_codex_relationships_from_entry`, `idx_codex_relationships_to_entry` — B-tree
 - `idx_manuscript_parts_book_id`, `idx_manuscript_chapters_book_id`, `idx_manuscript_chapters_part_id`, `idx_manuscript_scenes_chapter_id` — B-tree
 - `idx_world_categories_book_id` — B-tree
+- `idx_notes_book_id` — B-tree
 
 ## Content Management API
 
@@ -613,6 +649,21 @@ Mirrored on the MCP surface as `list_world_categories` and
 categories already exist before proposing an `entryType` for
 `create_codex_entry`, and create new ones the same way a writer would
 from the frontend.
+
+### Notes CRUD (`src/routes/notes.ts`)
+
+- `GET /api/v1/notes?bookId=&category=&pinned=` — list a book's notes,
+  pinned first then most recently updated
+- `GET /api/v1/notes/:id`
+- `POST /api/v1/notes` — `{ userId, bookId, title, excerpt, category,
+  pinned? }`
+- `PATCH /api/v1/notes/:id` — partial update, including `comments` (a
+  plain counter — see the `notes` schema section above)
+- `DELETE /api/v1/notes/:id`
+
+Mirrored on the MCP surface as `list_notes`/`create_note` — a writer's
+brainstorming notes are context a Claude session should be able to read
+and add to, the same reasoning as the rest of the MCP surface.
 
 ### Manuscript ingestion (`src/routes/manuscript.ts`, `src/services/manuscriptIngest.ts`)
 
@@ -879,6 +930,8 @@ Read (safe to call freely):
 - `list_world_categories` — `{ bookId }` — every worldbuilding category
   for a book, including derived ones (see World Categories CRUD above);
   check this before guessing an `entryType`
+- `list_notes` — `{ bookId, category? }` — a book's brainstorming notes,
+  pinned first then most recently updated
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
@@ -890,6 +943,9 @@ unsupervised):
 - `create_codex_entry`, `update_codex_entry`
 - `create_world_category` — `{ bookId, name, key?, description?, color?,
   icon? }`, same auto-slugify behavior as `POST /api/v1/world-categories`
+- `create_note` — `{ userId, bookId, title, excerpt, category, pinned? }`
+  — only call when the writer has actually asked something be jotted
+  down, not as a running log of the conversation
 - `save_manuscript_scene` — ingests accepted prose into permanent
   manuscript memory via the existing `ingestManuscriptText` pipeline, so
   it's there for future generations (Claude-assisted or automatic) too

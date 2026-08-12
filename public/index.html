@@ -231,6 +231,31 @@
 </fieldset>
 
 <fieldset>
+  <legend>Notes</legend>
+  <p class="sub" style="margin-top:0;">Quick brainstorming captures — the same thing the frontend's Quick Notes composer / notes modal write to.</p>
+  <div class="row">
+    <div><label>Title</label><input id="nTitle" placeholder="Idea: totem's real origin" /></div>
+    <div><label>Category</label>
+      <select id="nCategory">
+        <option>World Building</option><option>Character</option><option>Plot</option>
+        <option>Research</option><option>Inspiration</option><option>Magic System</option>
+      </select>
+    </div>
+    <div><label><input id="nPinned" type="checkbox" style="width:auto; margin-right:6px;" />Pinned</label></div>
+  </div>
+  <div class="row">
+    <div><label>Excerpt</label><textarea id="nExcerpt" rows="2" placeholder="What's the note..."></textarea></div>
+  </div>
+  <button id="nCreate">Create note</button>
+  <button class="secondary" id="nRefresh" type="button">Refresh list</button>
+  <div id="nStatus" class="status"></div>
+  <table style="margin-top:10px;">
+    <thead><tr><th>Title</th><th>Category</th><th>Excerpt</th><th>Pinned</th><th class="actions">Actions</th></tr></thead>
+    <tbody id="nTable"></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
   <legend>Manuscript ingestion (Layer 2 / Layer 3 memory)</legend>
   <div class="row">
     <div><label>Chapter number</label><input id="mChapter" type="number" min="1" value="1" /></div>
@@ -702,6 +727,85 @@ $("wcCreate").addEventListener("click", async () => {
     loadWorldCategories();
   } catch (err) {
     setStatus($("wcStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Notes ----
+async function loadNotes() {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("nStatus"), "Enter a Book ID above to list notes.", "error"); return; }
+  setStatus($("nStatus"), "Loading...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/notes?bookId=" + encodeURIComponent(bookId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderNotesTable(data.notes || []);
+    setStatus($("nStatus"), (data.notes || []).length + " notes loaded.", "ok");
+  } catch (err) {
+    setStatus($("nStatus"), String(err.message || err), "error");
+  }
+}
+
+function renderNotesTable(notes) {
+  const tbody = $("nTable");
+  tbody.innerHTML = "";
+  for (const n of notes) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + escapeHtml(n.title) + "</td>" +
+      "<td>" + escapeHtml(n.category) + "</td>" +
+      "<td>" + escapeHtml(n.excerpt) + "</td>" +
+      "<td>" + (n.pinned ? "Yes" : "") + "</td>" +
+      '<td class="actions"><button class="small secondary" data-del="' + n.id + '">Delete</button></td>';
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this note?")) return;
+      const id = btn.getAttribute("data-del");
+      try {
+        const res = await fetch(apiBase() + "/api/v1/notes/" + id, { method: "DELETE" });
+        if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status);
+        loadNotes();
+      } catch (err) {
+        setStatus($("nStatus"), String(err.message || err), "error");
+      }
+    });
+  });
+}
+
+$("nRefresh").addEventListener("click", loadNotes);
+
+$("nCreate").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  if (!userId || !bookId) { setStatus($("nStatus"), "User ID and Book ID are required.", "error"); return; }
+
+  const body = {
+    userId,
+    bookId,
+    title: $("nTitle").value.trim(),
+    excerpt: $("nExcerpt").value.trim(),
+    category: $("nCategory").value,
+    pinned: $("nPinned").checked,
+  };
+
+  setStatus($("nStatus"), "Creating...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    setStatus($("nStatus"), "Created “" + data.note.title + "”.", "ok");
+    $("nTitle").value = "";
+    $("nExcerpt").value = "";
+    $("nPinned").checked = false;
+    loadNotes();
+  } catch (err) {
+    setStatus($("nStatus"), String(err.message || err), "error");
   }
 });
 
