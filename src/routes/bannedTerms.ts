@@ -39,8 +39,8 @@ bannedTermsRouter.post("/banned-terms", async (req: Request, res: Response) => {
   }
 
   try {
-    const created = await addBannedTerm({ userId, bookId, term });
-    res.status(201).json(created);
+    const result = await addBannedTerm({ userId, bookId, term });
+    res.status(result.alreadyExisted ? 200 : 201).json(result.term);
   } catch (error) {
     console.error("add banned term failed:", error);
     res.status(502).json({ error: "Failed to add banned term. Please try again." });
