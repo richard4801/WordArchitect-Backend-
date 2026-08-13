@@ -33,8 +33,8 @@
 //     [--tagline="..."] [--genre="..."] [--pov="..."] [--tense="..."]
 
 import "dotenv/config";
-import { randomUUID } from "node:crypto";
 import { getSupabaseClient } from "../src/lib/supabaseClient.js";
+import { splitIntoChapterParagraphs } from "../src/lib/chapterParagraphs.js";
 
 const PAGE_SIZE = 1000;
 const CHAPTER_INSERT_BATCH_SIZE = 50;
@@ -82,14 +82,6 @@ async function fetchAllChunks(bookId: string): Promise<ManuscriptChunkRow[]> {
   }
 
   return all;
-}
-
-function chunkTextToParagraphs(rawText: string): { id: string; text: string }[] {
-  return rawText
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((text) => ({ id: randomUUID(), text }));
 }
 
 async function main() {
@@ -158,7 +150,7 @@ async function main() {
   const syncedAt = new Date().toISOString();
   const rows = chapterNumbers.map((number) => {
     const chunksForChapter = byChapter.get(number)!; // already sorted by scene_order from the query
-    const paragraphs = chunksForChapter.flatMap((c) => chunkTextToParagraphs(c.raw_text));
+    const paragraphs = chunksForChapter.flatMap((c) => splitIntoChapterParagraphs(c.raw_text));
     return {
       user_id: userId,
       book_id: bookId,
