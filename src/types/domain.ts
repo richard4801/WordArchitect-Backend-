@@ -204,3 +204,44 @@ export interface Note {
   created_at: string;
   updated_at: string;
 }
+
+export type ChatPersona =
+  | "general"
+  | "story_assistant"
+  | "character_coach"
+  | "worldbuilding_guide"
+  | "writing_editor"
+  | "brainstormer";
+
+export const VALID_CHAT_PERSONAS: ChatPersona[] = [
+  "general",
+  "story_assistant",
+  "character_coach",
+  "worldbuilding_guide",
+  "writing_editor",
+  "brainstormer",
+];
+
+export interface ChatSession {
+  id: string;
+  user_id: string;
+  book_id: string;
+  persona: ChatPersona;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatToolCallLogEntry {
+  tool: string;
+  input: Record<string, unknown>;
+}
+
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  tool_calls: ChatToolCallLogEntry[] | null;
+  created_at: string;
+}

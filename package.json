@@ -12,6 +12,7 @@
     "test:engine": "tsx scripts/seed-and-test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/supabase-js": "^2.45.4",
     "cors": "^2.8.5",

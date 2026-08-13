@@ -59,6 +59,27 @@ function buildNotePayload(
   return { payload, error: null };
 }
 
+// Pinned notes first, then most recently updated — matches the
+// frontend's dateRank-style "recent activity" ordering. Exported for
+// reuse by the MCP server's list_notes tool and the Chat Assistant's
+// tool loop (src/services/chatAssistant.ts), so both LLM-facing surfaces
+// query notes identically rather than each inlining their own version.
+export async function listNotesForBook(
+  bookId: string,
+  options: { category?: string | undefined; pinned?: boolean | undefined } = {}
+) {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("notes").select("*").eq("book_id", bookId);
+  if (options.category) query = query.eq("category", options.category);
+  if (options.pinned !== undefined) query = query.eq("pinned", options.pinned);
+
+  const { data, error } = await query
+    .order("pinned", { ascending: false })
+    .order("updated_at", { ascending: false });
+  if (error) throw new Error(`Failed to list notes: ${error.message}`);
+  return data;
+}
+
 // GET /api/v1/notes?bookId=&category=&pinned=
 notesRouter.get("/notes", async (req: Request, res: Response) => {
   const bookId = req.query.bookId;
@@ -67,27 +88,16 @@ notesRouter.get("/notes", async (req: Request, res: Response) => {
     return;
   }
 
-  const supabase = getSupabaseClient();
-  let query = supabase.from("notes").select("*").eq("book_id", bookId);
-
-  if (typeof req.query.category === "string") {
-    query = query.eq("category", req.query.category);
-  }
-  if (typeof req.query.pinned === "string") {
-    query = query.eq("pinned", req.query.pinned === "true");
-  }
-
-  // Pinned notes first, then most recently updated — matches the
-  // frontend's dateRank-style "recent activity" ordering.
-  const { data, error } = await query
-    .order("pinned", { ascending: false })
-    .order("updated_at", { ascending: false });
-
-  if (error) {
+  try {
+    const notes = await listNotesForBook(bookId, {
+      category: typeof req.query.category === "string" ? req.query.category : undefined,
+      pinned: typeof req.query.pinned === "string" ? req.query.pinned === "true" : undefined,
+    });
+    res.json({ notes });
+  } catch (error) {
+    console.error("list notes failed:", error);
     res.status(502).json({ error: "Failed to list notes." });
-    return;
   }
-  res.json({ notes: data });
 });
 
 // GET /api/v1/notes/:id

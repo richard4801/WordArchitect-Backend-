@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
-import { generateEmbedding } from "../services/embedding.js";
 import { generateHanamiProse } from "../services/llm.js";
 import { buildSystemPrompt } from "../routes/generateProse.js";
 import { assembleContextPayload } from "../services/rag.js";
@@ -15,9 +14,11 @@ import {
 } from "../services/sceneDraftSessions.js";
 import { diffDrafts } from "../lib/textDiff.js";
 import { splitIntoChapterParagraphs } from "../lib/chapterParagraphs.js";
+import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "../services/bookContextTools.js";
 import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
-import type { ManuscriptChunkMatch, NoteCategory } from "../types/domain.js";
+import type { NoteCategory } from "../types/domain.js";
 import { listWorldCategories, slugify } from "../routes/worldCategories.js";
+import { listNotesForBook } from "../routes/notes.js";
 
 const SEARCH_MATCH_COUNT = 8;
 
@@ -62,13 +63,12 @@ export function registerWordArchitectTools(server: McpServer): void {
       },
     },
     async ({ bookId, entryType }) => {
-      const supabase = getSupabaseClient();
-      let query = supabase.from("codex_entries").select("*").eq("book_id", bookId);
-      if (entryType) query = query.eq("entry_type", entryType);
-
-      const { data, error } = await query.order("name", { ascending: true });
-      if (error) return errorResult(`Failed to list codex entries: ${error.message}`);
-      return textResult(JSON.stringify(data, null, 2));
+      try {
+        const data = await listCodexEntries(bookId, entryType);
+        return textResult(JSON.stringify(data, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 
@@ -80,11 +80,12 @@ export function registerWordArchitectTools(server: McpServer): void {
       inputSchema: { entryId: z.string().describe("The codex_entries row ID") },
     },
     async ({ entryId }) => {
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase.from("codex_entries").select("*").eq("id", entryId).maybeSingle();
-      if (error) return errorResult(`Failed to fetch codex entry: ${error.message}`);
-      if (!data) return errorResult(`No codex entry found with id ${entryId}`);
-      return textResult(JSON.stringify(data, null, 2));
+      try {
+        const data = await getCodexEntry(entryId);
+        return textResult(JSON.stringify(data, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 
@@ -163,15 +164,12 @@ export function registerWordArchitectTools(server: McpServer): void {
       },
     },
     async ({ bookId, category }) => {
-      const supabase = getSupabaseClient();
-      let query = supabase.from("notes").select("*").eq("book_id", bookId);
-      if (category) query = query.eq("category", category);
-
-      const { data, error } = await query
-        .order("pinned", { ascending: false })
-        .order("updated_at", { ascending: false });
-      if (error) return errorResult(`Failed to list notes: ${error.message}`);
-      return textResult(JSON.stringify(data, null, 2));
+      try {
+        const data = await listNotesForBook(bookId, { category });
+        return textResult(JSON.stringify(data, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 
@@ -223,16 +221,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ bookId, query }) => {
       try {
-        const embedding = await generateEmbedding(query);
-        const supabase = getSupabaseClient();
-        const { data, error } = await supabase.rpc("match_manuscript_chunks", {
-          query_embedding: embedding,
-          match_threshold: 0,
-          match_count: SEARCH_MATCH_COUNT,
-          target_book_id: bookId,
-        });
-        if (error) return errorResult(`Manuscript search failed: ${error.message}`);
-        const matches = (data ?? []) as ManuscriptChunkMatch[];
+        const matches = await searchManuscript(bookId, query);
         return textResult(JSON.stringify(matches, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
@@ -252,17 +241,12 @@ export function registerWordArchitectTools(server: McpServer): void {
       },
     },
     async ({ bookId, chapterNumber }) => {
-      const supabase = getSupabaseClient();
-      const { data, error } = await supabase
-        .from("manuscript_chunks")
-        .select("scene_order, raw_text")
-        .eq("book_id", bookId)
-        .eq("chapter_number", chapterNumber)
-        .order("scene_order", { ascending: true });
-
-      if (error) return errorResult(`Failed to fetch chapter: ${error.message}`);
-      if (!data || data.length === 0) return errorResult(`No manuscript chunks found for chapter ${chapterNumber}`);
-      return textResult(data.map((row) => row.raw_text).join("\n\n"));
+      try {
+        const text = await getManuscriptChapterText(bookId, chapterNumber);
+        return textResult(text);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 

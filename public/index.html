@@ -256,6 +256,31 @@
 </fieldset>
 
 <fieldset>
+  <legend>Chat Assistant (in-app AI chat, Claude-backed)</legend>
+  <p class="sub" style="margin-top:0;">Separate from Hanami prose generation — a persona-based chat with read-only access to this book's Codex/manuscript/notes. Requires ANTHROPIC_API_KEY set on the server.</p>
+  <div class="row">
+    <div><label>Persona</label>
+      <select id="chatPersona">
+        <option value="general">General</option>
+        <option value="story_assistant">Story Assistant</option>
+        <option value="character_coach">Character Coach</option>
+        <option value="worldbuilding_guide">Worldbuilding Guide</option>
+        <option value="writing_editor">Writing Editor</option>
+        <option value="brainstormer">Brainstormer</option>
+      </select>
+    </div>
+    <div><label>Session ID (blank = new conversation)</label><input id="chatSessionId" placeholder="(new)" /></div>
+    <div><button class="secondary" id="chatNewSession" type="button">New conversation</button></div>
+  </div>
+  <div id="chatHistory" style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:10px; margin:10px 0; font-size:14px;"></div>
+  <div class="row">
+    <div><label>Message</label><textarea id="chatMessage" rows="2" placeholder="Ask about a character, brainstorm a plot thread..."></textarea></div>
+  </div>
+  <button id="chatSend">Send</button>
+  <div id="chatStatus" class="status"></div>
+</fieldset>
+
+<fieldset>
   <legend>Manuscript ingestion (Layer 2 / Layer 3 memory)</legend>
   <div class="row">
     <div><label>Chapter number</label><input id="mChapter" type="number" min="1" value="1" /></div>
@@ -806,6 +831,63 @@ $("nCreate").addEventListener("click", async () => {
     loadNotes();
   } catch (err) {
     setStatus($("nStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Chat Assistant ----
+function renderChatMessage(role, text) {
+  const div = document.createElement("div");
+  div.style.margin = "6px 0";
+  div.innerHTML = "<strong>" + (role === "user" ? "You" : "Assistant") + ":</strong> " + escapeHtml(text).replace(/\n/g, "<br>");
+  $("chatHistory").appendChild(div);
+  $("chatHistory").scrollTop = $("chatHistory").scrollHeight;
+}
+
+$("chatNewSession").addEventListener("click", () => {
+  $("chatSessionId").value = "";
+  $("chatHistory").innerHTML = "";
+  setStatus($("chatStatus"), "Starting a new conversation on next send.", "ok");
+});
+
+$("chatSend").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const bookId = $("bookId").value.trim();
+  const message = $("chatMessage").value.trim();
+  if (!userId || !bookId || !message) {
+    setStatus($("chatStatus"), "User ID, Book ID, and a message are required.", "error");
+    return;
+  }
+
+  const body = { userId, bookId, message };
+  const sessionId = $("chatSessionId").value.trim();
+  if (sessionId) {
+    body.sessionId = sessionId;
+  } else {
+    body.persona = $("chatPersona").value;
+  }
+
+  renderChatMessage("user", message);
+  $("chatMessage").value = "";
+  $("chatSend").disabled = true;
+  setStatus($("chatStatus"), "Thinking (may call tools before answering)...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    $("chatSessionId").value = data.sessionId;
+    renderChatMessage("assistant", data.message.content);
+    const toolNote = data.message.tool_calls && data.message.tool_calls.length
+      ? " (used: " + data.message.tool_calls.map(t => t.tool).join(", ") + ")"
+      : "";
+    setStatus($("chatStatus"), "Replied." + toolNote, "ok");
+  } catch (err) {
+    setStatus($("chatStatus"), String(err.message || err), "error");
+  } finally {
+    $("chatSend").disabled = false;
   }
 });
 

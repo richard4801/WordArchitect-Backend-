@@ -20,6 +20,7 @@ bloating the LLM's context window.
 - **Database & Vector Memory**: Supabase (PostgreSQL) with the `pgvector` extension
 - **Embedding model**: OpenAI `text-embedding-3-small` (1536 dimensions) — used to index both manuscript text and Codex profiles
 - **Creative generation engine**: Hanami (Llama 3.1 70B merge), hosted via the Infermatic API, 32k token context window
+- **In-app AI Assistant**: Claude (Anthropic API), agentic tool-calling chat — distinct from Hanami (prose generation) and from the external MCP server (Claude Desktop/claude.ai as a separate connected client)
 
 ## Frontend Integration Reference
 
@@ -44,6 +45,7 @@ not the frontend's mock project IDs), and most writes also take `userId`.
 | Worldbuilding entries (`WorldEntry`) | Codex CRUD (`/codex`), `entryType: <category key>` | same table/endpoints as Character, different `entryType` |
 | Notes | Notes CRUD (`/notes`) | `mine` is not a stored field — compare `note.userId` to the viewer |
 | Manuscript/Chapters (rich editor) | Manuscript Chapters CRUD (`/manuscript/parts`, `/manuscript/chapters`, `/manuscript/chapters/:id/scenes`) | `PATCH /manuscript/chapters/:id` is the autosave endpoint; `POST .../sync-to-memory` is a separate, explicit "accept into AI memory" action |
+| AI Assistant (in-app chat, persona cards) | Chat Assistant (`/chat`, `/chat/sessions`) | see Chat Assistant section below — separate from Hanami prose generation and from the external MCP server |
 | Outliner (Beat/Act) | *not built* | confirmed low priority/deferred |
 | Dashboard-only stats (today's progress, AI insights, activity feed) | *not built* | frontend's own decision to keep these mock for now |
 
@@ -594,6 +596,27 @@ row, and a FK here would block legitimate writes for it. `part_id` and
 `chapter_id` above *are* real foreign keys, since those referenced tables
 are wholly new with no pre-existing data to conflict with.
 
+### `chat_sessions` / `chat_messages` (in-app AI Assistant)
+
+| Table | Column | Type | Notes |
+| --- | --- | --- | --- |
+| `chat_sessions` | `id` | UUID PK | |
+| | `user_id`, `book_id` | UUID NOT NULL | |
+| | `persona` | VARCHAR(50) NOT NULL | default `'general'`; one of `VALID_CHAT_PERSONAS` — see Chat Assistant below |
+| | `title` | TEXT | auto-derived from the first message (truncated) if not set explicitly |
+| | `created_at`, `updated_at` | TIMESTAMPTZ | `updated_at` bumped on every new message, for "most recent conversation" ordering |
+| `chat_messages` | `id` | UUID PK | |
+| | `session_id` | UUID NOT NULL | FK → `chat_sessions(id)` ON DELETE CASCADE |
+| | `role` | VARCHAR(20) NOT NULL | CHECK: `user` \| `assistant` |
+| | `content` | TEXT NOT NULL | |
+| | `tool_calls` | JSONB | array of `{ tool, input }` — which read tools the assistant called while producing this message, null for user messages; transparency into what it actually looked up before answering |
+| | `created_at` | TIMESTAMPTZ | default `NOW()` |
+
+Added in migration `019_chat_assistant.sql`. One row per conversation,
+one row per turn — not a single growing JSONB blob on the session row, so
+appending a message never means rewriting/resending the whole history.
+See Chat Assistant below for the full feature.
+
 ### Indexes
 
 - `idx_codex_entries_book_id`, `idx_manuscript_chunks_book_id` — B-tree, scope every retrieval query to one book
@@ -602,6 +625,7 @@ are wholly new with no pre-existing data to conflict with.
 - `idx_manuscript_parts_book_id`, `idx_manuscript_chapters_book_id`, `idx_manuscript_chapters_part_id`, `idx_manuscript_scenes_chapter_id` — B-tree
 - `idx_world_categories_book_id` — B-tree
 - `idx_notes_book_id` — B-tree
+- `idx_chat_sessions_book_id`, `idx_chat_messages_session_id` — B-tree
 
 ## Content Management API
 
@@ -839,6 +863,96 @@ same table).
 - `POST /api/v1/manuscript/chapters/:chapterId/scenes` — `{ title, orderIndex? }`
 - `PATCH /api/v1/manuscript/scenes/:id`
 - `DELETE /api/v1/manuscript/scenes/:id`
+
+## Chat Assistant
+
+`/chat` (`src/routes/chat.ts`, `src/services/chatAssistant.ts`) is the
+in-app "AI Assistant" surface — a persona-based chat backed directly by
+the Anthropic API, distinct from both Hanami (`/generate-prose`, prose
+generation) and the MCP server (Claude as an *external* connected client,
+e.g. Claude Desktop). This is a real embedded chat inside the product
+itself.
+
+**Why a separate surface from MCP, even though both give Claude access to
+the same book data**: MCP is designed for an external client holding its
+own session (a human driving Claude Desktop/claude.ai, deciding turn by
+turn whether to call a write tool). An in-app chat panel has no such
+external client — the backend itself has to run the model call and any
+tool calls synchronously within one HTTP request/response. Reusing MCP's
+transport for that would mean standing up an internal MCP client just to
+talk to an MCP server in the same process, for no real benefit. Instead,
+`chatAssistant.ts` calls the Anthropic API directly with native
+tool-calling, running its own request/response loop.
+
+**Read-only tools, deliberately** — `list_codex_entries`, `get_codex_entry`,
+`search_manuscript`, `get_manuscript_chapter`, `list_world_categories`,
+`list_notes`. No write tools. The MCP server's write tools are safe
+*because* a human is actively directing each write in real time via
+conversation; this loop instead runs several tool calls autonomously
+within a single turn with no confirmation in between, so giving it write
+access here would mean unsupervised writes to the Codex — exactly what
+every write tool elsewhere in this project has been built to avoid. A
+future "let the assistant create this character" flow would need an
+explicit propose-then-confirm step, not silent inclusion in this loop.
+
+**Shared query layer, not duplicated logic**: `list_codex_entries`,
+`get_codex_entry`, `search_manuscript`, and `get_manuscript_chapter`'s
+actual queries live in `src/services/bookContextTools.ts`; `list_notes`
+reuses `listNotesForBook` (`src/routes/notes.ts`) and `list_world_categories`
+reuses `listWorldCategories` (`src/routes/worldCategories.ts`). The MCP
+server's equivalent tools call the exact same functions. Two LLM-facing
+surfaces independently reimplementing "how do I look up this book's
+Codex" is exactly the kind of drift this project has caught and fixed
+before (see the Codex field-list sync note under MCP Server below).
+
+**Personas** (`ChatPersona` in `src/types/domain.ts`) — `general`,
+`story_assistant`, `character_coach`, `worldbuilding_guide`,
+`writing_editor`, `brainstormer`. Each is the same underlying loop and
+the same tool access; only the system prompt's specialization instruction
+changes (`PERSONA_INSTRUCTIONS` in `chatAssistant.ts`). A session is
+locked to the persona it was created with — set once via `POST /chat`
+without a `sessionId`, then implied by `sessionId` on every later message
+in that conversation.
+
+**Tool-call transparency**: every assistant message stores which tools it
+called and with what input (`chat_messages.tool_calls`) — the same
+"show what actually happened" principle as the Ghost Editor correction
+report and `record_scene_draft_iteration`'s automatic diff.
+
+**Not for writing manuscript prose** — the system prompt explicitly tells
+the assistant this chat is for discussion/brainstorming/advice, and to
+point the writer at the normal generation flow if they want actual prose
+written. Keeps this surface's job distinct from Hanami's and from the MCP
+server's `generate_prose_direct`/scene-draft-session tools.
+
+**Endpoints:**
+- `POST /api/v1/chat` — `{ userId, bookId, sessionId?, persona?, message }`.
+  Creates a new session (with `persona`, default `general`) if `sessionId`
+  is omitted; otherwise appends to the existing session, ignoring `persona`
+  (a session keeps the persona it was created with). Runs the full
+  tool-calling loop synchronously and returns the finished reply — not
+  streamed, since a turn can involve several tool round trips before a
+  final answer, unlike Hanami's single-pass stream. Response:
+  `{ sessionId, message: <chat_messages row> }`.
+- `GET /api/v1/chat/sessions?bookId=&userId=` — list conversations for a
+  book, most recently updated first (the "Recent Conversations" list).
+- `GET /api/v1/chat/sessions/:id` — full message history, for resuming or
+  viewing a past conversation.
+- `PATCH /api/v1/chat/sessions/:id` — rename (`{ title }`).
+- `DELETE /api/v1/chat/sessions/:id` — deletes the session and its
+  messages (cascades).
+
+**Requires `ANTHROPIC_API_KEY`** (and optionally `ANTHROPIC_MODEL`,
+default `claude-sonnet-5`) in the environment — a new env var this
+feature introduces; not required by anything else in this backend (Hanami
+generation uses `INFERMATIC_API_KEY`/`INFERMATIC_BASE_URL` instead). Every
+`/chat` call fails clearly (502, "Missing required environment variable")
+if unset, rather than silently.
+
+**Safety cap**: `MAX_TOOL_ITERATIONS = 6` in `chatAssistant.ts` — if the
+assistant is still calling tools after 6 rounds without producing a final
+answer, the turn fails with a clear error rather than looping
+indefinitely or silently truncating.
 
 ## MCP Server
 
