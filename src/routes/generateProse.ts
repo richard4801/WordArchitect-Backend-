@@ -5,13 +5,19 @@ import { estimateTokens } from "../lib/tokenBudget.js";
 import { markBracketedInstructions } from "../lib/bracketInstructions.js";
 import { listBannedTerms } from "../services/bannedTerms.js";
 import { enforceBannedTerms } from "../services/ghostEditor.js";
+import { getSupabaseClient } from "../lib/supabaseClient.js";
 
 export const generateProseRouter = Router();
 
 interface GenerateProseBody {
   userId: string;
   bookId: string;
-  userSceneBeat: string;
+  // Either userSceneBeat or beatId is required — see resolveUserSceneBeat.
+  userSceneBeat?: string;
+  // An Outliner beat (chapter_beats.id) whose outline_text is used as the
+  // scene beat instead of a freehand userSceneBeat — the beat card the
+  // writer already filled in becomes the generation input.
+  beatId?: string;
   recentHistoryText?: string;
   // Fresh, per-generation instructions for the chapter about to be
   // written — not saved anywhere, entered on this call only. See
@@ -28,8 +34,16 @@ function validateGenerateProseBody(body: Record<string, unknown>): string | null
   if (typeof body.bookId !== "string" || body.bookId.trim() === "") {
     return "bookId is required and must be a non-empty string.";
   }
-  if (typeof body.userSceneBeat !== "string" || body.userSceneBeat.trim() === "") {
-    return "userSceneBeat is required and must be a non-empty string.";
+  if (body.userSceneBeat !== undefined && typeof body.userSceneBeat !== "string") {
+    return "userSceneBeat must be a string when provided.";
+  }
+  if (body.beatId !== undefined && typeof body.beatId !== "string") {
+    return "beatId must be a string when provided.";
+  }
+  const hasSceneBeat = typeof body.userSceneBeat === "string" && body.userSceneBeat.trim() !== "";
+  const hasBeatId = typeof body.beatId === "string" && body.beatId.trim() !== "";
+  if (!hasSceneBeat && !hasBeatId) {
+    return "Either userSceneBeat or beatId is required.";
   }
   if (body.recentHistoryText !== undefined && typeof body.recentHistoryText !== "string") {
     return "recentHistoryText must be a string when provided.";
@@ -41,6 +55,39 @@ function validateGenerateProseBody(body: Record<string, unknown>): string | null
     return "chapterAvoid must be a string when provided.";
   }
   return null;
+}
+
+// When beatId is supplied instead of (or alongside) a freehand
+// userSceneBeat, an explicit userSceneBeat still wins — beatId is the
+// fallback source, not an override, so a writer can paste a one-off tweak
+// without editing the saved beat. Pulls chapter_beats.outline_text, the
+// Outliner card the writer already filled in, instead of requiring it to
+// be retyped/pasted into the generation form every time.
+async function resolveUserSceneBeat(body: GenerateProseBody): Promise<{ text: string } | { error: string }> {
+  if (body.userSceneBeat && body.userSceneBeat.trim() !== "") {
+    return { text: body.userSceneBeat };
+  }
+  if (!body.beatId) {
+    return { error: "Either userSceneBeat or beatId is required." };
+  }
+
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("chapter_beats")
+    .select("outline_text")
+    .eq("id", body.beatId)
+    .maybeSingle();
+
+  if (error) {
+    return { error: "Failed to load the beat's outline text." };
+  }
+  if (!data) {
+    return { error: `No beat found with id ${body.beatId}.` };
+  }
+  if (!data.outline_text || data.outline_text.trim() === "") {
+    return { error: "This beat has no outline text yet — add one before generating." };
+  }
+  return { text: data.outline_text };
 }
 
 const SYSTEM_PROMPT_INSTRUCTIONS = [
@@ -106,8 +153,15 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
     return;
   }
 
-  const { userId, bookId, userSceneBeat, recentHistoryText, chapterInstructions, chapterAvoid } =
+  const { userId, bookId, recentHistoryText, chapterInstructions, chapterAvoid } =
     body as unknown as GenerateProseBody;
+
+  const resolvedBeat = await resolveUserSceneBeat(body as unknown as GenerateProseBody);
+  if ("error" in resolvedBeat) {
+    res.status(400).json({ error: resolvedBeat.error });
+    return;
+  }
+  const userSceneBeat = resolvedBeat.text;
 
   try {
     const { payload, layer3Candidates, expandedChapters, estimatedTotalTokens } = await assembleContextPayload({
@@ -153,8 +207,15 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
     return;
   }
 
-  const { userId, bookId, userSceneBeat, recentHistoryText, chapterInstructions, chapterAvoid } =
+  const { userId, bookId, recentHistoryText, chapterInstructions, chapterAvoid } =
     body as unknown as GenerateProseBody;
+
+  const resolvedBeat = await resolveUserSceneBeat(body as unknown as GenerateProseBody);
+  if ("error" in resolvedBeat) {
+    res.status(400).json({ error: resolvedBeat.error });
+    return;
+  }
+  const userSceneBeat = resolvedBeat.text;
 
   try {
     const { payload } = await assembleContextPayload({

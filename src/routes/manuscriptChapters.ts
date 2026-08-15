@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { ingestManuscriptText } from "../services/manuscriptIngest.js";
+import { VALID_BEAT_STATUSES } from "../types/domain.js";
+import type { BeatStatus } from "../types/domain.js";
 
 export const manuscriptChaptersRouter = Router();
 
@@ -527,6 +529,157 @@ manuscriptChaptersRouter.delete("/manuscript/scenes/:id", async (req: Request, r
   }
   if (!data) {
     res.status(404).json({ error: `No scene found with id ${req.params.id}.` });
+    return;
+  }
+  res.status(204).end();
+});
+
+// ============================================================================
+// Beats — Outliner cards under a chapter (Acts -> Chapters -> Beats). See
+// GET /api/v1/outline/beats (src/routes/outline.ts) for the whole-book
+// board view; these are the per-chapter CRUD endpoints, e.g. for the
+// editor's own "Outline" side-panel tab.
+// ============================================================================
+
+// GET /api/v1/manuscript/chapters/:chapterId/beats
+manuscriptChaptersRouter.get("/manuscript/chapters/:chapterId/beats", async (req: Request, res: Response) => {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("chapter_beats")
+    .select("*")
+    .eq("chapter_id", req.params.chapterId)
+    .order("order_index", { ascending: true });
+
+  if (error) {
+    res.status(502).json({ error: "Failed to list chapter beats." });
+    return;
+  }
+  res.json({ beats: data });
+});
+
+// POST /api/v1/manuscript/chapters/:chapterId/beats
+manuscriptChaptersRouter.post("/manuscript/chapters/:chapterId/beats", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  if (typeof body.title !== "string" || body.title.trim() === "") {
+    res.status(400).json({ error: "title is required and must be a non-empty string." });
+    return;
+  }
+  if (body.outlineText !== undefined && typeof body.outlineText !== "string") {
+    res.status(400).json({ error: "outlineText must be a string." });
+    return;
+  }
+  if (body.orderIndex !== undefined && typeof body.orderIndex !== "number") {
+    res.status(400).json({ error: "orderIndex must be a number." });
+    return;
+  }
+  if (body.status !== undefined && !VALID_BEAT_STATUSES.includes(body.status as BeatStatus)) {
+    res.status(400).json({ error: `status must be one of: ${VALID_BEAT_STATUSES.join(", ")}.` });
+    return;
+  }
+
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("chapter_beats")
+    .insert({
+      chapter_id: req.params.chapterId,
+      title: body.title,
+      outline_text: body.outlineText ?? "",
+      order_index: body.orderIndex ?? 0,
+      status: body.status ?? "not_started",
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("chapter beat creation failed:", error);
+    res.status(502).json({ error: "Failed to create beat." });
+    return;
+  }
+  res.status(201).json({ beat: data });
+});
+
+// PATCH /api/v1/manuscript/beats/:id
+manuscriptChaptersRouter.patch("/manuscript/beats/:id", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const payload: Record<string, unknown> = {};
+
+  if (body.title !== undefined) {
+    if (typeof body.title !== "string" || body.title.trim() === "") {
+      res.status(400).json({ error: "title must be a non-empty string." });
+      return;
+    }
+    payload.title = body.title;
+  }
+  if (body.outlineText !== undefined) {
+    if (typeof body.outlineText !== "string") {
+      res.status(400).json({ error: "outlineText must be a string." });
+      return;
+    }
+    payload.outline_text = body.outlineText;
+  }
+  if (body.orderIndex !== undefined) {
+    if (typeof body.orderIndex !== "number") {
+      res.status(400).json({ error: "orderIndex must be a number." });
+      return;
+    }
+    payload.order_index = body.orderIndex;
+  }
+  if (body.status !== undefined) {
+    if (!VALID_BEAT_STATUSES.includes(body.status as BeatStatus)) {
+      res.status(400).json({ error: `status must be one of: ${VALID_BEAT_STATUSES.join(", ")}.` });
+      return;
+    }
+    payload.status = body.status;
+  }
+  if (body.linkedToManuscript !== undefined) {
+    if (typeof body.linkedToManuscript !== "boolean") {
+      res.status(400).json({ error: "linkedToManuscript must be a boolean." });
+      return;
+    }
+    payload.linked_to_manuscript = body.linkedToManuscript;
+  }
+  if (Object.keys(payload).length === 0) {
+    res.status(400).json({ error: "No updatable fields were provided." });
+    return;
+  }
+  payload.updated_at = new Date().toISOString();
+
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("chapter_beats")
+    .update(payload)
+    .eq("id", req.params.id)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    res.status(502).json({ error: "Failed to update beat." });
+    return;
+  }
+  if (!data) {
+    res.status(404).json({ error: `No beat found with id ${req.params.id}.` });
+    return;
+  }
+  res.json({ beat: data });
+});
+
+// DELETE /api/v1/manuscript/beats/:id
+manuscriptChaptersRouter.delete("/manuscript/beats/:id", async (req: Request, res: Response) => {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("chapter_beats")
+    .delete()
+    .eq("id", req.params.id)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    res.status(502).json({ error: "Failed to delete beat." });
+    return;
+  }
+  if (!data) {
+    res.status(404).json({ error: `No beat found with id ${req.params.id}.` });
     return;
   }
   res.status(204).end();

@@ -245,3 +245,25 @@ export interface ChatMessage {
   tool_calls: ChatToolCallLogEntry[] | null;
   created_at: string;
 }
+
+export type BeatStatus = "not_started" | "planned" | "in_progress" | "completed";
+
+export const VALID_BEAT_STATUSES: BeatStatus[] = ["not_started", "planned", "in_progress", "completed"];
+
+// Outliner: a per-chapter outline card (Acts -> Chapters -> Beats). Its
+// outline_text is what /generate-prose pulls as the sceneBeat when
+// generating via beatId, instead of the writer retyping/pasting a scene
+// beat by hand each time. linked_to_manuscript flips true once the beat's
+// generated prose has been accepted into the chapter's paragraphs — a
+// simple flag, not a tracked paragraph range.
+export interface ChapterBeat {
+  id: string;
+  chapter_id: string;
+  order_index: number;
+  title: string;
+  outline_text: string;
+  status: BeatStatus;
+  linked_to_manuscript: boolean;
+  created_at: string;
+  updated_at: string;
+}

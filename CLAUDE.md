@@ -46,7 +46,7 @@ not the frontend's mock project IDs), and most writes also take `userId`.
 | Notes | Notes CRUD (`/notes`) | `mine` is not a stored field — compare `note.userId` to the viewer |
 | Manuscript/Chapters (rich editor) | Manuscript Chapters CRUD (`/manuscript/parts`, `/manuscript/chapters`, `/manuscript/chapters/:id/scenes`) | `PATCH /manuscript/chapters/:id` is the autosave endpoint; `POST .../sync-to-memory` is a separate, explicit "accept into AI memory" action |
 | AI Assistant (in-app chat, persona cards) | Chat Assistant (`/chat`, `/chat/sessions`) | see Chat Assistant section below — separate from Hanami prose generation and from the external MCP server |
-| Outliner (Beat/Act) | *not built* | confirmed low priority/deferred |
+| Outliner (Act/Chapter/Beat) | Outliner (`/outline/beats` for the whole-book board, `/manuscript/chapters/:id/beats` for a single chapter) | Acts are `manuscript_parts`, Chapters are `manuscript_chapters` — both already existed; Beats (`chapter_beats`) are the new piece — see Outliner section below |
 | Dashboard-only stats (today's progress, AI insights, activity feed) | *not built* | frontend's own decision to keep these mock for now |
 
 **Known gap, deliberately accepted for now — revisit once real user
@@ -585,6 +585,23 @@ pagination, and neither side actually needs that.
 | | `order_index` | INT NOT NULL | default `0` |
 | | `created_at` | TIMESTAMPTZ | default `NOW()` |
 
+### `chapter_beats` (Outliner)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | |
+| `chapter_id` | UUID NOT NULL | FK → `manuscript_chapters(id)` ON DELETE CASCADE |
+| `order_index` | INT NOT NULL | default `0` |
+| `title` | VARCHAR(255) NOT NULL | |
+| `outline_text` | TEXT NOT NULL | default `''`; what the writer plans for this beat — becomes `/generate-prose`'s `userSceneBeat` when generating via `beatId` instead of a freehand paste |
+| `status` | VARCHAR(20) NOT NULL | CHECK: `not_started` \| `planned` \| `in_progress` \| `completed`; default `not_started` |
+| `linked_to_manuscript` | BOOLEAN NOT NULL | default `false`; flips true once this beat's accepted prose has been written into the chapter's `paragraphs` — a flag, not a tracked paragraph range (see Outliner below for why) |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+Added in migration `020_chapter_beats.sql`. See the Outliner section below —
+Acts and Chapters already existed as `manuscript_parts`/`manuscript_chapters`;
+this table is the one genuinely new piece.
+
 `manuscript_scenes` is a writer-authored navigation marker within a
 chapter, not to be confused with `manuscript_chunks.scene_order` — a
 RAG chunk position assigned automatically during ingestion.
@@ -863,6 +880,67 @@ same table).
 - `POST /api/v1/manuscript/chapters/:chapterId/scenes` — `{ title, orderIndex? }`
 - `PATCH /api/v1/manuscript/scenes/:id`
 - `DELETE /api/v1/manuscript/scenes/:id`
+
+**Beats** — see Outliner below for the full feature; these are the
+per-chapter CRUD endpoints (e.g. for the editor's own "Outline" side-panel
+tab):
+- `GET /api/v1/manuscript/chapters/:chapterId/beats`
+- `POST /api/v1/manuscript/chapters/:chapterId/beats` — `{ title, outlineText?, orderIndex?, status? }`
+- `PATCH /api/v1/manuscript/beats/:id` — `title`/`outlineText`/`orderIndex`/`status`/`linkedToManuscript`
+- `DELETE /api/v1/manuscript/beats/:id`
+
+## Outliner
+
+Acts → Chapters → Beats — the structural planning layer above the
+manuscript itself, where a writer plans what a chapter is going to do
+before writing or generating it.
+
+**Acts and Chapters already existed** — Acts are just `manuscript_parts`
+(already a generic ordered grouping with `title`/`order_index`; "Act I",
+"Act II" is simply what a writer names a part) and Chapters are
+`manuscript_chapters`, already the same row the writing page opens and
+edits. Nothing new was needed for either.
+
+**Beats are the genuinely new piece** (`chapter_beats`, migration
+`020_chapter_beats.sql`) — an outline card under a chapter: a title, an
+`outline_text` (what the writer plans happens in this beat), a `status`
+(`not_started` / `planned` / `in_progress` / `completed`), and
+`linked_to_manuscript` (flips true once the beat's accepted prose has
+been written into the chapter — a simple flag rather than a tracked
+paragraph range, since precise range-linking is a bigger feature than a
+first version needs).
+
+**Two views over the same data, not two features**: `GET
+/api/v1/outline/beats?bookId=` (`src/routes/outline.ts`) returns
+everything needed for the full-book board — every `manuscript_parts` row,
+every chapter's metadata, and every beat across the book, all flat rather
+than deeply nested (the same convention as `GET /manuscript/chapters/:id`
+returning `{ chapter, scenes }` separately) — the frontend groups beats
+under chapters under parts itself. `GET
+/manuscript/chapters/:chapterId/beats` is the same underlying table
+filtered to one chapter, for the editor's own "Outline" side-panel tab
+showing just the open chapter's beats. Deliberately built as one table
+with two query shapes rather than two separate backends for what's really
+the same data viewed at two zoom levels.
+
+**Feeds generation directly**: `/generate-prose` and
+`/generate-prose/preview` now accept an optional `beatId` alongside (or
+instead of) `userSceneBeat` — when present and no explicit `userSceneBeat`
+is given, the beat's `outline_text` is pulled and used as the scene beat.
+An explicit `userSceneBeat` still wins over `beatId` when both are sent,
+so a writer can paste a one-off tweak without editing the saved beat.
+This is a real shift from before: a beat card the writer already filled
+in becomes the generation input directly, rather than requiring the scene
+beat to be retyped or pasted into the generation form on every call. Beat
+granularity also matches the project's own established finding that
+Hanami's scope discipline holds up best around one beat/paragraph per
+call (see the MCP Server section's supervised-drafting findings) — this
+is a natural unit to generate from, not an arbitrary one.
+
+Not automatically marked `linked_to_manuscript` by `/generate-prose`
+itself — that endpoint only returns prose, it never writes to
+`manuscript_chapters`. Setting the flag is a writer/frontend action taken
+once generated prose is actually accepted into the chapter.
 
 ## Chat Assistant
 
