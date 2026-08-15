@@ -33,22 +33,32 @@ outlineRouter.get("/outline/beats", async (req: Request, res: Response) => {
     return;
   }
 
-  const chapterIds = (chapters ?? []).map((c) => c.id);
-  if (chapterIds.length === 0) {
+  if ((chapters ?? []).length === 0) {
     res.json({ parts: parts ?? [], chapters: [], beats: [] });
     return;
   }
 
-  const { data: beats, error: beatsError } = await supabase
+  // Filtered via a PostgREST FK-embedded join on manuscript_chapters.book_id
+  // rather than .in("chapter_id", <every chapter id in the book>) — a real
+  // book can have hundreds of chapters (confirmed against production: one
+  // real book has 403), and passing that many UUIDs as an .in() filter
+  // encodes them all into the request URL, which blows past PostgREST's
+  // ~16KB header limit and fails with a HeadersOverflowError. Filtering on
+  // the embedded relationship instead sends one UUID regardless of chapter
+  // count, so this scales the same way at 10 chapters or 1,000.
+  const { data: beatsWithChapter, error: beatsError } = await supabase
     .from("chapter_beats")
-    .select("*")
-    .in("chapter_id", chapterIds)
+    .select("*, manuscript_chapters!inner(book_id)")
+    .eq("manuscript_chapters.book_id", bookId)
     .order("order_index", { ascending: true });
 
   if (beatsError) {
+    console.error("outline beats query failed:", beatsError);
     res.status(502).json({ error: "Failed to load beats." });
     return;
   }
 
-  res.json({ parts: parts ?? [], chapters: chapters ?? [], beats: beats ?? [] });
+  const beats = (beatsWithChapter ?? []).map(({ manuscript_chapters, ...beat }) => beat);
+
+  res.json({ parts: parts ?? [], chapters: chapters ?? [], beats });
 });
