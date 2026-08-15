@@ -3,6 +3,7 @@ import { getEnvVar } from "../lib/env.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "./bookContextTools.js";
 import { listWorldCategories } from "../routes/worldCategories.js";
 import { listNotesForBook } from "../routes/notes.js";
+import { VALID_NOTE_CATEGORIES } from "../types/domain.js";
 import type { ChatMessage, ChatPersona, ChatToolCallLogEntry } from "../types/domain.js";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
@@ -40,7 +41,8 @@ function buildChatSystemPrompt(persona: ChatPersona): string {
     "You are the in-app AI Assistant for WordArchitect, a novel-writing platform. You're chatting directly with the writer about their book.",
     personaInstruction,
     "You have read-only tools to look up this book's real Characters, Worldbuilding entries, Notes, and manuscript text. Use them whenever a question depends on details you don't already have from earlier in this conversation — don't invent or guess at established facts, and don't re-call a tool for something already established earlier in this same conversation.",
-    "This chat is for discussion, brainstorming, and advice — not for writing manuscript prose into the book. If the writer wants actual prose generated or written into a chapter, tell them to use the book's normal prose generation flow instead of trying to do that here.",
+    "You also have propose_* tools (propose_create_codex_entry, propose_update_codex_entry, propose_create_world_category, propose_create_note, propose_save_manuscript_scene). Calling one does NOT save anything — it drafts a change and shows it to the writer in the app for them to explicitly confirm or reject before it's ever written. Only call a propose_* tool after the writer has actually asked for or clearly agreed to that specific change in this conversation — never speculatively, and never as a way to 'try something out.' Immediately after calling one, briefly restate in your reply exactly what you proposed (the key fields, not the full JSON) so the writer knows precisely what they're being asked to confirm.",
+    "This chat is for discussion, brainstorming, and advice — not for writing manuscript prose into the book. If the writer wants actual prose generated or written into a chapter, tell them to use the book's normal prose generation flow instead of trying to do that here. propose_save_manuscript_scene is only for saving prose the writer has already accepted as final, not for drafting new prose.",
     "Ground every factual claim about the book in what the tools actually return. If you don't know something and the tools don't surface it, say so plainly rather than inventing details.",
   ].join("\n\n");
 }
@@ -103,7 +105,107 @@ const TOOLS: Anthropic.Tool[] = [
       properties: { category: { type: "string", description: "Optional filter, e.g. 'Plot', 'Character', 'World Building'" } },
     },
   },
+  // --- propose_* tools: none of these write to the database. Each one
+  // stages a proposed change (logged in chat_messages.tool_calls, the same
+  // transparency record every tool call already gets) for the writer to
+  // review and explicitly confirm in the UI, which then calls the real
+  // CRUD endpoint directly — see the Chat Assistant section of CLAUDE.md
+  // for the full confirm-gated write flow and why it exists.
+  {
+    name: "propose_create_codex_entry",
+    description:
+      "Draft a new Codex entry (character, location, item, lore, etc.) for the writer to review. Does NOT save anything — stages a proposal the writer must explicitly confirm in the app before it's written to their Codex. Only call this after the writer has actually asked for or clearly agreed to creating this entry, never speculatively.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The entry's name" },
+        entryType: {
+          type: "string",
+          description: "'character', or a worldbuilding category key — call list_world_categories first to see this book's actual categories rather than guessing",
+        },
+        description: { type: "string", description: "Overview/summary — the only field always injected into generation context" },
+        fields: {
+          type: "object",
+          description:
+            "Any other optional Codex fields to set — matches whatever POST /api/v1/codex accepts (aliases, tier, personalityTraits, motivations, background, etc.). Omit fields you have nothing to propose for.",
+        },
+      },
+      required: ["name", "entryType", "description"],
+    },
+  },
+  {
+    name: "propose_update_codex_entry",
+    description:
+      "Draft an update to an existing Codex entry's fields, for the writer to review. Does NOT save anything until the writer confirms in the app. Only call this after the writer has confirmed the specific change in conversation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        entryId: { type: "string", description: "The codex_entries row ID (from get_codex_entry / list_codex_entries)" },
+        description: { type: "string" },
+        fields: { type: "object", description: "Other fields to update — matches whatever PATCH /api/v1/codex/:id accepts." },
+      },
+      required: ["entryId"],
+    },
+  },
+  {
+    name: "propose_create_world_category",
+    description:
+      "Draft a new worldbuilding category (e.g. 'Ship Technology') for the writer to review. Does NOT save anything until confirmed. key is auto-slugified from name if omitted.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        key: { type: "string" },
+        description: { type: "string" },
+        color: { type: "string" },
+        icon: { type: "string" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "propose_create_note",
+    description:
+      "Draft a quick brainstorming note for the writer to review. Does NOT save anything until confirmed. Only propose this when the writer has actually asked something be jotted down, not as a running log of the conversation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        excerpt: { type: "string", description: "The note's body text" },
+        category: { type: "string", enum: VALID_NOTE_CATEGORIES, description: "One of the book's fixed note categories" },
+        pinned: { type: "boolean" },
+      },
+      required: ["title", "excerpt", "category"],
+    },
+  },
+  {
+    name: "propose_save_manuscript_scene",
+    description:
+      "Draft saving an accepted scene into permanent manuscript memory and the chapter editor, for the writer to review. Does NOT save anything until confirmed — use this once the writer has actually accepted a piece of prose (generated or hand-written) as final for a chapter, not for drafting new prose.",
+    input_schema: {
+      type: "object",
+      properties: {
+        chapterNumber: { type: "integer" },
+        rawText: { type: "string", description: "The full accepted scene text" },
+      },
+      required: ["chapterNumber", "rawText"],
+    },
+  },
 ];
+
+// propose_* tools deliberately never touch Supabase — see the propose_*
+// entries in TOOLS above and the Chat Assistant section of CLAUDE.md. This
+// just validates the shape Claude sent and acknowledges the proposal was
+// received; the real payload is already captured in the tool_calls log
+// that gets persisted with the assistant's message (see runChatTurn
+// below), which is what the frontend reads to render the confirm/reject
+// card and, on confirm, calls the real CRUD endpoint with directly.
+function proposalAck(action: string): { status: string; note: string } {
+  return {
+    status: "drafted_pending_confirmation",
+    note: `This ${action} has been drafted and shown to the writer for review. Nothing has been saved — it only takes effect if the writer confirms it in the app.`,
+  };
+}
 
 async function executeTool(name: string, input: Record<string, unknown>, bookId: string): Promise<unknown> {
   switch (name) {
@@ -122,6 +224,27 @@ async function executeTool(name: string, input: Record<string, unknown>, bookId:
       return listWorldCategories(bookId);
     case "list_notes":
       return listNotesForBook(bookId, { category: typeof input.category === "string" ? input.category : undefined });
+    case "propose_create_codex_entry":
+      if (typeof input.name !== "string" || typeof input.entryType !== "string" || typeof input.description !== "string") {
+        throw new Error("name, entryType, and description are required");
+      }
+      return proposalAck("Codex entry creation");
+    case "propose_update_codex_entry":
+      if (typeof input.entryId !== "string") throw new Error("entryId is required");
+      return proposalAck("Codex entry update");
+    case "propose_create_world_category":
+      if (typeof input.name !== "string") throw new Error("name is required");
+      return proposalAck("worldbuilding category creation");
+    case "propose_create_note":
+      if (typeof input.title !== "string" || typeof input.excerpt !== "string" || typeof input.category !== "string") {
+        throw new Error("title, excerpt, and category are required");
+      }
+      return proposalAck("note creation");
+    case "propose_save_manuscript_scene":
+      if (typeof input.chapterNumber !== "number" || typeof input.rawText !== "string") {
+        throw new Error("chapterNumber and rawText are required");
+      }
+      return proposalAck("saving this scene into manuscript memory and the chapter editor");
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -133,15 +256,18 @@ export interface RunChatTurnResult {
 }
 
 // Runs one conversational turn: sends the message history plus the new
-// user message to Claude with read-only book-context tools available,
-// executing any tool calls it makes (against this book's real Codex/
-// manuscript/notes data) and feeding results back until it produces a
-// final text answer or MAX_TOOL_ITERATIONS is exceeded. Deliberately
-// read-only tools only — unlike the MCP server's write tools (which only
-// ever fire when a human is actively directing a conversation turn by
-// turn), this loop runs multiple tool calls autonomously within a single
-// turn with no human confirmation in between, so giving it write access
-// here would mean unsupervised writes to the Codex.
+// user message to Claude with this book's read-only context tools plus
+// the propose_* write tools available, executing any tool calls it makes
+// and feeding results back until it produces a final text answer or
+// MAX_TOOL_ITERATIONS is exceeded. This loop runs multiple tool calls
+// autonomously within a single turn with no human confirmation in
+// between — unlike the MCP server, where a human directs each write
+// turn by turn via an external client — so real writes never happen
+// here. propose_* tools only ever stage a change (see proposalAck above);
+// the actual write happens later, outside this loop entirely, when the
+// writer confirms in the UI and the frontend calls the real CRUD
+// endpoint directly. That keeps "nothing writes unsupervised" true even
+// though this loop now has write-shaped tools available to it.
 export async function runChatTurn(params: {
   persona: ChatPersona;
   bookId: string;

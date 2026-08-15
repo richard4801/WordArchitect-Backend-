@@ -4,7 +4,7 @@ import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { generateHanamiProse } from "../services/llm.js";
 import { buildSystemPrompt } from "../routes/generateProse.js";
 import { assembleContextPayload } from "../services/rag.js";
-import { ingestManuscriptText } from "../services/manuscriptIngest.js";
+import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
 import {
   startSceneDraftSession,
   recordSceneDraftIteration,
@@ -13,7 +13,6 @@ import {
   finishSceneDraftSession,
 } from "../services/sceneDraftSessions.js";
 import { diffDrafts } from "../lib/textDiff.js";
-import { splitIntoChapterParagraphs } from "../lib/chapterParagraphs.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "../services/bookContextTools.js";
 import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
 import type { NoteCategory } from "../types/domain.js";
@@ -622,41 +621,9 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ userId, bookId, chapterNumber, rawText }) => {
       try {
-        const chunks = await ingestManuscriptText({ userId, bookId, chapterNumber, rawText });
-
-        const supabase = getSupabaseClient();
-        const newParagraphs = splitIntoChapterParagraphs(rawText);
-        const syncedAt = new Date().toISOString();
-
-        const { data: existingChapter, error: fetchErr } = await supabase
-          .from("manuscript_chapters")
-          .select("id, paragraphs")
-          .eq("book_id", bookId)
-          .eq("number", chapterNumber)
-          .maybeSingle();
-        if (fetchErr) throw new Error(`Failed to check existing chapter content: ${fetchErr.message}`);
-
-        if (existingChapter) {
-          const mergedParagraphs = [...((existingChapter.paragraphs as unknown[]) ?? []), ...newParagraphs];
-          const { error: updateErr } = await supabase
-            .from("manuscript_chapters")
-            .update({ paragraphs: mergedParagraphs, synced_to_memory_at: syncedAt, updated_at: syncedAt })
-            .eq("id", existingChapter.id);
-          if (updateErr) throw new Error(`Failed to update chapter content: ${updateErr.message}`);
-        } else {
-          const { error: insertErr } = await supabase.from("manuscript_chapters").insert({
-            user_id: userId,
-            book_id: bookId,
-            number: chapterNumber,
-            paragraphs: newParagraphs,
-            complete: false,
-            synced_to_memory_at: syncedAt,
-          });
-          if (insertErr) throw new Error(`Failed to create chapter content: ${insertErr.message}`);
-        }
-
+        const result = await saveManuscriptScene({ userId, bookId, chapterNumber, rawText });
         return textResult(
-          `Saved ${chunks.length} chunk(s) to manuscript memory, and ${existingChapter ? "appended to" : "created"} chapter ${chapterNumber}'s editor content.`
+          `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content.`
         );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));

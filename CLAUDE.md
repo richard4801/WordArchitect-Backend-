@@ -767,6 +767,20 @@ live, reachable server look "unreachable" to Claude when `save_manuscript_
 scene` tried to save a real chapter. Batched rather than fully unbounded
 so a very long chapter's chunks don't all fire at OpenAI in one burst.
 
+`POST /api/v1/manuscript/save-scene` — `{ userId, bookId, chapterNumber, rawText }`
+
+The "accept this scene" endpoint: runs the same chunk/embed/store pipeline
+as `/manuscript/chunks` above, **and** appends `rawText` to that chapter's
+`manuscript_chapters.paragraphs` (creating the chapter row if it doesn't
+exist yet), so an accepted scene lands in both Deep Past retrieval memory
+and the editor the writer actually sees, in one call. Appends rather than
+replaces existing editor content, so it never overwrites anything the
+writer was editing themselves. Shared implementation with the MCP server's
+`save_manuscript_scene` tool — both call `saveManuscriptScene` in
+`src/services/manuscriptSceneSave.ts` — so this is also the endpoint the
+Chat Assistant's `propose_save_manuscript_scene` confirm step calls once
+the writer approves it.
+
 `chunkManuscriptText` splits on blank-line paragraph breaks first; any
 resulting block still more than 2x the target chunk size (e.g. a whole
 chapter pasted with single line breaks and no blank lines at all) is force-
@@ -962,16 +976,46 @@ talk to an MCP server in the same process, for no real benefit. Instead,
 `chatAssistant.ts` calls the Anthropic API directly with native
 tool-calling, running its own request/response loop.
 
-**Read-only tools, deliberately** — `list_codex_entries`, `get_codex_entry`,
-`search_manuscript`, `get_manuscript_chapter`, `list_world_categories`,
-`list_notes`. No write tools. The MCP server's write tools are safe
-*because* a human is actively directing each write in real time via
-conversation; this loop instead runs several tool calls autonomously
-within a single turn with no confirmation in between, so giving it write
-access here would mean unsupervised writes to the Codex — exactly what
-every write tool elsewhere in this project has been built to avoid. A
-future "let the assistant create this character" flow would need an
-explicit propose-then-confirm step, not silent inclusion in this loop.
+**Read tools**: `list_codex_entries`, `get_codex_entry`, `search_manuscript`,
+`get_manuscript_chapter`, `list_world_categories`, `list_notes`.
+
+**Write tools are propose-only, deliberately** —
+`propose_create_codex_entry`, `propose_update_codex_entry`,
+`propose_create_world_category`, `propose_create_note`,
+`propose_save_manuscript_scene` (mirrors the MCP server's write-tool set).
+The MCP server's write tools are safe *because* a human is actively
+directing each write in real time via conversation; this loop instead
+runs several tool calls autonomously within a single turn with no
+confirmation in between, so a tool that directly wrote to the Codex here
+would mean unsupervised writes — exactly what every write tool elsewhere
+in this project has been built to avoid. Calling a `propose_*` tool does
+**not** touch Supabase at all (`proposalAck` in `chatAssistant.ts`) — it
+just validates the shape Claude sent and returns an acknowledgment;
+the actual proposed payload is only ever recorded in
+`chat_messages.tool_calls`, the same transparency log every tool call
+already gets. The real write happens later, outside the loop entirely:
+the frontend reads a `propose_*` entry off the assistant message's
+`tool_calls`, renders a Confirm/Reject card, and — only if the writer
+confirms — calls the real, already-validated CRUD endpoint directly
+(`POST/PATCH /api/v1/codex`, `POST /api/v1/world-categories`, `POST
+/api/v1/notes`, or `POST /api/v1/manuscript/save-scene`) with that exact
+payload. This is why the `propose_*` tool schemas stay loose (a `fields:
+object` passthrough for Codex entries rather than an exhaustively
+enumerated schema) — the schema doesn't need to be the source of truth
+for what's valid, because nothing executes off it directly; the CRUD
+endpoint it eventually calls already enforces that, so there's no second
+copy of Codex's field list to drift out of sync with the first (see the
+Codex field-list sync note below for why that drift risk is taken
+seriously here).
+
+`propose_save_manuscript_scene` and the MCP server's `save_manuscript_scene`
+share one implementation, `saveManuscriptScene` in
+`src/services/manuscriptSceneSave.ts` (also exposed directly as `POST
+/api/v1/manuscript/save-scene` for the frontend's confirm step to call) —
+chunks+embeds the text into `manuscript_chunks` and appends it to the
+chapter's `manuscript_chapters.paragraphs`, creating the chapter row if
+needed. One implementation two callers reach, not two independently
+maintained copies of the same combined ingest-plus-editor-append logic.
 
 **Shared query layer, not duplicated logic**: `list_codex_entries`,
 `get_codex_entry`, `search_manuscript`, and `get_manuscript_chapter`'s
@@ -1174,8 +1218,11 @@ unsupervised):
   — only call when the writer has actually asked something be jotted
   down, not as a running log of the conversation
 - `save_manuscript_scene` — ingests accepted prose into permanent
-  manuscript memory via the existing `ingestManuscriptText` pipeline, so
-  it's there for future generations (Claude-assisted or automatic) too
+  manuscript memory and appends it to the chapter's editor content via
+  `saveManuscriptScene` (`src/services/manuscriptSceneSave.ts`), so it's
+  there for future generations (Claude-assisted or automatic) and visible
+  in the editor too — same shared function `POST /api/v1/manuscript/save-scene`
+  and the Chat Assistant's `propose_save_manuscript_scene` confirm step call
 
 Generation:
 - `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the

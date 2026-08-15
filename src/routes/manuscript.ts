@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { ingestManuscriptText, bulkIngestManuscript } from "../services/manuscriptIngest.js";
+import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
 import {
   createImportJob,
   getImportJob,
@@ -74,6 +75,36 @@ manuscriptRouter.post("/manuscript/chunks", async (req: Request, res: Response) 
   } catch (error) {
     console.error("manuscript ingestion failed:", error);
     res.status(502).json({ error: "Failed to save manuscript text. Please try again." });
+  }
+});
+
+// Saves an accepted scene into permanent manuscript memory AND appends it
+// to that chapter's rich-editor content — the same combined action as the
+// MCP server's save_manuscript_scene tool (src/services/manuscriptSceneSave.ts
+// is the shared implementation both call). Distinct from /manuscript/chunks
+// above, which only writes to the RAG index and never touches
+// manuscript_chapters — this is for the "accept this into the chapter and
+// remember it" moment, e.g. confirming a Chat Assistant proposal.
+manuscriptRouter.post("/manuscript/save-scene", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const validationError = validateIngestBody(body);
+
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
+  }
+
+  try {
+    const result = await saveManuscriptScene({
+      userId: body.userId as string,
+      bookId: body.bookId as string,
+      chapterNumber: body.chapterNumber as number,
+      rawText: body.rawText as string,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    console.error("manuscript save-scene failed:", error);
+    res.status(502).json({ error: "Failed to save the scene. Please try again." });
   }
 });
 
