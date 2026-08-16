@@ -5,6 +5,8 @@ import { generateHanamiProse } from "../services/llm.js";
 import { buildSystemPrompt } from "../routes/generateProse.js";
 import { assembleContextPayload } from "../services/rag.js";
 import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
+import { listBannedTerms } from "../services/bannedTerms.js";
+import { enforceBannedTerms } from "../services/ghostEditor.js";
 import {
   startSceneDraftSession,
   recordSceneDraftIteration,
@@ -444,19 +446,46 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Generate Prose (Direct)",
       description:
-        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed.",
+        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. Pass bookId whenever this generation belongs to a real book (including every call within a scene draft session) — without it, this book's banned terms (Ghost Editor) are NOT checked or enforced, unlike POST /generate-prose which always enforces them. With bookId, any paragraph containing a banned term is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint.",
       inputSchema: {
         sceneBeat: z.string().describe("The scene beat to write"),
         compiledContext: z
           .string()
           .describe("The full context you've compiled — Codex info, manuscript excerpts, and any nuance from the conversation Hanami needs to write this scene consistently"),
+        bookId: z
+          .string()
+          .optional()
+          .describe("This book's ID — when provided, the result is checked against this book's banned terms and any offending paragraph is automatically regenerated. Omit only for a generation with no real book context."),
       },
     },
-    async ({ sceneBeat, compiledContext }) => {
+    async ({ sceneBeat, compiledContext, bookId }) => {
       try {
         const systemPrompt = buildSystemPrompt(compiledContext);
         const prose = await generateHanamiProse(systemPrompt, sceneBeat);
-        return textResult(prose);
+
+        if (!bookId) {
+          return textResult(prose);
+        }
+
+        const bannedTerms = await listBannedTerms(bookId);
+        if (bannedTerms.length === 0) {
+          return textResult(prose);
+        }
+
+        const { finalText, corrections } = await enforceBannedTerms({
+          text: prose,
+          bannedTerms: bannedTerms.map((t) => t.term),
+          systemPrompt,
+        });
+
+        if (corrections.length === 0) {
+          return textResult(finalText);
+        }
+
+        const rewrittenTerms = [...new Set(corrections.flatMap((c) => c.bannedTermsFound))];
+        return textResult(
+          `${finalText}\n\n[Ghost Editor: ${corrections.length} paragraph(s) were automatically rewritten to remove banned term(s): ${rewrittenTerms.join(", ")}]`
+        );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

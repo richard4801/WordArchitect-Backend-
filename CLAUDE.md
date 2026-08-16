@@ -300,7 +300,12 @@ reporting chapter 313 as the highest instead of the real 377.
 A writer can ban a word or phrase per book — via the test UI's Banned
 Terms panel, or `GET/POST /api/v1/banned-terms` and
 `DELETE /api/v1/banned-terms/:id` — and Hanami is guaranteed to never
-produce it again, checked on every `/generate-prose` call.
+produce it again, checked on every `/generate-prose` call and on every
+MCP `generate_prose_direct` call that passes `bookId` (see MCP Server
+below — `bookId` is optional there since not every direct call is tied to
+a real book, but omitting it also means banned terms for that book go
+unchecked, so the MCP tool's own description tells Claude to always pass
+it when one exists, including every call inside a scene draft session).
 
 **Why there's no cheap path**: the obvious-sounding mechanism —
 suppress the word at the token level via `logit_bias` so Hanami
