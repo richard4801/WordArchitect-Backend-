@@ -156,7 +156,9 @@ manuscriptChaptersRouter.get("/manuscript/chapters", async (req: Request, res: R
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("manuscript_chapters")
-    .select("id, user_id, book_id, part_id, number, title, heading, complete, synced_to_memory_at, created_at, updated_at")
+    .select(
+      "id, user_id, book_id, part_id, number, title, heading, complete, synced_to_memory_at, content_updated_at, created_at, updated_at"
+    )
     .eq("book_id", bookId)
     .order("number", { ascending: true });
 
@@ -301,6 +303,11 @@ manuscriptChaptersRouter.patch("/manuscript/chapters/:id", async (req: Request, 
       return;
     }
     payload.paragraphs = body.paragraphs;
+    // Only bumped when paragraphs are actually part of this update — a
+    // plain title/heading/complete/part edit must NOT move this, since
+    // it's specifically what sync-to-memory compares against
+    // synced_to_memory_at to decide whether a resync is actually needed.
+    payload.content_updated_at = new Date().toISOString();
   }
   if (Object.keys(payload).length === 0) {
     res.status(400).json({ error: "No updatable fields were provided." });
@@ -380,6 +387,21 @@ manuscriptChaptersRouter.post("/manuscript/chapters/:id/sync-to-memory", async (
   if (!chapter) {
     res.status(404).json({ error: `No manuscript chapter found with id ${req.params.id}.` });
     return;
+  }
+
+  // Real backend guard against redundant resyncs, not just a UI hint —
+  // if this chapter was already synced and its paragraph text hasn't
+  // changed since (content_updated_at, which only moves on an actual
+  // paragraphs edit, not a title/heading/complete/part change), skip the
+  // re-embed entirely rather than silently redoing (and re-billing) work
+  // that wouldn't change anything. 200, not 201 — nothing was created.
+  if (chapter.synced_to_memory_at) {
+    const contentUpdatedAt = new Date((chapter.content_updated_at ?? chapter.updated_at) as string);
+    const syncedAt = new Date(chapter.synced_to_memory_at as string);
+    if (contentUpdatedAt <= syncedAt) {
+      res.status(200).json({ alreadySynced: true, syncedAt: chapter.synced_to_memory_at });
+      return;
+    }
   }
 
   const paragraphs = (chapter.paragraphs ?? []) as Record<string, unknown>[];

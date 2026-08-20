@@ -582,7 +582,8 @@ pagination, and neither side actually needs that.
 | | `heading` | TEXT | editor-facing display heading, e.g. "Chapter One" — kept separate from `title` per the frontend's `ChapterBody` shape |
 | | `complete` | BOOLEAN NOT NULL | default `false` |
 | | `paragraphs` | JSONB NOT NULL | array of `{ id, text, emphasis?, break?, comments?, ... }`, matching the frontend's `ChapterParagraph` shape; validated only loosely server-side (`isParagraphsArray` in `manuscriptChapters.ts` — array of objects with string `id`/`text`, everything else passes through) since inline comment threads are naturally nested per-paragraph data and the exact shape isn't fully settled on the frontend yet |
-| | `synced_to_memory_at` | TIMESTAMPTZ | null until the first sync (see below); lets a UI show "has unsynced edits" by comparing against `updated_at` |
+| | `synced_to_memory_at` | TIMESTAMPTZ | null until the first sync (see below); the sync endpoint itself compares this against `content_updated_at` to decide whether a resync is actually needed |
+| | `content_updated_at` | TIMESTAMPTZ NOT NULL | default `NOW()`; bumped ONLY when a `PATCH` actually includes `paragraphs` — unlike `updated_at`, a plain title/heading/complete/part edit never moves this. Added in migration `021_chapter_content_updated_at.sql` specifically so "has the manuscript text changed since last sync" isn't confused with "was this row touched at all" |
 | | `created_at`, `updated_at` | TIMESTAMPTZ | |
 | `manuscript_scenes` | `id` | UUID PK | |
 | | `chapter_id` | UUID NOT NULL | FK → `manuscript_chapters(id)` ON DELETE CASCADE |
@@ -873,7 +874,9 @@ same table).
 - `PATCH /api/v1/manuscript/chapters/:id` — the editor's autosave
   endpoint. Deliberately cheap: it only ever writes this one row, never
   touches `manuscript_chunks` or makes an embedding call, so autosaving on
-  every keystroke/pause costs nothing beyond a normal database write
+  every keystroke/pause costs nothing beyond a normal database write.
+  Bumps `content_updated_at` only when `paragraphs` is actually part of
+  the patch — a title/heading/complete/part-only edit never moves it
 - `DELETE /api/v1/manuscript/chapters/:id` — deletes only this chapter's
   editor content and its scene markers (cascades). Does **not** touch
   `manuscript_chunks` — content already synced into Deep Past memory
@@ -893,6 +896,14 @@ same table).
   on every autosave — an "Accept into manuscript memory"-style writer
   action, since every keystroke triggering a fresh embedding pass would be
   wasteful and would spam `manuscript_chunks` with in-progress drafts.
+  **Guards against redundant resyncs server-side, not just via a UI
+  hint**: if the chapter was already synced and `content_updated_at`
+  hasn't moved past `synced_to_memory_at` since (i.e. no real paragraph
+  edit happened after the last sync), this is a no-op — returns `200
+  { alreadySynced: true, syncedAt }` instead of re-running the embed
+  pipeline. A genuine edit re-enables it: the next `PATCH` that includes
+  `paragraphs` bumps `content_updated_at` past `synced_to_memory_at`, and
+  the next sync call proceeds normally with `201 { chunks, syncedAt }`.
 
 **Scenes:**
 - `GET /api/v1/manuscript/chapters/:chapterId/scenes`
