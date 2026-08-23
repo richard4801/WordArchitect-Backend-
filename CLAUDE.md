@@ -877,11 +877,18 @@ same table).
   every keystroke/pause costs nothing beyond a normal database write.
   Bumps `content_updated_at` only when `paragraphs` is actually part of
   the patch — a title/heading/complete/part-only edit never moves it
-- `DELETE /api/v1/manuscript/chapters/:id` — deletes only this chapter's
-  editor content and its scene markers (cascades). Does **not** touch
-  `manuscript_chunks` — content already synced into Deep Past memory
-  stays retrievable even if its editor row is later removed, the same
-  non-cascading principle as `DELETE /books/:id`
+- `DELETE /api/v1/manuscript/chapters/:id` — deletes this chapter's editor
+  content, its scene markers and beats (`ON DELETE CASCADE` via their FKs
+  to `manuscript_chapters`), **and** its `manuscript_chunks` (Deep Past
+  retrieval memory), which is deleted explicitly since it has no FK to
+  cascade through — matched by `book_id` + chapter `number` instead.
+  Deliberately **not** treated like `DELETE /books/:id`'s non-cascading
+  behavior: that choice exists to stop a shallow "delete this project"
+  action from silently wiping independent data underneath it (Codex,
+  notes, etc.), but a chapter's chunks aren't independent data — they're
+  a derived RAG index of that exact chapter's content, so leaving them
+  behind would let deleted prose keep quietly influencing future
+  generations
 
 **Sync to memory:**
 - `POST /api/v1/manuscript/chapters/:id/sync-to-memory` — the explicit,

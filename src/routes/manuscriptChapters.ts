@@ -339,18 +339,29 @@ manuscriptChaptersRouter.patch("/manuscript/chapters/:id", async (req: Request, 
   res.json({ chapter: data });
 });
 
-// DELETE /api/v1/manuscript/chapters/:id — deletes only this chapter's
-// editor content and its scene markers (ON DELETE CASCADE). Does NOT touch
-// manuscript_chunks — a chapter already synced into Deep Past memory stays
-// retrievable even if its editor row is removed, consistent with how
-// DELETE /books/:id never cascades into manuscript memory either.
+// DELETE /api/v1/manuscript/chapters/:id — deletes this chapter's editor
+// content, its scene markers and beats (ON DELETE CASCADE via their FKs to
+// manuscript_chapters), AND its manuscript_chunks (Deep Past retrieval
+// memory). manuscript_chunks has no FK to manuscript_chapters — it's
+// matched by book_id + chapter number, not chapter_id — so it has to be
+// deleted explicitly here rather than cascading automatically.
+//
+// Deliberately NOT treated like DELETE /books/:id, which never cascades
+// into a book's Codex/notes/manuscript data: that non-cascading choice
+// exists to stop a shallow "delete this project" action from silently
+// wiping substantive, independent data underneath it. A chapter's chunks
+// aren't independent data in that sense — they're a derived RAG index OF
+// this exact chapter's content. Leaving them behind after the chapter
+// itself is gone doesn't protect anything; it just lets deleted content
+// keep quietly influencing future generations that should no longer be
+// able to see it.
 manuscriptChaptersRouter.delete("/manuscript/chapters/:id", async (req: Request, res: Response) => {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("manuscript_chapters")
     .delete()
     .eq("id", req.params.id)
-    .select("id")
+    .select("id, book_id, number")
     .maybeSingle();
 
   if (error) {
@@ -361,6 +372,24 @@ manuscriptChaptersRouter.delete("/manuscript/chapters/:id", async (req: Request,
     res.status(404).json({ error: `No manuscript chapter found with id ${req.params.id}.` });
     return;
   }
+
+  const { error: chunkError } = await supabase
+    .from("manuscript_chunks")
+    .delete()
+    .eq("book_id", data.book_id)
+    .eq("chapter_number", data.number);
+
+  if (chunkError) {
+    // The chapter row is already gone at this point — surface the partial
+    // failure clearly rather than a generic error, since the caller needs
+    // to know memory cleanup didn't fully complete.
+    console.error("Failed to delete manuscript_chunks after chapter deletion:", chunkError);
+    res.status(502).json({
+      error: "Chapter was deleted, but its manuscript memory could not be fully cleared. Please retry or check manually.",
+    });
+    return;
+  }
+
   res.status(204).end();
 });
 
