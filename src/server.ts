@@ -15,6 +15,8 @@ import { bannedTermsRouter } from "./routes/bannedTerms.js";
 import { booksRouter } from "./routes/books.js";
 import { chatRouter } from "./routes/chat.js";
 import { outlineRouter } from "./routes/outline.js";
+import { agentPromptsRouter } from "./routes/agentPrompts.js";
+import { planningRouter } from "./routes/planning.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +46,8 @@ app.use("/api/v1", bannedTermsRouter);
 app.use("/api/v1", booksRouter);
 app.use("/api/v1", chatRouter);
 app.use("/api/v1", outlineRouter);
+app.use("/api/v1", agentPromptsRouter);
+app.use("/api/v1", planningRouter);
 app.use(mcpRouter);
 
 app.use((req: Request, res: Response) => {

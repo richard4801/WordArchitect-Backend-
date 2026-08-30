@@ -1307,6 +1307,117 @@ directly against production: a fresh `initialize` + `tools/call` worked
 immediately, proving the server itself was healthy and the problem was
 specifically the client having no recovery signal for a stale session.
 
+## Planning Engine
+
+A pre-writing pipeline — Stage 1 Core Summary → Stage 2 Act Outlines →
+Stage 3 Chapter Beats — with a 3-agent Scrutiny Panel (Logic Critic,
+Suspense Critic, Arbitrator) and a mandatory human review gate at every
+stage. Entirely separate from manuscript drafting: nothing in this
+pipeline ever writes prose. "Generator" here means planning text —
+summaries, act structure, beat lists — never manuscript prose, which
+stays exclusively Hanami's job via the existing `/generate-prose` and MCP
+tools, unchanged by any of this. Approved output feeds two systems that
+already exist rather than inventing new ones: Stage 3's approved beats
+become real `chapter_beats` rows (the same table backing the Outliner),
+and an entity-extraction pass proposes Codex/World Category entries for
+the writer to batch-review before anything is created.
+
+**Every agent's behavior is prompt-driven, not hardcoded.** Every
+`system_prompt`/`user_prompt_template` (plus `model` and `effort`) is a
+row in `agent_prompts`, authored and owned by the writer via the Prompt
+Editor, never written by this backend. Saving a new version deactivates
+the previous one and activates the new one immediately — a runtime
+change, not a redeploy. This backend supplies only the mechanics that
+make those prompts actually run reliably: the step loop, template
+interpolation, and a verify-don't-trust JSON parse with one corrective
+retry (same principle as Ghost Editor already established for banned
+terms — an instruction alone isn't a guarantee, so the result gets
+checked).
+
+**No LangGraph.** A step-based job table (`planning_runs`) plus one short
+HTTP call per step is the same pattern already proven in this project for
+`manuscript_import_jobs` — every request is one bounded LLM call (or one
+parallel pair for the two critics), so nothing risks a timeout on any
+hosting tier regardless of pipeline complexity. The client (test UI today,
+the real pipeline UI eventually) polls/drives the run forward step by
+step; nothing here holds state in memory between requests.
+
+### `agent_prompts`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | |
+| `book_id` | UUID NOT NULL | prompts are scoped per book, not global |
+| `agent_role` | VARCHAR(50) NOT NULL | `generator` \| `logic_critic` \| `suspense_critic` \| `arbitrator_panel` \| `arbitrator_chat` \| `arbitrator_directive` \| `entity_extractor` |
+| `stage` | VARCHAR(50) NOT NULL | `stage_1_summary` \| `stage_2_acts` \| `stage_3_beats` \| `all` (for a role whose prompt doesn't vary by stage) |
+| `version` | INT NOT NULL | auto-incremented per (book_id, agent_role, stage) on each save |
+| `is_active` | BOOLEAN NOT NULL | exactly one active version per (book_id, agent_role, stage); `getActivePrompt` tries the exact stage first, then falls back to `stage = 'all'` |
+| `system_prompt`, `user_prompt_template` | TEXT NOT NULL | 100% writer-authored; this backend contains none of the actual prompt content |
+| `model` | VARCHAR(50) NOT NULL | e.g. `claude-opus-5`, `claude-sonnet-5` — a runtime setting per role/stage, not hardcoded |
+| `effort` | VARCHAR(20) NOT NULL | `low` \| `medium` \| `high` \| `xhigh` \| `max` (`output_config.effort`) |
+| `created_at` | TIMESTAMPTZ | |
+
+Added in migration `022_planning_engine.sql`. Managed via `GET/POST/PATCH/DELETE /api/v1/agent-prompts` (`src/services/agentPrompts.ts`, `src/routes/agentPrompts.ts`) and the "Planning Engine — Agent Prompt Editor" panel in the test UI. `DELETE` refuses to remove the active version of a role/stage — that would silently leave the step with nothing to run.
+
+**Template placeholders** (`interpolateTemplate` in `agentPrompts.ts` — a `{{KEY}}` not present in a given template is simply left alone):
+
+| Placeholder | Available to | Contents |
+| --- | --- | --- |
+| `{{BOOK_CONTEXT}}` | generator, logic_critic, suspense_critic, entity_extractor | Book Facts (`get_book_facts`) + every current Codex entry, so planning stays consistent with what's already established, especially when continuing an already-written book |
+| `{{PRIOR_STAGE_ARTIFACT}}` | generator | The previous stage's approved artifact (e.g. Stage 2 sees Stage 1's summary) |
+| `{{FINAL_DELTA_DIRECTIVE}}` | generator | Set only when regenerating after a rejection; consumed once and cleared |
+| `{{CURRENT_ARTIFACT}}` | logic_critic, suspense_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
+| `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | Both critics' JSON output |
+| `{{CHAT_HISTORY}}` | arbitrator_directive | The full rejection interview, for compiling one directive from it |
+
+**Two roles have a required output shape**, since their output gets parsed into real rows, not just displayed:
+- `generator` at `stage_3_beats` must return JSON: `{"chapters": [{"chapterNumber": 1, "title": "...", "beats": [{"title": "...", "outlineText": "..."}]}]}` — this is what `materializeBeats` inserts into `manuscript_chapters`/`chapter_beats` on approval.
+- `entity_extractor` must return a JSON array: `[{"type": "codex_entry" | "world_category", "name": "...", "entryType": "...", "description": "..."}]`.
+
+Both go through `callAgentForJson`, which retries once with a corrective nudge if the first response isn't valid JSON before failing the run with a clear `last_error` rather than silently storing garbage.
+
+### `planning_runs`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID PK | |
+| `book_id`, `user_id` | UUID NOT NULL | |
+| `current_stage` | VARCHAR(50) NOT NULL | default `stage_1_summary` |
+| `status` | VARCHAR(30) NOT NULL | `generating` \| `critiquing` \| `awaiting_arbitration` \| `awaiting_user_review` \| `user_chat_active` \| `awaiting_entity_review` \| `done` \| `failed` |
+| `stage_artifacts` | JSONB NOT NULL | keyed by stage, not a single overwritten column — Stage 2's Generator needs to read Stage 1's approved text, so earlier stages survive the transition |
+| `panel_reviews` | JSONB | `{ logic_critic, suspense_critic }`, whatever shape each critic's own prompt asks for |
+| `arbitrator_synthesis` | JSONB | |
+| `chat_history` | JSONB NOT NULL | array of `{ role, content }`; reset on each new rejection cycle |
+| `final_delta_directive` | TEXT | set by `finalize-directive`, consumed by the next `generate` call, then cleared |
+| `extracted_entities` | JSONB | candidates proposed after Stage 3 approval, cleared once reviewed |
+| `last_error` | TEXT | set when a step fails, alongside `status: 'failed'` |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+Added in migration `022_planning_engine.sql`. `src/services/planningEngine.ts` / `src/routes/planning.ts`.
+
+### Endpoints
+
+- `POST /api/v1/planning/runs` — `{ bookId, userId }`, starts a run at Stage 1
+- `GET /api/v1/planning/runs/:id` — poll current state
+- `POST /api/v1/planning/runs/:id/generate` — one Generator call for `current_stage`
+- `POST /api/v1/planning/runs/:id/critique` — Logic + Suspense critics, fired in parallel in one request
+- `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate
+- `POST /api/v1/planning/runs/:id/approve` — the gate's approve action; on `stage_3_beats` this also materializes beats into the Outliner and starts entity extraction instead of finishing outright
+- `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
+- `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
+- `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same stage
+- `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written
+
+### Why Codex/World Category extraction is a batch review, not silent auto-write
+
+The writer's own framing was "we won't have to do that by hand" — but
+"nothing writes unsupervised" is a rule every other write path in this
+project follows (MCP's write tools, the Chat Assistant's `propose_*`
+tools), and a bad extraction (a character mentioned in passing promoted
+to a full Codex entry) is far cheaper to catch on one review screen than
+to clean up after the fact. `confirmEntities` is the only thing that
+ever actually writes — `extractEntities` only stages candidates.
+
 ## Development Stages
 
 1. Repository & Architectural Blueprint (this document)

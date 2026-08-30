@@ -423,6 +423,88 @@
   </div>
 </fieldset>
 
+<fieldset>
+  <legend>Planning Engine — Agent Prompt Editor</legend>
+  <p class="sub" style="margin-top:0;">Every agent's behavior is 100% prompt-driven — nothing here is hardcoded server-side. Saving creates a new version and activates it immediately; no redeploy needed. Available placeholders per role: BOOK_CONTEXT, PRIOR_STAGE_ARTIFACT, FINAL_DELTA_DIRECTIVE (generator) · BOOK_CONTEXT, CURRENT_ARTIFACT (critics, entity_extractor) · CURRENT_ARTIFACT, PANEL_REVIEWS (arbitrator_panel, arbitrator_chat) · CHAT_HISTORY, PANEL_REVIEWS, CURRENT_ARTIFACT (arbitrator_directive). Stage 3 Beats' Generator prompt must produce JSON shaped <code>{"chapters":[{"chapterNumber":1,"title":"...","beats":[{"title":"...","outlineText":"..."}]}]}</code> — that's what gets parsed into real chapter_beats rows on approval. The entity_extractor prompt must produce a JSON array of <code>{"type":"codex_entry"|"world_category","name":"...","entryType":"...","description":"..."}</code>.</p>
+  <div class="row">
+    <div><label>Agent role</label>
+      <select id="agpRole">
+        <option value="generator">generator</option>
+        <option value="logic_critic">logic_critic</option>
+        <option value="suspense_critic">suspense_critic</option>
+        <option value="arbitrator_panel">arbitrator_panel</option>
+        <option value="arbitrator_chat">arbitrator_chat</option>
+        <option value="arbitrator_directive">arbitrator_directive</option>
+        <option value="entity_extractor">entity_extractor</option>
+      </select>
+    </div>
+    <div><label>Stage</label>
+      <select id="agpStage">
+        <option value="stage_1_summary">stage_1_summary</option>
+        <option value="stage_2_acts">stage_2_acts</option>
+        <option value="stage_3_beats">stage_3_beats</option>
+        <option value="all">all (role doesn't vary by stage)</option>
+      </select>
+    </div>
+    <div><button class="secondary" id="agpLoad" type="button">Load active version</button></div>
+  </div>
+  <div class="row">
+    <div><label>System prompt</label><textarea id="agpSystem" rows="6" placeholder="Your instructions for this agent..."></textarea></div>
+  </div>
+  <div class="row">
+    <div><label>User prompt template</label><textarea id="agpUserTemplate" rows="6" placeholder="Use {{PLACEHOLDER}} tokens listed above..."></textarea></div>
+  </div>
+  <div class="row">
+    <div><label>Model</label><input id="agpModel" value="claude-sonnet-5" /></div>
+    <div><label>Effort</label>
+      <select id="agpEffort">
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high" selected>high</option>
+        <option value="xhigh">xhigh</option>
+        <option value="max">max</option>
+      </select>
+    </div>
+  </div>
+  <button id="agpSave">Save (new active version)</button>
+  <button class="secondary" id="agpRefreshList" type="button">Refresh version history</button>
+  <div id="agpStatus" class="status"></div>
+  <table style="margin-top:10px;">
+    <thead><tr><th>Role</th><th>Stage</th><th>Version</th><th>Active?</th><th>Model</th><th>Effort</th><th>Created</th><th></th></tr></thead>
+    <tbody id="agpTable"></tbody>
+  </table>
+</fieldset>
+
+<fieldset>
+  <legend>Planning Engine — Pipeline (test)</legend>
+  <p class="sub" style="margin-top:0;">Raw step-by-step test harness — each button is one bounded API call, matching how the real pipeline UI will drive this. Configure every role's prompt above before starting a run.</p>
+  <div class="row">
+    <div><label>Run ID (blank = create new)</label><input id="rRunId" placeholder="(new run)" /></div>
+    <div><button id="rCreate" type="button">Create run</button></div>
+    <div><button class="secondary" id="rFetch" type="button">Refresh state</button></div>
+  </div>
+  <div class="row">
+    <div><button id="rGenerate" type="button">Generate</button></div>
+    <div><button id="rCritique" type="button">Critique</button></div>
+    <div><button id="rArbitrate" type="button">Arbitrate</button></div>
+  </div>
+  <div class="row">
+    <div><button id="rApprove" type="button">Approve stage</button></div>
+    <div><button class="secondary" id="rReject" type="button">Reject stage</button></div>
+    <div><button class="secondary" id="rFinalizeDirective" type="button">Finalize directive</button></div>
+  </div>
+  <div class="row">
+    <div><label>Chat message (Arbitrator interview, after Reject)</label><input id="rChatMessage" placeholder="The twist feels soft..." /></div>
+    <div><button id="rChatSend" type="button">Send chat turn</button></div>
+  </div>
+  <div class="row">
+    <div><label>Approve entity indexes (comma-separated, from extracted_entities below)</label><input id="rEntityIndexes" placeholder="0,2,3" /></div>
+    <div><button id="rConfirmEntities" type="button">Confirm entities</button></div>
+  </div>
+  <div id="rStatus" class="status"></div>
+  <pre id="rOutput" style="max-height:400px; overflow:auto;"></pre>
+</fieldset>
+
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -1447,6 +1529,169 @@ $("aAsk").addEventListener("click", async () => {
   } finally {
     $("aAsk").disabled = false;
   }
+});
+
+// ---- Planning Engine: Agent Prompt Editor ----
+async function loadPromptVersions() {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("agpStatus"), "Book ID is required.", "error"); return; }
+  try {
+    const res = await fetch(apiBase() + "/api/v1/agent-prompts?bookId=" + encodeURIComponent(bookId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    const table = $("agpTable");
+    table.innerHTML = "";
+    for (const p of data.prompts) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + escapeHtml(p.agent_role) + "</td>" +
+        "<td>" + escapeHtml(p.stage) + "</td>" +
+        "<td>" + p.version + "</td>" +
+        "<td>" + (p.is_active ? "✅" : "") + "</td>" +
+        "<td>" + escapeHtml(p.model) + "</td>" +
+        "<td>" + escapeHtml(p.effort) + "</td>" +
+        "<td>" + new Date(p.created_at).toLocaleString() + "</td>" +
+        "<td></td>";
+      const actionsTd = tr.lastElementChild;
+      if (!p.is_active) {
+        const activateBtn = document.createElement("button");
+        activateBtn.className = "secondary";
+        activateBtn.textContent = "Activate";
+        activateBtn.onclick = async () => {
+          try {
+            const r = await fetch(apiBase() + "/api/v1/agent-prompts/" + p.id, {
+              method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive: true }),
+            });
+            const d = await parseJsonResponse(r);
+            if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+            setStatus($("agpStatus"), "Activated version " + p.version + ".", "ok");
+            loadPromptVersions();
+          } catch (err) { setStatus($("agpStatus"), String(err.message || err), "error"); }
+        };
+        actionsTd.appendChild(activateBtn);
+      }
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "secondary";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.onclick = async () => {
+        try {
+          const r = await fetch(apiBase() + "/api/v1/agent-prompts/" + p.id, { method: "DELETE" });
+          if (!r.ok) { const d = await parseJsonResponse(r); throw new Error(d.error || "HTTP " + r.status); }
+          setStatus($("agpStatus"), "Deleted version " + p.version + ".", "ok");
+          loadPromptVersions();
+        } catch (err) { setStatus($("agpStatus"), String(err.message || err), "error"); }
+      };
+      actionsTd.appendChild(deleteBtn);
+      table.appendChild(tr);
+    }
+  } catch (err) {
+    setStatus($("agpStatus"), String(err.message || err), "error");
+  }
+}
+
+$("agpRefreshList").addEventListener("click", loadPromptVersions);
+
+$("agpLoad").addEventListener("click", async () => {
+  const bookId = $("bookId").value.trim();
+  if (!bookId) { setStatus($("agpStatus"), "Book ID is required.", "error"); return; }
+  try {
+    const res = await fetch(apiBase() + "/api/v1/agent-prompts?bookId=" + encodeURIComponent(bookId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    const role = $("agpRole").value, stage = $("agpStage").value;
+    const match = data.prompts.find((p) => p.agent_role === role && p.stage === stage && p.is_active);
+    if (!match) { setStatus($("agpStatus"), "No active prompt yet for " + role + "/" + stage + " — write one and save.", ""); return; }
+    $("agpSystem").value = match.system_prompt;
+    $("agpUserTemplate").value = match.user_prompt_template;
+    $("agpModel").value = match.model;
+    $("agpEffort").value = match.effort;
+    setStatus($("agpStatus"), "Loaded version " + match.version + ".", "ok");
+  } catch (err) {
+    setStatus($("agpStatus"), String(err.message || err), "error");
+  }
+});
+
+$("agpSave").addEventListener("click", async () => {
+  const bookId = $("bookId").value.trim();
+  const systemPrompt = $("agpSystem").value;
+  const userPromptTemplate = $("agpUserTemplate").value;
+  if (!bookId || !systemPrompt.trim() || !userPromptTemplate.trim()) {
+    setStatus($("agpStatus"), "Book ID, system prompt, and user prompt template are required.", "error");
+    return;
+  }
+  try {
+    const res = await fetch(apiBase() + "/api/v1/agent-prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bookId, agentRole: $("agpRole").value, stage: $("agpStage").value,
+        systemPrompt, userPromptTemplate, model: $("agpModel").value.trim(), effort: $("agpEffort").value,
+      }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    setStatus($("agpStatus"), "Saved as version " + data.prompt.version + " and activated.", "ok");
+    loadPromptVersions();
+  } catch (err) {
+    setStatus($("agpStatus"), String(err.message || err), "error");
+  }
+});
+
+// ---- Planning Engine: Pipeline test harness ----
+function showRunOutput(run) {
+  $("rOutput").textContent = JSON.stringify(run, null, 2);
+}
+
+async function planningStep(path, method, body) {
+  const runId = $("rRunId").value.trim();
+  if (!runId) { setStatus($("rStatus"), "Run ID is required — create a run first.", "error"); return; }
+  setStatus($("rStatus"), "Working...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/planning/runs/" + runId + path, {
+      method, headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    showRunOutput(data.run);
+    setStatus($("rStatus"), "Status: " + data.run.status + " (stage: " + data.run.current_stage + ")", "ok");
+  } catch (err) {
+    setStatus($("rStatus"), String(err.message || err), "error");
+  }
+}
+
+$("rCreate").addEventListener("click", async () => {
+  const userId = $("userId").value.trim(), bookId = $("bookId").value.trim();
+  if (!userId || !bookId) { setStatus($("rStatus"), "User ID and Book ID are required.", "error"); return; }
+  try {
+    const res = await fetch(apiBase() + "/api/v1/planning/runs", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId, bookId }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    $("rRunId").value = data.run.id;
+    showRunOutput(data.run);
+    setStatus($("rStatus"), "Created run " + data.run.id, "ok");
+  } catch (err) {
+    setStatus($("rStatus"), String(err.message || err), "error");
+  }
+});
+
+$("rFetch").addEventListener("click", () => planningStep("", "GET"));
+$("rGenerate").addEventListener("click", () => planningStep("/generate", "POST"));
+$("rCritique").addEventListener("click", () => planningStep("/critique", "POST"));
+$("rArbitrate").addEventListener("click", () => planningStep("/arbitrate", "POST"));
+$("rApprove").addEventListener("click", () => planningStep("/approve", "POST"));
+$("rReject").addEventListener("click", () => planningStep("/reject", "POST"));
+$("rFinalizeDirective").addEventListener("click", () => planningStep("/finalize-directive", "POST"));
+$("rChatSend").addEventListener("click", () => {
+  const message = $("rChatMessage").value.trim();
+  if (!message) { setStatus($("rStatus"), "Chat message is required.", "error"); return; }
+  planningStep("/chat", "POST", { message });
+  $("rChatMessage").value = "";
+});
+$("rConfirmEntities").addEventListener("click", () => {
+  const approvedIndexes = $("rEntityIndexes").value.split(",").map((s) => s.trim()).filter(Boolean).map(Number);
+  planningStep("/entities/confirm", "POST", { approvedIndexes });
 });
 </script>
 </body>

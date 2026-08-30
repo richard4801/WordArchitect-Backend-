@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { getEnvVar } from "../lib/env.js";
+import { getAnthropicClient } from "../lib/anthropicClient.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "./bookContextTools.js";
 import { listWorldCategories } from "../routes/worldCategories.js";
 import { listNotesForBook } from "../routes/notes.js";
@@ -9,14 +9,6 @@ import type { ChatMessage, ChatPersona, ChatToolCallLogEntry } from "../types/do
 const DEFAULT_MODEL = "claude-sonnet-5";
 const MAX_TOOL_ITERATIONS = 6;
 const MAX_OUTPUT_TOKENS = 2048;
-
-let client: Anthropic | undefined;
-function getAnthropicClient(): Anthropic {
-  if (!client) {
-    client = new Anthropic({ apiKey: getEnvVar("ANTHROPIC_API_KEY") });
-  }
-  return client;
-}
 
 // One short instruction per persona, layered onto a shared base prompt —
 // the five cards on the AI Assistant page are the same underlying loop
