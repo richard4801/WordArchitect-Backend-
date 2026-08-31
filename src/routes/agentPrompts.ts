@@ -96,6 +96,10 @@ agentPromptsRouter.post("/agent-prompts/clone", async (req: Request, res: Respon
     res.status(400).json({ error: "toBookId is required and must be a non-empty string." });
     return;
   }
+  if (body.fromBookId === body.toBookId) {
+    res.status(400).json({ error: "fromBookId and toBookId must be different." });
+    return;
+  }
 
   try {
     const prompts = await clonePromptsFromBook(body.fromBookId, body.toBookId);
