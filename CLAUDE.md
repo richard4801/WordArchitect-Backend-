@@ -1356,6 +1356,17 @@ retry (same principle as Ghost Editor already established for banned
 terms — an instruction alone isn't a guarantee, so the result gets
 checked).
 
+**`max_tokens` is 16000 by default for every agent call, not lower —
+confirmed live, not a hypothetical.** A real test against production
+(Opus 5, effort `high`, a full-book `BOOK_CONTEXT` with hundreds of
+chapters' worth of Codex) spent its entire budget on adaptive thinking
+before emitting any visible text, and originally returned silently — an
+empty artifact saved with `status` advancing normally, as if generation
+had actually succeeded. `callAgent` now throws explicitly whenever a
+response comes back with no text (`stop_reason` included in the error),
+so a starved budget fails the run loudly instead of quietly producing
+nothing.
+
 **No LangGraph.** A step-based job table (`planning_runs`) plus one short
 HTTP call per step is the same pattern already proven in this project for
 `manuscript_import_jobs` — every request is one bounded LLM call (or one

@@ -57,22 +57,44 @@ async function markFailed(runId: string, error: unknown): Promise<never> {
   throw error instanceof Error ? error : new Error(message);
 }
 
+// 8000 was too low, confirmed live: a Generator call at effort "high" with
+// a full-book BOOK_CONTEXT (hundreds of chapters' worth of Codex) can spend
+// its entire token budget on adaptive thinking before emitting any visible
+// text, returning an empty string with no error — a real result observed
+// in production, not a hypothetical. 16000 matches this project's own
+// established default for non-streaming Claude calls; still comfortably
+// under the SDK's request timeout even on a call that runs a couple of
+// minutes, which these can.
+const DEFAULT_MAX_TOKENS = 16000;
+
 async function callAgent(params: { systemPrompt: string; userMessage: string; model: string; effort: EffortLevel; maxTokens?: number }): Promise<string> {
   const anthropic = getAnthropicClient();
   const response = await anthropic.messages.create({
     model: params.model,
-    max_tokens: params.maxTokens ?? 8000,
+    max_tokens: params.maxTokens ?? DEFAULT_MAX_TOKENS,
     system: params.systemPrompt,
     thinking: { type: "adaptive" },
     output_config: { effort: params.effort },
     messages: [{ role: "user", content: params.userMessage }],
   });
 
-  return response.content
+  const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
     .join("\n")
     .trim();
+
+  // Verify, don't just trust — an empty result with stop_reason
+  // "max_tokens" (thinking consumed the whole budget) previously saved
+  // silently and let the run advance as if it had succeeded. Fail loudly
+  // instead, with enough detail to actually diagnose it.
+  if (!text) {
+    throw new Error(
+      `Agent returned no text output (stop_reason: ${response.stop_reason}). This usually means max_tokens was exhausted by thinking before any visible output — try raising max_tokens or lowering effort for this prompt.`
+    );
+  }
+
+  return text;
 }
 
 function tryParseJson(text: string): unknown | undefined {
@@ -362,7 +384,7 @@ export async function chatTurn(runId: string, userMessage: string): Promise<Plan
 
     const response = await anthropic.messages.create({
       model: prompt.model,
-      max_tokens: 2048,
+      max_tokens: 4096,
       system: prompt.system_prompt,
       thinking: { type: "adaptive" },
       output_config: { effort: prompt.effort },
@@ -445,7 +467,7 @@ export async function intakeChatTurn(
 
     const response = await anthropic.messages.create({
       model: prompt.model,
-      max_tokens: 2048,
+      max_tokens: 4096,
       system: prompt.system_prompt,
       thinking: { type: "adaptive" },
       output_config: { effort: prompt.effort },
