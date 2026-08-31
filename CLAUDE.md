@@ -1309,18 +1309,40 @@ specifically the client having no recovery signal for a stale session.
 
 ## Planning Engine
 
-A pre-writing pipeline — Stage 1 Core Summary → Stage 2 Act Outlines →
-Stage 3 Chapter Beats — with a 3-agent Scrutiny Panel (Logic Critic,
-Suspense Critic, Arbitrator) and a mandatory human review gate at every
-stage. Entirely separate from manuscript drafting: nothing in this
-pipeline ever writes prose. "Generator" here means planning text —
-summaries, act structure, beat lists — never manuscript prose, which
-stays exclusively Hanami's job via the existing `/generate-prose` and MCP
-tools, unchanged by any of this. Approved output feeds two systems that
-already exist rather than inventing new ones: Stage 3's approved beats
-become real `chapter_beats` rows (the same table backing the Outliner),
-and an entity-extraction pass proposes Codex/World Category entries for
-the writer to batch-review before anything is created.
+A pre-writing pipeline — an **intake conversation**, then Stage 1 Core
+Summary → Stage 2 Act Outlines → Stage 3 Chapter Beats — with a 3-agent
+Scrutiny Panel (Logic Critic, Suspense Critic, Arbitrator) and a
+mandatory human review gate at every stage. Entirely separate from
+manuscript drafting: nothing in this pipeline ever writes prose.
+"Generator" here means planning text — summaries, act structure, beat
+lists — never manuscript prose, which stays exclusively Hanami's job via
+the existing `/generate-prose` and MCP tools, unchanged by any of this.
+Approved output feeds two systems that already exist rather than
+inventing new ones: Stage 3's approved beats become real `chapter_beats`
+rows (the same table backing the Outliner), and an entity-extraction
+pass proposes Codex/World Category entries for the writer to
+batch-review before anything is created.
+
+**Intake comes before Stage 1, not a button.** A new run doesn't start by
+generating anything — it starts in `status: intake_active`, a plain-
+language conversation with the same Arbitrator role (a distinct prompt at
+`stage = 'intake'`, separate from its mid-pipeline rejection-interview
+prompt), where the writer describes what they want, pastes a reference
+link, or attaches a document, and the Arbitrator asks questions until it
+can compile a real creative brief. That conversation is what gives the
+Generator something to actually work from — without it, Stage 1 was
+previously producing a summary from nothing but existing Codex/facts,
+which only made sense for continuing an already-established book, never
+for starting a new one. `intakeChatTurn` gives Claude the server-side
+`web_fetch_20260209` tool — pasting a URL in the chat message lets
+Claude fetch and read that page itself within the same call, no scraping
+code needed here — and accepts an optional inline base64 document,
+read once for that call and never persisted (no Storage bucket needed,
+unlike a permanent asset such as a character portrait). `intake-finalize`
+compiles the conversation into `final_delta_directive` — the exact same
+field a post-rejection directive would set, since mechanically it's the
+same thing: extra direction for the Generator's next call — and flips
+status to `generating`, opening Stage 1.
 
 **Every agent's behavior is prompt-driven, not hardcoded.** Every
 `system_prompt`/`user_prompt_template` (plus `model` and `effort`) is a
@@ -1349,7 +1371,7 @@ step; nothing here holds state in memory between requests.
 | `id` | UUID PK | |
 | `book_id` | UUID NOT NULL | prompts are scoped per book, not global |
 | `agent_role` | VARCHAR(50) NOT NULL | `generator` \| `logic_critic` \| `suspense_critic` \| `arbitrator_panel` \| `arbitrator_chat` \| `arbitrator_directive` \| `entity_extractor` |
-| `stage` | VARCHAR(50) NOT NULL | `stage_1_summary` \| `stage_2_acts` \| `stage_3_beats` \| `all` (for a role whose prompt doesn't vary by stage) |
+| `stage` | VARCHAR(50) NOT NULL | `stage_1_summary` \| `stage_2_acts` \| `stage_3_beats` \| `all` (for a role whose prompt doesn't vary by stage) \| `intake` (prompt-lookup only — never a run's real `current_stage`) |
 | `version` | INT NOT NULL | auto-incremented per (book_id, agent_role, stage) on each save |
 | `is_active` | BOOLEAN NOT NULL | exactly one active version per (book_id, agent_role, stage); `getActivePrompt` tries the exact stage first, then falls back to `stage = 'all'` |
 | `system_prompt`, `user_prompt_template` | TEXT NOT NULL | 100% writer-authored; this backend contains none of the actual prompt content |
@@ -1368,7 +1390,7 @@ Added in migration `022_planning_engine.sql`. Managed via `GET/POST/PATCH/DELETE
 | `{{FINAL_DELTA_DIRECTIVE}}` | generator | Set only when regenerating after a rejection; consumed once and cleared |
 | `{{CURRENT_ARTIFACT}}` | logic_critic, suspense_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
 | `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | Both critics' JSON output |
-| `{{CHAT_HISTORY}}` | arbitrator_directive | The full rejection interview, for compiling one directive from it |
+| `{{CHAT_HISTORY}}` | arbitrator_directive | The full rejection interview (or, at `stage = 'intake'`, the intake conversation), for compiling one directive from it |
 
 **Two roles have a required output shape**, since their output gets parsed into real rows, not just displayed:
 - `generator` at `stage_3_beats` must return JSON: `{"chapters": [{"chapterNumber": 1, "title": "...", "beats": [{"title": "...", "outlineText": "..."}]}]}` — this is what `materializeBeats` inserts into `manuscript_chapters`/`chapter_beats` on approval.
@@ -1383,21 +1405,24 @@ Both go through `callAgentForJson`, which retries once with a corrective nudge i
 | `id` | UUID PK | |
 | `book_id`, `user_id` | UUID NOT NULL | |
 | `current_stage` | VARCHAR(50) NOT NULL | default `stage_1_summary` |
-| `status` | VARCHAR(30) NOT NULL | `generating` \| `critiquing` \| `awaiting_arbitration` \| `awaiting_user_review` \| `user_chat_active` \| `awaiting_entity_review` \| `done` \| `failed` |
+| `status` | VARCHAR(30) NOT NULL | default `intake_active`; `intake_active` \| `generating` \| `critiquing` \| `awaiting_arbitration` \| `awaiting_user_review` \| `user_chat_active` \| `awaiting_entity_review` \| `done` \| `failed` |
 | `stage_artifacts` | JSONB NOT NULL | keyed by stage, not a single overwritten column — Stage 2's Generator needs to read Stage 1's approved text, so earlier stages survive the transition |
 | `panel_reviews` | JSONB | `{ logic_critic, suspense_critic }`, whatever shape each critic's own prompt asks for |
 | `arbitrator_synthesis` | JSONB | |
-| `chat_history` | JSONB NOT NULL | array of `{ role, content }`; reset on each new rejection cycle |
-| `final_delta_directive` | TEXT | set by `finalize-directive`, consumed by the next `generate` call, then cleared |
+| `chat_history` | JSONB NOT NULL | mid-pipeline rejection interviews only; array of `{ role, content }`, reset on each new rejection cycle |
+| `intake_chat_history` | JSONB NOT NULL | the one-time pre-Stage-1 conversation; separate thread from `chat_history` so a rejection at Stage 2 doesn't dredge up the original intake conversation, and vice versa. Not reset — kept as a permanent record |
+| `final_delta_directive` | TEXT | set by `finalize-directive` **or** `intake-finalize`, consumed by the next `generate` call, then cleared |
 | `extracted_entities` | JSONB | candidates proposed after Stage 3 approval, cleared once reviewed |
 | `last_error` | TEXT | set when a step fails, alongside `status: 'failed'` |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
-Added in migration `022_planning_engine.sql`. `src/services/planningEngine.ts` / `src/routes/planning.ts`.
+Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `intake_active` default added in `023_planning_intake.sql`. `src/services/planningEngine.ts` / `src/routes/planning.ts`.
 
 ### Endpoints
 
-- `POST /api/v1/planning/runs` — `{ bookId, userId }`, starts a run at Stage 1
+- `POST /api/v1/planning/runs` — `{ bookId, userId }`, starts a run in the intake conversation (`status: intake_active`) — **not** Stage 1 generation yet
+- `POST /api/v1/planning/runs/:id/intake-chat` — `{ message, documentBase64?, documentMediaType? }`, one turn of the pre-Stage-1 conversation; has the `web_fetch_20260209` server tool available, so a pasted URL gets actually read
+- `POST /api/v1/planning/runs/:id/intake-finalize` — compiles the intake conversation into `final_delta_directive` and opens Stage 1 (`status -> generating`)
 - `GET /api/v1/planning/runs/:id` — poll current state
 - `POST /api/v1/planning/runs/:id/generate` — one Generator call for `current_stage`
 - `POST /api/v1/planning/runs/:id/critique` — Logic + Suspense critics, fired in parallel in one request

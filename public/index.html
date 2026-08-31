@@ -484,6 +484,14 @@
     <div><button class="secondary" id="rFetch" type="button">Refresh state</button></div>
   </div>
   <div class="row">
+    <div><label>Intake chat message (before Stage 1 — describe what you want, paste a reference link)</label><textarea id="rIntakeMessage" rows="2" placeholder="A grimdark portal-fantasy in the vein of https://example.com/some-story, chapters 1-5 as reference..."></textarea></div>
+  </div>
+  <div class="row">
+    <div><label>Optional reference document</label><input id="rIntakeDoc" type="file" accept=".pdf" /></div>
+    <div><button id="rIntakeChatSend" type="button">Send intake message</button></div>
+    <div><button class="secondary" id="rIntakeFinalize" type="button">Finalize intake &amp; start Stage 1</button></div>
+  </div>
+  <div class="row">
     <div><button id="rGenerate" type="button">Generate</button></div>
     <div><button id="rCritique" type="button">Critique</button></div>
     <div><button id="rArbitrate" type="button">Arbitrate</button></div>
@@ -1675,6 +1683,30 @@ $("rCreate").addEventListener("click", async () => {
     setStatus($("rStatus"), String(err.message || err), "error");
   }
 });
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+$("rIntakeChatSend").addEventListener("click", async () => {
+  const message = $("rIntakeMessage").value.trim();
+  if (!message) { setStatus($("rStatus"), "Intake message is required.", "error"); return; }
+  const body = { message };
+  const file = $("rIntakeDoc").files[0];
+  if (file) {
+    body.documentBase64 = await readFileAsBase64(file);
+    body.documentMediaType = file.type || "application/pdf";
+  }
+  await planningStep("/intake-chat", "POST", body);
+  $("rIntakeMessage").value = "";
+  $("rIntakeDoc").value = "";
+});
+$("rIntakeFinalize").addEventListener("click", () => planningStep("/intake-finalize", "POST"));
 
 $("rFetch").addEventListener("click", () => planningStep("", "GET"));
 $("rGenerate").addEventListener("click", () => planningStep("/generate", "POST"));

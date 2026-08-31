@@ -10,6 +10,8 @@ import {
   chatTurn,
   finalizeDirective,
   confirmEntities,
+  intakeChatTurn,
+  finalizeIntake,
 } from "../services/planningEngine.js";
 
 export const planningRouter = Router();
@@ -19,7 +21,10 @@ function handleError(res: Response, error: unknown, context: string) {
   res.status(502).json({ error: error instanceof Error ? error.message : `Failed to ${context}.` });
 }
 
-// POST /api/v1/planning/runs — starts a new planning run at Stage 1.
+// POST /api/v1/planning/runs — starts a new planning run in the intake
+// conversation (status: intake_active) — NOT Stage 1 generation yet. The
+// writer talks to the Arbitrator via intake-chat below until they're
+// ready to call intake-finalize, which is what actually opens Stage 1.
 planningRouter.post("/planning/runs", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   if (typeof body.bookId !== "string" || body.bookId.trim() === "") {
@@ -36,6 +41,50 @@ planningRouter.post("/planning/runs", async (req: Request, res: Response) => {
     res.status(201).json({ run });
   } catch (error) {
     handleError(res, error, "create planning run");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/intake-chat — one turn of the pre-Stage-1
+// conversation. { message: string, documentBase64?: string, documentMediaType?: string }
+// Pasting a URL directly in `message` lets Claude fetch and read it itself
+// (server-side web_fetch tool — no separate scraping call needed). The
+// optional document is read for this call only, never persisted.
+planningRouter.post("/planning/runs/:id/intake-chat", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.message !== "string" || body.message.trim() === "") {
+    res.status(400).json({ error: "message is required and must be a non-empty string." });
+    return;
+  }
+  if (body.documentBase64 !== undefined && typeof body.documentBase64 !== "string") {
+    res.status(400).json({ error: "documentBase64 must be a string when provided." });
+    return;
+  }
+  if (body.documentBase64 !== undefined && typeof body.documentMediaType !== "string") {
+    res.status(400).json({ error: "documentMediaType is required when documentBase64 is provided." });
+    return;
+  }
+
+  const document =
+    typeof body.documentBase64 === "string"
+      ? { base64: body.documentBase64, mediaType: body.documentMediaType as string }
+      : undefined;
+
+  try {
+    res.json({ run: await intakeChatTurn((req.params.id as string), body.message, document) });
+  } catch (error) {
+    handleError(res, error, "run intake chat turn");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/intake-finalize — compiles the intake
+// conversation into the Generator's first directive and opens Stage 1
+// (status -> generating). Call this once the writer is done describing
+// what they want.
+planningRouter.post("/planning/runs/:id/intake-finalize", async (req: Request, res: Response) => {
+  try {
+    res.json({ run: await finalizeIntake((req.params.id as string)) });
+  } catch (error) {
+    handleError(res, error, "finalize intake");
   }
 });
 

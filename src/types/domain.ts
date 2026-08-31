@@ -295,9 +295,18 @@ export const VALID_AGENT_ROLES: AgentRole[] = [
   "entity_extractor",
 ];
 
-export type PlanningStage = "stage_1_summary" | "stage_2_acts" | "stage_3_beats" | "all";
+// 'intake' is a valid stage for prompt lookup only (never a run's
+// current_stage) — it's where arbitrator_chat/arbitrator_directive get a
+// distinct prompt for the pre-Stage-1 intake conversation, separate from
+// the same roles' prompt for a mid-pipeline rejection interview.
+export type PlanningStage = "stage_1_summary" | "stage_2_acts" | "stage_3_beats" | "all" | "intake";
 
-export const VALID_PLANNING_STAGES: PlanningStage[] = ["stage_1_summary", "stage_2_acts", "stage_3_beats", "all"];
+// The subset of PlanningStage a run's current_stage or stage_artifacts key
+// can actually be — excludes "all" and "intake", which only ever appear
+// as a prompt-lookup stage, never a run's real position in the pipeline.
+export type RealPlanningStage = "stage_1_summary" | "stage_2_acts" | "stage_3_beats";
+
+export const VALID_PLANNING_STAGES: PlanningStage[] = ["stage_1_summary", "stage_2_acts", "stage_3_beats", "all", "intake"];
 
 export const VALID_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof VALID_EFFORT_LEVELS)[number];
@@ -319,6 +328,7 @@ export interface AgentPrompt {
 }
 
 export type PlanningRunStatus =
+  | "intake_active"
   | "generating"
   | "critiquing"
   | "awaiting_arbitration"
@@ -346,10 +356,19 @@ export interface PlanningRun {
   user_id: string;
   current_stage: PlanningStage;
   status: PlanningRunStatus;
-  stage_artifacts: Partial<Record<Exclude<PlanningStage, "all">, string>>;
+  stage_artifacts: Partial<Record<RealPlanningStage, string>>;
   panel_reviews: { logic_critic?: unknown; suspense_critic?: unknown } | null;
   arbitrator_synthesis: unknown | null;
+  // Rejection interviews, mid-pipeline. Separate thread from
+  // intake_chat_history — a rejection at stage_2_acts shouldn't dredge up
+  // the original intake conversation, and vice versa.
   chat_history: PlanningChatMessage[];
+  // The one-time pre-Stage-1 conversation where the writer describes what
+  // they want in plain language, pastes a reference link, or attaches a
+  // document — compiled into the same final_delta_directive field a
+  // rejection's directive would use, since mechanically it's the same
+  // thing: extra direction for the Generator's next call.
+  intake_chat_history: PlanningChatMessage[];
   final_delta_directive: string | null;
   extracted_entities: ExtractedEntityCandidate[] | null;
   last_error: string | null;
