@@ -1393,6 +1393,19 @@ step; nothing here holds state in memory between requests.
 
 Added in migration `022_planning_engine.sql`. Managed via `GET/POST/PATCH/DELETE /api/v1/agent-prompts` (`src/services/agentPrompts.ts`, `src/routes/agentPrompts.ts`) and the "Planning Engine — Agent Prompt Editor" panel in the test UI. `DELETE` refuses to remove the active version of a role/stage — that would silently leave the step with nothing to run.
 
+**`agent_prompts` is scoped per `book_id`, not global** — a brand-new
+book starts with zero rows, so the Planning Engine has nothing to run
+for it until prompts exist. `POST /api/v1/agent-prompts/clone` —
+`{ fromBookId, toBookId }` — closes that gap: copies every active
+prompt from one book to another, each landing as a new active version
+in the destination via the normal `createAgentPrompt` versioning path
+(so it's safe to call even if the destination already has some prompts —
+it deactivates/versions over them the same as any other save, it doesn't
+require an empty destination). This is the "use the same prompts as my
+other project" action for the Prompt Editor, instead of manually
+re-running the seed script for every new book. 404 if the source book
+has no active prompts to clone; 400 if `fromBookId === toBookId`.
+
 **Template placeholders** (`interpolateTemplate` in `agentPrompts.ts` — a `{{KEY}}` not present in a given template is simply left alone):
 
 | Placeholder | Available to | Contents |
