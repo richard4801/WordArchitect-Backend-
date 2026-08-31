@@ -383,6 +383,40 @@ export async function rejectStage(runId: string): Promise<PlanningRun> {
   return saveRun(runId, { status: "user_chat_active", chat_history: [] });
 }
 
+// Writer approved a stage but changes their mind before doing anything on
+// the next one — undoes that approval and reopens the PREVIOUS stage's
+// rejection interview directly, so its own critique can actually be acted
+// on instead of being stuck advanced past it. Goes straight to the
+// interview (not back to the review gate) because approveStage already
+// wiped that stage's panel_reviews/arbitrator_synthesis on advance — that
+// critique data isn't recoverable, but the writer asking for this already
+// knows what they want fixed, which is exactly what the interview is for.
+// Refuses if the stage being abandoned already has its own generated
+// artifact — reverting would silently discard real generated content,
+// the same non-destructive principle every other write path here follows.
+export async function unapproveStage(runId: string): Promise<PlanningRun> {
+  const run = await loadRun(runId);
+  const stageIndex = STAGE_ORDER.indexOf(run.current_stage as RealPlanningStage);
+  if (stageIndex <= 0) {
+    throw new Error("Already at the first stage — there is no previous stage to reopen.");
+  }
+  const previousStage = STAGE_ORDER[stageIndex - 1] as RealPlanningStage;
+
+  if (run.stage_artifacts[run.current_stage as RealPlanningStage]) {
+    throw new Error(
+      `Cannot reopen ${previousStage} — ${run.current_stage} already has a generated artifact, and reverting would discard it. Reject ${run.current_stage}'s own artifact instead if that's what needs changing.`
+    );
+  }
+
+  return saveRun(runId, {
+    current_stage: previousStage,
+    status: "user_chat_active",
+    chat_history: [],
+    panel_reviews: null,
+    arbitrator_synthesis: null,
+  });
+}
+
 // One turn of the Arbitrator chat interview. Every prior turn is resent —
 // the API is stateless per call, same as every LLM API, Hanami included;
 // "memory" only ever exists because the caller resends history, exactly

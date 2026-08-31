@@ -8,6 +8,7 @@ import {
   runArbitration,
   approveStage,
   rejectStage,
+  unapproveStage,
   chatTurn,
   finalizeDirective,
   confirmEntities,
@@ -163,6 +164,21 @@ planningRouter.post("/planning/runs/:id/reject", async (req: Request, res: Respo
     res.json({ run: await rejectStage((req.params.id as string)) });
   } catch (error) {
     handleError(res, error, "reject stage");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/unapprove — undoes approving the CURRENT
+// stage's prior stage (i.e. reopens whatever was just approved) and opens
+// its rejection interview directly. Only safe to call before anything has
+// been generated for the stage that approval advanced into — 409 if that
+// stage already has its own artifact, since reverting would discard it.
+planningRouter.post("/planning/runs/:id/unapprove", async (req: Request, res: Response) => {
+  try {
+    res.json({ run: await unapproveStage((req.params.id as string)) });
+  } catch (error) {
+    console.error("unapprove stage failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to unapprove stage.";
+    res.status(message.includes("already has a generated artifact") || message.includes("Already at the first stage") ? 409 : 502).json({ error: message });
   }
 });
 

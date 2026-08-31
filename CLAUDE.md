@@ -1455,6 +1455,14 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `int
 - `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate
 - `POST /api/v1/planning/runs/:id/approve` — the gate's approve action; on `stage_3_beats` this also materializes beats into the Outliner and starts entity extraction instead of finishing outright
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
+- `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever
+  stage came before `current_stage` and reopens its rejection interview
+  directly (skipping the review gate, since that stage's `panel_reviews`/
+  `arbitrator_synthesis` were already cleared on approve and aren't
+  recoverable — the writer asking for this already knows what to fix).
+  `409` if `current_stage` already has its own generated artifact
+  (reverting would discard it — reject that stage's own artifact instead)
+  or if there's no previous stage to reopen
 - `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
 - `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same stage
 - `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written
