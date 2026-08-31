@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import {
   createPlanningRun,
   getPlanningRun,
+  deletePlanningRun,
   generateStage,
   runCritique,
   runArbitration,
@@ -99,6 +100,23 @@ planningRouter.get("/planning/runs/:id", async (req: Request, res: Response) => 
     res.json({ run });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to fetch planning run.";
+    res.status(message.includes("No planning run found") ? 404 : 502).json({ error: message });
+  }
+});
+
+// DELETE /api/v1/planning/runs/:id — abandons the run's own bookkeeping
+// row (intake/chat history, stage artifacts, panel reviews). Does NOT
+// touch anything already materialized from it — a chapter_beats row or
+// codex_entries created by a prior approval on this run stay exactly
+// where they are; delete those through their own normal endpoints if
+// that's what's actually intended.
+planningRouter.delete("/planning/runs/:id", async (req: Request, res: Response) => {
+  try {
+    await deletePlanningRun((req.params.id as string));
+    res.status(204).end();
+  } catch (error) {
+    console.error("delete planning run failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to delete planning run.";
     res.status(message.includes("No planning run found") ? 404 : 502).json({ error: message });
   }
 });

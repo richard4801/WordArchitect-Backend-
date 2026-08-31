@@ -1444,6 +1444,7 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `int
 - `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
 - `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same stage
 - `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written
+- `DELETE /api/v1/planning/runs/:id` — abandons the run's own bookkeeping row only; does not touch anything already materialized from it (a `chapter_beats` row or `codex_entries` created by a prior approval on this run stay put — delete those through their own endpoints)
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 

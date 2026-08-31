@@ -157,6 +157,19 @@ export async function getPlanningRun(runId: string): Promise<PlanningRun> {
   return loadRun(runId);
 }
 
+// Abandons a run outright — for a diagnostic/test run, or one the writer
+// just wants to discard. No confirm-gate needed here the way entity
+// writes have one: this only ever removes the run's own bookkeeping row,
+// never anything it may have already materialized into chapter_beats or
+// codex_entries (those are separate, real content and are cleaned up, if
+// at all, through their own normal delete endpoints).
+export async function deletePlanningRun(runId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error, count } = await supabase.from("planning_runs").delete({ count: "exact" }).eq("id", runId);
+  if (error) throw new Error(`Failed to delete planning run: ${error.message}`);
+  if (!count) throw new Error(`No planning run found with id ${runId}.`);
+}
+
 // Runs the Generator for the run's current_stage. Sees the book's existing
 // Codex/facts (so continuing an already-written book stays consistent with
 // what's already on the page), the prior stage's approved artifact for
