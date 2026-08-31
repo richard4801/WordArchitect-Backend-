@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { listAgentPrompts, createAgentPrompt, updateAgentPrompt, deleteAgentPrompt } from "../services/agentPrompts.js";
+import { listAgentPrompts, createAgentPrompt, updateAgentPrompt, deleteAgentPrompt, clonePromptsFromBook } from "../services/agentPrompts.js";
 import { VALID_AGENT_ROLES, VALID_PLANNING_STAGES, VALID_EFFORT_LEVELS } from "../types/domain.js";
 import type { AgentRole, EffortLevel, PlanningStage, PromptAuthor } from "../types/domain.js";
 
@@ -78,6 +78,32 @@ agentPromptsRouter.post("/agent-prompts", async (req: Request, res: Response) =>
   } catch (error) {
     console.error("create agent prompt failed:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Failed to create agent prompt." });
+  }
+});
+
+// POST /api/v1/agent-prompts/clone — copies every active prompt from one
+// book to another. Prompts are scoped per book_id, so a brand-new book has
+// none until this (or a manual save) creates them — this is the "use the
+// same prompts as my other project" action for the Prompt Editor.
+agentPromptsRouter.post("/agent-prompts/clone", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  if (typeof body.fromBookId !== "string" || body.fromBookId.trim() === "") {
+    res.status(400).json({ error: "fromBookId is required and must be a non-empty string." });
+    return;
+  }
+  if (typeof body.toBookId !== "string" || body.toBookId.trim() === "") {
+    res.status(400).json({ error: "toBookId is required and must be a non-empty string." });
+    return;
+  }
+
+  try {
+    const prompts = await clonePromptsFromBook(body.fromBookId, body.toBookId);
+    res.status(201).json({ prompts });
+  } catch (error) {
+    console.error("clone agent prompts failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to clone agent prompts.";
+    res.status(message.includes("No active prompts found") ? 404 : 502).json({ error: message });
   }
 });
 

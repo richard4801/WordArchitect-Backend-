@@ -182,6 +182,46 @@ export async function deleteAgentPrompt(id: string): Promise<void> {
   if (error) throw new Error(`Failed to delete agent prompt: ${error.message}`);
 }
 
+// Copies every active prompt from one book to another, each as a new
+// version in the destination book (via createAgentPrompt, so it correctly
+// deactivates/versions over anything already active there rather than
+// requiring the destination to be empty). Prompts are scoped per book_id —
+// a brand-new book starts with zero rows in agent_prompts, so this is what
+// makes "use the same prompts as my other book" possible without manually
+// re-running the seed script for every new book.
+export async function clonePromptsFromBook(fromBookId: string, toBookId: string): Promise<AgentPrompt[]> {
+  if (fromBookId === toBookId) {
+    throw new Error("fromBookId and toBookId must be different.");
+  }
+
+  const supabase = getSupabaseClient();
+  const { data: sourcePrompts, error } = await supabase
+    .from("agent_prompts")
+    .select("*")
+    .eq("book_id", fromBookId)
+    .eq("is_active", true);
+  if (error) throw new Error(`Failed to load source book's prompts: ${error.message}`);
+  if (!sourcePrompts || sourcePrompts.length === 0) {
+    throw new Error(`No active prompts found for source book ${fromBookId} — nothing to clone.`);
+  }
+
+  const cloned: AgentPrompt[] = [];
+  for (const p of sourcePrompts as AgentPrompt[]) {
+    const created = await createAgentPrompt({
+      bookId: toBookId,
+      agentRole: p.agent_role,
+      stage: p.stage,
+      systemPrompt: p.system_prompt,
+      userPromptTemplate: p.user_prompt_template,
+      model: p.model,
+      effort: p.effort,
+      authoredBy: p.authored_by,
+    });
+    cloned.push(created);
+  }
+  return cloned;
+}
+
 // Replaces {{KEY}} tokens with the given values. Keys not present in the
 // template are simply not replaced — a role's template only ever
 // references the slots it actually needs.
