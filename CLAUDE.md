@@ -1411,7 +1411,8 @@ has no active prompts to clone; 400 if `fromBookId === toBookId`.
 | Placeholder | Available to | Contents |
 | --- | --- | --- |
 | `{{BOOK_CONTEXT}}` | generator, logic_critic, suspense_critic, entity_extractor | Book Facts (`get_book_facts`) + every current Codex entry, so planning stays consistent with what's already established, especially when continuing an already-written book |
-| `{{PRIOR_STAGE_ARTIFACT}}` | generator | The previous stage's approved artifact (e.g. Stage 2 sees Stage 1's summary) |
+| `{{PRIOR_STAGE_ARTIFACT}}` | generator | The previous *stage's* approved artifact (e.g. Stage 2 sees Stage 1's summary) |
+| `{{PREVIOUS_ARTIFACT}}` | generator | This *same* stage's own last draft — empty on a stage's first generation, populated with the rejected draft when regenerating after a rejection. Exists so a regeneration is a revision of that exact text, not a blind rewrite from scratch — the Generator has no memory of its own prior output otherwise, the same statelessness Hanami has (see MCP Server's "Every Hanami call is stateless" note) |
 | `{{FINAL_DELTA_DIRECTIVE}}` | generator | Set only when regenerating after a rejection; consumed once and cleared |
 | `{{CURRENT_ARTIFACT}}` | logic_critic, suspense_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
 | `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | Both critics' JSON output |

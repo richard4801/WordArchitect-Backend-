@@ -184,10 +184,17 @@ export async function generateStage(runId: string): Promise<PlanningRun> {
     const stageIndex = STAGE_ORDER.indexOf(run.current_stage as RealPlanningStage);
     const priorStage = stageIndex > 0 ? STAGE_ORDER[stageIndex - 1] : null;
     const priorArtifact = priorStage ? (run.stage_artifacts[priorStage] ?? "") : "";
+    // The rejected draft of THIS stage, not the prior stage's — this is
+    // what makes a post-rejection regeneration a revision instead of a
+    // blind rewrite. Read before this call overwrites stage_artifacts
+    // below; empty on a stage's first-ever generation, since there's no
+    // previous attempt to revise yet.
+    const previousArtifact = run.stage_artifacts[run.current_stage as RealPlanningStage] ?? "";
 
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {
       BOOK_CONTEXT: bookContext,
       PRIOR_STAGE_ARTIFACT: priorArtifact,
+      PREVIOUS_ARTIFACT: previousArtifact,
       FINAL_DELTA_DIRECTIVE: run.final_delta_directive ?? "",
     });
 

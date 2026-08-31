@@ -27,16 +27,19 @@ A strong Core Summary includes, explicitly and by name:
 
 Ground everything in the book context below — if this is a new book, invent freely from the writer's brief; if Codex entries already exist, treat them as fixed canon and build consistently around them, never contradicting an established name, relationship, or fact.
 
-If a delta directive is provided, it is the writer's explicit correction to your previous attempt — treat it as a hard constraint, not a suggestion, and make sure the new summary visibly addresses every point in it.
+Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact document. Apply the delta directive's specific requested change(s) precisely, and leave everything else in the Previous Draft unchanged in wording and structure wherever the directive doesn't call for a change there. Do not rewrite passages, rephrase sections, or make unrelated "while I'm at it" edits — a change the writer didn't ask for is itself a defect, even if you think it reads better. If no Previous Draft is included below, this is the first attempt at this stage: write it fresh from the Book Context and Writer's Brief.
 
 Write only the Core Summary itself. No preamble, no meta-commentary about what you're doing, no "Here is the summary:" — just the document.`,
     userPromptTemplate: `## Book Context
 {{BOOK_CONTEXT}}
 
-## Writer's Brief (from intake, or the delta directive from a prior rejection)
+## Previous Draft of this Core Summary (present only if this is a revision after a rejection — otherwise blank, meaning this is the first attempt)
+{{PREVIOUS_ARTIFACT}}
+
+## Writer's Brief / Correction Directive (from intake, or your correction after a rejection)
 {{FINAL_DELTA_DIRECTIVE}}
 
-Write the Stage 1 Core Summary now.`,
+Write the Stage 1 Core Summary now. If a Previous Draft is present above, revise it per the directive rather than starting over.`,
   },
   {
     agentRole: "generator",
@@ -56,7 +59,7 @@ Foreshadowing matters here: if Stage 1 promises a twist, secret, or payoff, this
 
 Stay strictly consistent with the approved Core Summary — do not introduce a different premise, contradict an established character detail, or quietly soften tone/content the summary already established as dark or explicit.
 
-If a delta directive is provided, it's the writer's explicit correction to your previous attempt at this stage — treat it as a hard constraint.
+Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact document. Apply the delta directive's specific requested change(s) precisely, and leave everything else in the Previous Draft unchanged in wording and structure wherever the directive doesn't call for a change there. Do not rewrite passages, rephrase sections, or make unrelated "while I'm at it" edits — a change the writer didn't ask for is itself a defect, even if you think it reads better. If no Previous Draft is included below, this is the first attempt at this stage: write it fresh from the Book Context and approved Core Summary.
 
 Write only the Act Outlines. No preamble, no meta-commentary.`,
     userPromptTemplate: `## Book Context
@@ -65,10 +68,13 @@ Write only the Act Outlines. No preamble, no meta-commentary.`,
 ## Approved Stage 1 Core Summary
 {{PRIOR_STAGE_ARTIFACT}}
 
+## Previous Draft of these Act Outlines (present only if this is a revision after a rejection — otherwise blank, meaning this is the first attempt)
+{{PREVIOUS_ARTIFACT}}
+
 ## Correction Directive (if regenerating after a rejection)
 {{FINAL_DELTA_DIRECTIVE}}
 
-Write the Stage 2 Act Outlines now.`,
+Write the Stage 2 Act Outlines now. If a Previous Draft is present above, revise it per the directive rather than starting over.`,
   },
   {
     agentRole: "generator",
@@ -86,17 +92,20 @@ Each chapter typically needs 1-4 beats depending on chapter length and complexit
 
 Cover every plot point from the approved Act Outlines — nothing established there should be missing from the beats, and nothing should appear here that contradicts it. Chapter numbering should continue from wherever the book context's Book Facts show the manuscript currently stands (if this is a new book with no existing chapters, start at 1) — check the highest existing chapter number and beat-plan forward from there, never renumbering or duplicating chapters that already exist.
 
-If a delta directive is provided, it's the writer's explicit correction to your previous attempt — treat it as a hard constraint.`,
+Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact JSON. Apply the delta directive's specific requested change(s) precisely, and output the complete corrected JSON object again — copy every chapter/beat the directive doesn't address over exactly as it was in the Previous Draft, unchanged, and change only what the directive requires. Do not silently renumber, reorder, merge, or drop chapters/beats the directive didn't ask you to touch. If no Previous Draft is included below, this is the first attempt at this stage: produce it fresh from the Book Context and approved Act Outlines.`,
     userPromptTemplate: `## Book Context (check Book Facts for the highest existing chapter number before numbering)
 {{BOOK_CONTEXT}}
 
 ## Approved Stage 2 Act Outlines
 {{PRIOR_STAGE_ARTIFACT}}
 
+## Previous Draft of these Chapter Beats (present only if this is a revision after a rejection — otherwise blank, meaning this is the first attempt)
+{{PREVIOUS_ARTIFACT}}
+
 ## Correction Directive (if regenerating after a rejection)
 {{FINAL_DELTA_DIRECTIVE}}
 
-Produce the Stage 3 Chapter Beats JSON now.`,
+Produce the Stage 3 Chapter Beats JSON now. If a Previous Draft is present above, output the complete revised JSON, keeping every chapter/beat the directive doesn't address exactly as it was in the Previous Draft.`,
   },
   {
     agentRole: "logic_critic",
