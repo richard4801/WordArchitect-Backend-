@@ -1435,6 +1435,7 @@ Both go through `callAgentForJson`, which retries once with a corrective nudge i
 | `stage_artifacts` | JSONB NOT NULL | keyed by stage, not a single overwritten column — Stage 2's Generator needs to read Stage 1's approved text, so earlier stages survive the transition |
 | `panel_reviews` | JSONB | `{ logic_critic, suspense_critic }`, whatever shape each critic's own prompt asks for |
 | `arbitrator_synthesis` | JSONB | |
+| `stage_panel_history` | JSONB NOT NULL | keyed by stage; snapshot of that stage's `panel_reviews`/`arbitrator_synthesis` taken by `approveStage` right before they're cleared for the next stage's own cycle. Exists so `unapprove` (see below) can restore a stage's real critique when reopening its rejection interview, instead of it coming back empty — added in migration `025_planning_stage_panel_history.sql` after a real case of exactly that happening |
 | `chat_history` | JSONB NOT NULL | mid-pipeline rejection interviews only; array of `{ role, content }`, reset on each new rejection cycle |
 | `intake_chat_history` | JSONB NOT NULL | the one-time pre-Stage-1 conversation; separate thread from `chat_history` so a rejection at Stage 2 doesn't dredge up the original intake conversation, and vice versa. Not reset — kept as a permanent record |
 | `final_delta_directive` | TEXT | set by `finalize-directive` **or** `intake-finalize`, consumed by the next `generate` call, then cleared |
@@ -1457,11 +1458,12 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `int
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
 - `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever
   stage came before `current_stage` and reopens its rejection interview
-  directly (skipping the review gate, since that stage's `panel_reviews`/
-  `arbitrator_synthesis` were already cleared on approve and aren't
-  recoverable — the writer asking for this already knows what to fix).
-  `409` if `current_stage` already has its own generated artifact
-  (reverting would discard it — reject that stage's own artifact instead)
+  directly (skipping the review gate, since the review gate's job —
+  approve or reject — has already been answered). Restores that stage's
+  `panel_reviews`/`arbitrator_synthesis` from `stage_panel_history` so the
+  interview has the real critique to work from, not an empty one. `409`
+  if `current_stage` already has its own generated artifact (reverting
+  would discard it — reject that stage's own artifact instead)
   or if there's no previous stage to reopen
 - `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
 - `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same stage

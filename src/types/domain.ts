@@ -364,6 +364,13 @@ export interface PlanningRun {
   stage_artifacts: Partial<Record<RealPlanningStage, string>>;
   panel_reviews: { logic_critic?: unknown; suspense_critic?: unknown } | null;
   arbitrator_synthesis: unknown | null;
+  // Snapshot of a stage's panel_reviews/arbitrator_synthesis, keyed by
+  // stage, taken right before approveStage clears them on advance — what
+  // unapproveStage restores from so reopening a stage's rejection
+  // interview has real critique content instead of coming back empty.
+  stage_panel_history: Partial<
+    Record<RealPlanningStage, { panel_reviews: PlanningRun["panel_reviews"]; arbitrator_synthesis: unknown }>
+  >;
   // Rejection interviews, mid-pipeline. Separate thread from
   // intake_chat_history — a rejection at stage_2_acts shouldn't dredge up
   // the original intake conversation, and vice versa.

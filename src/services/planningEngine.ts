@@ -369,12 +369,22 @@ export async function approveStage(runId: string): Promise<PlanningRun> {
     return saveRun(runId, { status: "done" });
   }
 
+  // Snapshot this stage's critique before clearing it — advancing wipes
+  // panel_reviews/arbitrator_synthesis for the new stage's own cycle, but
+  // unapproveStage needs the just-approved stage's data back if the
+  // writer meant to reject instead.
+  const stagePanelHistory = {
+    ...run.stage_panel_history,
+    [run.current_stage]: { panel_reviews: run.panel_reviews, arbitrator_synthesis: run.arbitrator_synthesis },
+  };
+
   return saveRun(runId, {
     current_stage: next,
     status: "generating",
     panel_reviews: null,
     arbitrator_synthesis: null,
     chat_history: [],
+    stage_panel_history: stagePanelHistory,
   });
 }
 
@@ -387,10 +397,13 @@ export async function rejectStage(runId: string): Promise<PlanningRun> {
 // the next one — undoes that approval and reopens the PREVIOUS stage's
 // rejection interview directly, so its own critique can actually be acted
 // on instead of being stuck advanced past it. Goes straight to the
-// interview (not back to the review gate) because approveStage already
-// wiped that stage's panel_reviews/arbitrator_synthesis on advance — that
-// critique data isn't recoverable, but the writer asking for this already
-// knows what they want fixed, which is exactly what the interview is for.
+// interview (not back to the review gate) since the review gate's job —
+// approve or reject — has already been answered; landing on the
+// interview matches exactly what a fresh reject would have produced.
+// Restores that stage's panel_reviews/arbitrator_synthesis from
+// stage_panel_history (see approveStage) rather than leaving them empty,
+// so the Arbitrator has real critique content to reference in the
+// interview, not just the writer's own memory of what was flagged.
 // Refuses if the stage being abandoned already has its own generated
 // artifact — reverting would silently discard real generated content,
 // the same non-destructive principle every other write path here follows.
@@ -408,12 +421,14 @@ export async function unapproveStage(runId: string): Promise<PlanningRun> {
     );
   }
 
+  const restored = run.stage_panel_history[previousStage];
+
   return saveRun(runId, {
     current_stage: previousStage,
     status: "user_chat_active",
     chat_history: [],
-    panel_reviews: null,
-    arbitrator_synthesis: null,
+    panel_reviews: restored?.panel_reviews ?? null,
+    arbitrator_synthesis: restored?.arbitrator_synthesis ?? null,
   });
 }
 
