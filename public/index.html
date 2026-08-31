@@ -470,7 +470,7 @@
   <button class="secondary" id="agpRefreshList" type="button">Refresh version history</button>
   <div id="agpStatus" class="status"></div>
   <table style="margin-top:10px;">
-    <thead><tr><th>Role</th><th>Stage</th><th>Version</th><th>Active?</th><th>Model</th><th>Effort</th><th>Created</th><th></th></tr></thead>
+    <thead><tr><th>Role</th><th>Stage</th><th>Version</th><th>Active?</th><th>Author</th><th>Model</th><th>Effort</th><th>Created</th><th></th></tr></thead>
     <tbody id="agpTable"></tbody>
   </table>
 </fieldset>
@@ -1556,6 +1556,7 @@ async function loadPromptVersions() {
         "<td>" + escapeHtml(p.stage) + "</td>" +
         "<td>" + p.version + "</td>" +
         "<td>" + (p.is_active ? "✅" : "") + "</td>" +
+        "<td>" + (p.authored_by === "claude" ? "🤖 Claude" : "✍️ Writer") + "</td>" +
         "<td>" + escapeHtml(p.model) + "</td>" +
         "<td>" + escapeHtml(p.effort) + "</td>" +
         "<td>" + new Date(p.created_at).toLocaleString() + "</td>" +
@@ -1599,6 +1600,8 @@ async function loadPromptVersions() {
 
 $("agpRefreshList").addEventListener("click", loadPromptVersions);
 
+let agpLoadedAuthoredBy = null;
+
 $("agpLoad").addEventListener("click", async () => {
   const bookId = $("bookId").value.trim();
   if (!bookId) { setStatus($("agpStatus"), "Book ID is required.", "error"); return; }
@@ -1608,18 +1611,29 @@ $("agpLoad").addEventListener("click", async () => {
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
     const role = $("agpRole").value, stage = $("agpStage").value;
     const match = data.prompts.find((p) => p.agent_role === role && p.stage === stage && p.is_active);
-    if (!match) { setStatus($("agpStatus"), "No active prompt yet for " + role + "/" + stage + " — write one and save.", ""); return; }
+    if (!match) { agpLoadedAuthoredBy = null; setStatus($("agpStatus"), "No active prompt yet for " + role + "/" + stage + " — write one and save.", ""); return; }
     $("agpSystem").value = match.system_prompt;
     $("agpUserTemplate").value = match.user_prompt_template;
     $("agpModel").value = match.model;
     $("agpEffort").value = match.effort;
-    setStatus($("agpStatus"), "Loaded version " + match.version + ".", "ok");
+    agpLoadedAuthoredBy = match.authored_by;
+    if (match.authored_by === "claude") {
+      setStatus($("agpStatus"), "⚠️ Loaded version " + match.version + " — this prompt was written by Claude and tuned to work. Editing it may reduce reliability; you'll be asked to confirm on save.", "");
+    } else {
+      setStatus($("agpStatus"), "Loaded version " + match.version + ".", "ok");
+    }
   } catch (err) {
     setStatus($("agpStatus"), String(err.message || err), "error");
   }
 });
 
 $("agpSave").addEventListener("click", async () => {
+  if (agpLoadedAuthoredBy === "claude") {
+    const proceed = confirm(
+      "This prompt was written by Claude and tuned to work reliably for this role. Saving will overwrite it with your edited version (as a new, writer-authored version — the original stays in version history). Continue?"
+    );
+    if (!proceed) { setStatus($("agpStatus"), "Save cancelled.", ""); return; }
+  }
   const bookId = $("bookId").value.trim();
   const systemPrompt = $("agpSystem").value;
   const userPromptTemplate = $("agpUserTemplate").value;
@@ -1638,6 +1652,7 @@ $("agpSave").addEventListener("click", async () => {
     });
     const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    agpLoadedAuthoredBy = "writer";
     setStatus($("agpStatus"), "Saved as version " + data.prompt.version + " and activated.", "ok");
     loadPromptVersions();
   } catch (err) {

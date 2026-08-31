@@ -1377,6 +1377,7 @@ step; nothing here holds state in memory between requests.
 | `system_prompt`, `user_prompt_template` | TEXT NOT NULL | 100% writer-authored; this backend contains none of the actual prompt content |
 | `model` | VARCHAR(50) NOT NULL | e.g. `claude-opus-5`, `claude-sonnet-5` — a runtime setting per role/stage, not hardcoded |
 | `effort` | VARCHAR(20) NOT NULL | `low` \| `medium` \| `high` \| `xhigh` \| `max` (`output_config.effort`) |
+| `authored_by` | VARCHAR(20) NOT NULL | default `writer`; `writer` \| `claude` — lets the Prompt Editor warn before the writer edits over a Claude-authored version rather than one they wrote themselves. Set explicitly to `claude` only when seeding writer-requested content this backend authored on their behalf; every other save (including an edit made over a `claude` version) defaults to `writer`, so provenance tracks who actually wrote the version currently active, not who wrote the role's very first prompt |
 | `created_at` | TIMESTAMPTZ | |
 
 Added in migration `022_planning_engine.sql`. Managed via `GET/POST/PATCH/DELETE /api/v1/agent-prompts` (`src/services/agentPrompts.ts`, `src/routes/agentPrompts.ts`) and the "Planning Engine — Agent Prompt Editor" panel in the test UI. `DELETE` refuses to remove the active version of a role/stage — that would silently leave the step with nothing to run.

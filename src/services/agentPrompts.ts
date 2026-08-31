@@ -1,5 +1,5 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
-import type { AgentPrompt, AgentRole, EffortLevel, PlanningStage } from "../types/domain.js";
+import type { AgentPrompt, AgentRole, EffortLevel, PlanningStage, PromptAuthor } from "../types/domain.js";
 
 // Every prompt an agent runs is a row here, authored by the writer — this
 // backend never generates or hardcodes prompt content. getActivePrompt is
@@ -68,9 +68,10 @@ export async function createAgentPrompt(params: {
   userPromptTemplate: string;
   model: string;
   effort: EffortLevel;
+  authoredBy?: PromptAuthor | undefined;
 }): Promise<AgentPrompt> {
   const supabase = getSupabaseClient();
-  const { bookId, agentRole, stage, systemPrompt, userPromptTemplate, model, effort } = params;
+  const { bookId, agentRole, stage, systemPrompt, userPromptTemplate, model, effort, authoredBy } = params;
 
   const { data: existing, error: existingError } = await supabase
     .from("agent_prompts")
@@ -108,6 +109,7 @@ export async function createAgentPrompt(params: {
       user_prompt_template: userPromptTemplate,
       model,
       effort,
+      authored_by: authoredBy ?? "writer",
     })
     .select("*")
     .single();

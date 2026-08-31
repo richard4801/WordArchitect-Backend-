@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { listAgentPrompts, createAgentPrompt, updateAgentPrompt, deleteAgentPrompt } from "../services/agentPrompts.js";
 import { VALID_AGENT_ROLES, VALID_PLANNING_STAGES, VALID_EFFORT_LEVELS } from "../types/domain.js";
-import type { AgentRole, EffortLevel, PlanningStage } from "../types/domain.js";
+import type { AgentRole, EffortLevel, PlanningStage, PromptAuthor } from "../types/domain.js";
 
 export const agentPromptsRouter = Router();
 
@@ -58,6 +58,10 @@ agentPromptsRouter.post("/agent-prompts", async (req: Request, res: Response) =>
     res.status(400).json({ error: `effort must be one of: ${VALID_EFFORT_LEVELS.join(", ")}.` });
     return;
   }
+  if (body.authoredBy !== undefined && body.authoredBy !== "writer" && body.authoredBy !== "claude") {
+    res.status(400).json({ error: 'authoredBy must be "writer" or "claude".' });
+    return;
+  }
 
   try {
     const prompt = await createAgentPrompt({
@@ -68,6 +72,7 @@ agentPromptsRouter.post("/agent-prompts", async (req: Request, res: Response) =>
       userPromptTemplate: body.userPromptTemplate,
       model: typeof body.model === "string" && body.model.trim() !== "" ? body.model : DEFAULT_MODEL,
       effort: (body.effort as EffortLevel) ?? DEFAULT_EFFORT,
+      authoredBy: body.authoredBy as PromptAuthor | undefined,
     });
     res.status(201).json({ prompt });
   } catch (error) {
