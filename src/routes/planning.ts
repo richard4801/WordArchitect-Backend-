@@ -10,6 +10,7 @@ import {
   approveStage,
   rejectStage,
   unapproveStage,
+  discardStage,
   chatTurn,
   finalizeDirective,
   confirmEntities,
@@ -202,6 +203,22 @@ planningRouter.post("/planning/runs/:id/unapprove", async (req: Request, res: Re
     console.error("unapprove stage failed:", error);
     const message = error instanceof Error ? error.message : "Failed to unapprove stage.";
     res.status(message.includes("already has a generated artifact") || message.includes("Already at the first stage") ? 409 : 502).json({ error: message });
+  }
+});
+
+// POST /api/v1/planning/runs/:id/discard-stage — trashes the CURRENT
+// stage's draft outright (unlike unapprove, this is allowed even when one
+// exists — that's the point) and falls back to the PREVIOUS stage's review
+// gate, ready to re-approve into a genuinely fresh generation. No
+// interview — there's nothing to discuss, the writer just doesn't want
+// this draft.
+planningRouter.post("/planning/runs/:id/discard-stage", async (req: Request, res: Response) => {
+  try {
+    res.json({ run: await discardStage((req.params.id as string)) });
+  } catch (error) {
+    console.error("discard stage failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to discard stage.";
+    res.status(message.includes("Already at the first stage") ? 409 : 502).json({ error: message });
   }
 });
 

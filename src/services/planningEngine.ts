@@ -472,6 +472,39 @@ export async function unapproveStage(runId: string): Promise<PlanningRun> {
   });
 }
 
+// Writer wants nothing to do with the current stage's draft — not even a
+// revision via the interview, just gone. Falls back to the PREVIOUS
+// stage's review gate (not its interview — there's nothing to discuss;
+// the writer is just re-approving to trigger a genuinely fresh
+// generation, not a revision of what they trashed). Unlike unapproveStage,
+// this is allowed even when the current stage already has a generated
+// artifact — discarding it is the entire point here, not a side effect
+// to guard against. Explicitly deletes stage_artifacts[current_stage] (not
+// just leaves it sitting there) so the next generate call's
+// {{PREVIOUS_ARTIFACT}} is genuinely empty — otherwise the "fresh" attempt
+// would silently turn into a revision of the very draft the writer just
+// discarded.
+export async function discardStage(runId: string): Promise<PlanningRun> {
+  const run = await loadRun(runId);
+  const stageIndex = STAGE_ORDER.indexOf(run.current_stage as RealPlanningStage);
+  if (stageIndex <= 0) {
+    throw new Error("Already at the first stage — there is no previous stage to fall back to.");
+  }
+  const previousStage = STAGE_ORDER[stageIndex - 1] as RealPlanningStage;
+  const restored = run.stage_panel_history[previousStage];
+
+  const stageArtifacts = { ...run.stage_artifacts };
+  delete stageArtifacts[run.current_stage as RealPlanningStage];
+
+  return saveRun(runId, {
+    current_stage: previousStage,
+    status: "awaiting_user_review",
+    stage_artifacts: stageArtifacts,
+    panel_reviews: restored?.panel_reviews ?? null,
+    arbitrator_synthesis: restored?.arbitrator_synthesis ?? null,
+  });
+}
+
 // One turn of the Arbitrator chat interview. Every prior turn is resent —
 // the API is stateless per call, same as every LLM API, Hanami included;
 // "memory" only ever exists because the caller resends history, exactly

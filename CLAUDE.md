@@ -1546,6 +1546,14 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `int
   if `current_stage` already has its own generated artifact (reverting
   would discard it — reject that stage's own artifact instead)
   or if there's no previous stage to reopen
+- `POST /api/v1/planning/runs/:id/discard-stage` — trashes the CURRENT
+  stage's draft outright (unlike `unapprove`, allowed even when one
+  exists — that's the point) and falls back to the PREVIOUS stage's
+  review gate, ready to re-approve into a genuinely fresh generation.
+  Deletes `stage_artifacts[current_stage]` so the next `generate` call's
+  `{{PREVIOUS_ARTIFACT}}` is truly empty, not a silent revision of the
+  discarded draft. No interview — the writer just doesn't want this
+  draft, there's nothing to discuss. `409` if there's no previous stage
 - `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
 - `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same stage
 - `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written
