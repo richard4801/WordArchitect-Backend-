@@ -157,6 +157,26 @@ export async function getPlanningRun(runId: string): Promise<PlanningRun> {
   return loadRun(runId);
 }
 
+// Every run's state lives entirely server-side — a step endpoint writes
+// its result to planning_runs immediately, nothing is held in frontend
+// memory. But until now the only way to find a specific run was to
+// already have its id, normally carried in the frontend's URL — lose
+// that (closed tab, browser history cleared, opening the book on a
+// different device) and a fully intact, in-progress run became
+// unreachable even though nothing was actually lost. This is what lets
+// the frontend resolve "what's this book's current planning run" on its
+// own instead of depending on a URL surviving.
+export async function listPlanningRuns(bookId: string): Promise<PlanningRun[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("planning_runs")
+    .select("*")
+    .eq("book_id", bookId)
+    .order("updated_at", { ascending: false });
+  if (error) throw new Error(`Failed to list planning runs: ${error.message}`);
+  return (data ?? []) as PlanningRun[];
+}
+
 // Abandons a run outright — for a diagnostic/test run, or one the writer
 // just wants to discard. No confirm-gate needed here the way entity
 // writes have one: this only ever removes the run's own bookkeeping row,

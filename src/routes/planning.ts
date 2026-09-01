@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import {
   createPlanningRun,
   getPlanningRun,
+  listPlanningRuns,
   deletePlanningRun,
   generateStage,
   runCritique,
@@ -43,6 +44,28 @@ planningRouter.post("/planning/runs", async (req: Request, res: Response) => {
     res.status(201).json({ run });
   } catch (error) {
     handleError(res, error, "create planning run");
+  }
+});
+
+// GET /api/v1/planning/runs?bookId= — every run for a book, most recently
+// updated first. Lets the frontend resolve "what's this book's current
+// planning run" on its own (e.g. on load, or after losing whatever URL
+// was carrying a specific run id) instead of depending on that id
+// surviving client-side — the run's actual state was never at risk, only
+// the frontend's pointer to it was.
+planningRouter.get("/planning/runs", async (req: Request, res: Response) => {
+  const bookId = req.query.bookId;
+  if (typeof bookId !== "string" || bookId.trim() === "") {
+    res.status(400).json({ error: "bookId query parameter is required." });
+    return;
+  }
+
+  try {
+    const runs = await listPlanningRuns(bookId);
+    res.json({ runs });
+  } catch (error) {
+    console.error("list planning runs failed:", error);
+    res.status(502).json({ error: "Failed to list planning runs." });
   }
 });
 

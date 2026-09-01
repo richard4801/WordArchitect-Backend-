@@ -1448,6 +1448,11 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `int
 ### Endpoints
 
 - `POST /api/v1/planning/runs` — `{ bookId, userId }`, starts a run in the intake conversation (`status: intake_active`) — **not** Stage 1 generation yet
+- `GET /api/v1/planning/runs?bookId=` — every run for a book, most
+  recently updated first. Lets the frontend resolve "what's this book's
+  current run" without depending on a run id surviving in a URL/local
+  state — the run's own state is never at risk, only the frontend's
+  pointer to it can be lost (e.g. closing the tab, clearing history)
 - `POST /api/v1/planning/runs/:id/intake-chat` — `{ message, documentBase64?, documentMediaType? }`, one turn of the pre-Stage-1 conversation; has the `web_fetch_20260209` server tool available, so a pasted URL gets actually read
 - `POST /api/v1/planning/runs/:id/intake-finalize` — compiles the intake conversation into `final_delta_directive` and opens Stage 1 (`status -> generating`)
 - `GET /api/v1/planning/runs/:id` — poll current state
