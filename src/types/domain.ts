@@ -284,7 +284,8 @@ export type AgentRole =
   | "arbitrator_panel"
   | "arbitrator_chat"
   | "arbitrator_directive"
-  | "entity_extractor";
+  | "entity_extractor"
+  | "ledger_extractor";
 
 export const VALID_AGENT_ROLES: AgentRole[] = [
   "generator",
@@ -295,6 +296,7 @@ export const VALID_AGENT_ROLES: AgentRole[] = [
   "arbitrator_chat",
   "arbitrator_directive",
   "entity_extractor",
+  "ledger_extractor",
 ];
 
 // The critics that make up the Scrutiny Panel, run in parallel by
@@ -311,14 +313,60 @@ export const CRITIC_ROLES: AgentRole[] = ["continuity_critic", "pacing_critic", 
 // current_stage) — it's where arbitrator_chat/arbitrator_directive get a
 // distinct prompt for the pre-Stage-1 intake conversation, separate from
 // the same roles' prompt for a mid-pipeline rejection interview.
-export type PlanningStage = "stage_1_summary" | "stage_2_acts" | "stage_3_beats" | "all" | "intake";
+//
+// Replaced 'stage_2_acts'/'stage_3_beats' — a single call that outlined
+// (or beat-mapped) the ENTIRE book at once, confirmed live to produce
+// real internal contradictions (a heist book's own stated numbers
+// disagreeing with each other by the time the model reached arc 4-5,
+// caught by the Continuity Critic) — with a strict, incremental
+// hierarchy: 3 fixed Acts, each with 3 fixed Parts, each Part planned in
+// two passes (outline, then beats) before the next Part unlocks. Nothing
+// plans more of the book than the writer has actually approved so far.
+// See PlanningRun.current_act/current_part/current_beat_chunk for how a
+// run's exact position in that hierarchy is tracked.
+export type PlanningStage = "stage_1_summary" | "act_summary" | "part_outline" | "part_beats" | "all" | "intake";
 
-// The subset of PlanningStage a run's current_stage or stage_artifacts key
-// can actually be — excludes "all" and "intake", which only ever appear
-// as a prompt-lookup stage, never a run's real position in the pipeline.
-export type RealPlanningStage = "stage_1_summary" | "stage_2_acts" | "stage_3_beats";
+// The subset of PlanningStage a run's current_stage or a stage_artifacts
+// key's phase can actually be — excludes "all" and "intake", which only
+// ever appear as a prompt-lookup stage, never a run's real position.
+export type RealPlanningStage = "stage_1_summary" | "act_summary" | "part_outline" | "part_beats";
 
-export const VALID_PLANNING_STAGES: PlanningStage[] = ["stage_1_summary", "stage_2_acts", "stage_3_beats", "all", "intake"];
+export const VALID_PLANNING_STAGES: PlanningStage[] = ["stage_1_summary", "act_summary", "part_outline", "part_beats", "all", "intake"];
+
+// Fixed, not model-decided — "the AI can never go against it." A 600-
+// chapter serial and a 90k-word single-POV romance both get exactly 3
+// Acts and 9 Parts; only PART_BEATS_CHAPTER_WINDOW (planningEngine.ts)
+// varies how many chapters worth of beats one Part gets planned in.
+export const ACTS_PER_BOOK = 3;
+export const PARTS_PER_ACT = 3;
+
+// A Part's own stated chapter range, recorded once its outline is
+// approved (the outline is the first point in the hierarchy concrete
+// enough to commit to real chapter numbers) — what lets part_beats know
+// how many beat-generation chunks a Part needs, and what
+// materializeBeatsChunk uses to place beats at the right chapter numbers.
+export interface PartChapterRange {
+  startChapter: number;
+  endChapter: number;
+}
+
+// One fact worth remembering across the rest of the book — a number, a
+// rule, an established state ("Sabine's compulsion visibly used in front
+// of a full room in Ch. 12" / "bearer cores are 400g each") — extracted
+// after each Part's beats are approved (see ledgerExtractor in
+// planningEngine.ts) and fed into every later generation/critique call as
+// {{CONTINUITY_LEDGER}}, so a later Act/Part can't contradict something
+// already true of the book. `sourcedFrom: "manuscript"` means this fact
+// was pulled from chapters actually drafted and accepted by the time it
+// was extracted (ground truth); "plan" means those chapters weren't
+// written yet and this is only what the outline/beats claimed — both are
+// worth keeping, but "manuscript" facts are the ones that can never be
+// wrong.
+export interface ContinuityLedgerEntry {
+  fact: string;
+  sourcedFrom: "plan" | "manuscript";
+  unit: string; // e.g. "act_1_part_2" — where this fact was extracted from
+}
 
 export const VALID_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof VALID_EFFORT_LEVELS)[number];
@@ -373,21 +421,45 @@ export interface PlanningRun {
   user_id: string;
   current_stage: PlanningStage;
   status: PlanningRunStatus;
-  stage_artifacts: Partial<Record<RealPlanningStage, string>>;
+  // A run's exact position once it's past stage_1_summary — null/null/null
+  // while current_stage is 'stage_1_summary' or during intake. current_part
+  // is also null while current_stage is 'act_summary' (an Act's summary
+  // isn't scoped to one Part). current_beat_chunk is only meaningful during
+  // 'part_beats' — which chunk of that Part's chapter range is being
+  // generated right now (see PART_BEATS_CHAPTER_WINDOW in planningEngine.ts).
+  current_act: number | null;
+  current_part: number | null;
+  current_beat_chunk: number | null;
+  // Keyed "act-part" (e.g. "1-2") — recorded once that Part's outline is
+  // approved. See PartChapterRange.
+  part_chapter_ranges: Record<string, PartChapterRange>;
+  // Accumulates one entry per approved Part's beats — see
+  // ContinuityLedgerEntry. Never pruned within a run; each entry is small
+  // (one fact), so this stays compact even across a full 9-Part book.
+  continuity_ledger: ContinuityLedgerEntry[];
+  // Keyed by unit, not by stage type — 'stage_1_summary', 'act_1_summary',
+  // 'act_1_part_2_outline', 'act_1_part_2_beats', etc. (see unitKey() in
+  // planningEngine.ts). Open rather than a fixed shape since the number of
+  // units is fixed (1 + 3 + 9 + 9 = 22) but which ones exist yet depends on
+  // how far the run has progressed. part_beats artifacts accumulate JSON
+  // across that Part's beat-generation chunks rather than being overwritten
+  // per chunk, so the Part's full chapters/beats are always in one place
+  // once done.
+  stage_artifacts: Record<string, string>;
   // Keyed by critic role (see CRITIC_ROLES) — open rather than a fixed
   // set of named keys, since the panel's composition isn't hardcoded.
   panel_reviews: Partial<Record<AgentRole, unknown>> | null;
   arbitrator_synthesis: unknown | null;
-  // Snapshot of a stage's panel_reviews/arbitrator_synthesis, keyed by
-  // stage, taken right before approveStage clears them on advance — what
-  // unapproveStage restores from so reopening a stage's rejection
-  // interview has real critique content instead of coming back empty.
-  stage_panel_history: Partial<
-    Record<RealPlanningStage, { panel_reviews: PlanningRun["panel_reviews"]; arbitrator_synthesis: unknown }>
-  >;
-  // Rejection interviews, mid-pipeline. Separate thread from
-  // intake_chat_history — a rejection at stage_2_acts shouldn't dredge up
-  // the original intake conversation, and vice versa.
+  // Snapshot of a unit's panel_reviews/arbitrator_synthesis, keyed by the
+  // same unit key as stage_artifacts, taken right before approveStage
+  // clears them on advancing to the next unit — what unapproveStage
+  // restores from so reopening a unit's rejection interview has real
+  // critique content instead of coming back empty.
+  stage_panel_history: Record<string, { panel_reviews: PlanningRun["panel_reviews"]; arbitrator_synthesis: unknown }>;
+  // Rejection interviews, across the WHOLE run — not reset per unit or per
+  // rejection cycle (see the Arbitrator's continuous-memory design).
+  // Separate thread from intake_chat_history since intake is a distinct
+  // moment with its own job.
   chat_history: PlanningChatMessage[];
   // The one-time pre-Stage-1 conversation where the writer describes what
   // they want in plain language, pastes a reference link, or attaches a

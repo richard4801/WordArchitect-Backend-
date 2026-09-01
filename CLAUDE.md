@@ -1309,145 +1309,160 @@ specifically the client having no recovery signal for a stale session.
 
 ## Planning Engine
 
-A pre-writing pipeline — an **intake conversation**, then Stage 1 Core
-Summary → Stage 2 Act Outlines → Stage 3 Chapter Beats — with a 4-agent
-Scrutiny Panel (Continuity Critic, Pacing & Chapter-Economy Critic,
-Craft & Suspense Critic, Arbitrator) and a mandatory human review gate
-at every stage. Entirely separate from manuscript drafting: nothing in
-this pipeline ever writes prose.
+A pre-writing pipeline — Stage 1 Core Summary, then a strict, incremental
+**Act → Part → Beats hierarchy** — with a 4-agent Scrutiny Panel
+(Continuity Critic, Pacing & Chapter-Economy Critic, Craft & Suspense
+Critic, Arbitrator) and a mandatory human review gate at every unit.
+Entirely separate from manuscript drafting: nothing in this pipeline ever
+writes prose. "Generator" here means planning text — summaries, outlines,
+beat lists — never manuscript prose, which stays exclusively Hanami's job
+via the existing `/generate-prose` and MCP tools, unchanged by any of
+this. Approved output feeds two systems that already exist: a Part's
+approved beats become real `chapter_beats` rows (the same table backing
+the Outliner), and an entity-extraction pass proposes Codex/World
+Category entries for the writer to batch-review.
 
-**Why 3 critics, not 2** — the original panel (Logic Critic, Suspense
-Critic) had no dedicated coverage for pacing at all; "emotional pacing"
-was one bullet buried inside a critic mostly focused on subtext/hooks,
-and real usage showed pacing/chapter-economy issues (the single biggest
-retention risk in serialized webnovel fiction) going uncaught as a
-result. Rather than bolting a 4th critic onto the existing 2, the panel
-was rebuilt as 3 narrower, non-overlapping critics: Continuity
-(canon/logic/timeline/world-mechanics — essentially the old Logic
-Critic's scope, renamed for clarity), Pacing & Chapter-Economy (new —
-chapter-to-plot ratio, decompression, cliffhanger cadence,
-retention-curve awareness, time-skip handling — a structural/
-quantitative lens), and Craft & Suspense (the old Suspense Critic minus
-the escalation/cadence concern, which now belongs to Pacing — subtext,
-hook *quality* as distinct from hook *frequency*, anti-cliché,
-foreshadowing/payoff). `CRITIC_ROLES` in `src/types/domain.ts` is a
-plain array driving `runCritique`'s parallel calls — adding or removing
-a critic later is a one-line change plus a prompt row, not new code.
+### Why a hierarchy, not one call per stage
 
-**Each critic (and the Arbitrator's synthesis) sees its own previous
-verdict on a revision pass, without a persistent session.** A critic
-reviewing a regenerated draft previously had no memory of what it
-flagged last time — it could only give a fresh opinion that happened not
-to mention an old issue, which is ambiguous ("fixed" vs. "just didn't
-notice"), not a verified fix-check. The fix is **not** a growing,
-resent conversation per role (that's the exact multi-turn-session
-pattern already explicitly rejected for Hanami elsewhere in this
-document, for the same reason: cost grows unboundedly with every
-revision, for no real gain over a fresh sharply-worded call — and it
-would also break this pipeline's deliberately stateless-per-request,
-step-job architecture). Instead, `runCritique`/`runArbitration` read the
-run's *current* `panel_reviews`/`arbitrator_synthesis` — which still
-holds the *previous* draft's verdict at the moment they're called,
-right before this call's new result overwrites it — and thread it back
-in as `{{PREVIOUS_CRITIQUE}}` (each critic sees only its own prior
-review) / `{{PREVIOUS_SYNTHESIS}}`. Every critic's prompt instructs it
-to mark each previously-raised issue `resolved`/`unresolved` before
-looking for anything new (`new`); the Arbitrator's prompt is instructed
-not to recommend `approve` on a revision that left a previous `mustFix`
-item unresolved just because nothing new turned up. Same trick as the
-Generator's `{{PREVIOUS_ARTIFACT}}` — one bounded call per step, cost
-never grows across revisions.
+The original design planned an entire book's Act structure — or an
+entire book's Chapter Beats — in one Generator call. Confirmed live that
+this is genuinely disastrous for continuity, not just a theoretical
+risk: a real test (a heist book, six arcs, 600+ chapters planned in one
+Stage 2 call) came back with the Continuity Critic catching the
+artifact's own stated numbers contradicting each other — bearer-core
+weights that didn't sum to the claimed total, a manifest-tolerance rule
+stated one way early and violated later in the same document. A single
+call planning that much material loses track of its own established
+facts well before it reaches the end, even though everything is
+technically still in its context window.
 
-**The Arbitrator has full, continuous memory — a deliberate exception to
-the "stay cheap" principle above, made for this one role specifically.**
-Generator/Critics are one-shot review/generation agents that only ever
-needed a snapshot of their own last output; the Arbitrator is different
-in kind — it's the writer's actual conversational point of contact with
-the whole pipeline (`arbitrator_chat`/`arbitrator_directive`), already
-persisting `intake_chat_history`/`chat_history` before this change. But
-until this was fixed, `chat_history` was wiped to `[]` on every single
-`reject` call and again after `finalize-directive`, and
-`intake_chat_history` was written once and never referenced again after
-`intake-finalize` compiled it — so the Arbitrator was actually several
-disconnected mini-conversations wearing one identity, with zero memory
-of the original intake (including anything from a pasted link/document
-not captured in the compiled brief) by the time a later stage's
-rejection interview opened.
+The fix: **3 fixed Acts, each with 3 fixed Parts (9 Parts total),
+generated incrementally and gated at every step — the AI never decides
+how many Acts or Parts a book gets, that structure is fixed regardless
+of book length.** Each Act starts with a short, self-contained summary
+(not a full outline). Each Part then gets a *detailed* outline —
+expanding just that Act's relevant slice — and only that outline commits
+to a real chapter range (`startChapter`/`endChapter`), which is the
+first point in the hierarchy concrete enough to do so. A Part's Chapter
+Beats are generated in bounded chunks (`PART_BEATS_CHAPTER_WINDOW`,
+`src/services/planningEngine.ts` — currently 15 chapters per call, not
+yet exposed via the API, a tunable constant like this project's other
+not-yet-calibrated values such as Layer 3's match threshold), not the
+whole Part at once, for the same reason whole-Act planning was replaced.
+**Strict sequencing**: Part 2's outline can't start until Part 1's beats
+are fully approved and materialized; Act 2's summary can't start until
+all 3 of Act 1's Parts are done. Nothing plans further ahead of the book
+than the writer has actually approved so far — which also means this
+pipeline is meant to be worked alongside real drafting over weeks, not
+finished in one sitting, picking back up wherever it was left.
 
-Fixed by no longer resetting `chat_history` anywhere (`rejectStage`,
-`unapproveStage`, `finalizeDirective` all used to clear it — none do
-now), and by `chatTurn`/`finalizeDirective` resending
-`intake_chat_history` + the ENTIRE accumulated `chat_history` — every
-rejection interview across every stage so far, not just the current
-cycle — on every conversational call, the same "resend everything,
-that's what a session means for a stateless API" pattern already
-accepted for the in-app Chat Assistant elsewhere in this document. The
-honest cost tradeoff, accepted deliberately here: the transcript never
-shrinks for the life of a run, so a Stage 3 rejection interview costs
-more per turn than a Stage 1 one did — unlike every other call in this
-pipeline, which stays flat-cost regardless of how far into the run it
-is.
+`ACTS_PER_BOOK`/`PARTS_PER_ACT` (`src/types/domain.ts`) are both `3`,
+plain constants, not model-decided or configurable per book.
 
-"Generator" here means planning text — summaries, act structure, beat
-lists — never manuscript prose, which stays exclusively Hanami's job via
-the existing `/generate-prose` and MCP tools, unchanged by any of this.
-Approved output feeds two systems that already exist rather than
-inventing new ones: Stage 3's approved beats become real `chapter_beats`
-rows (the same table backing the Outliner), and an entity-extraction
-pass proposes Codex/World Category entries for the writer to
-batch-review before anything is created.
+### Three layers of context at every unit
 
-**Intake comes before Stage 1, not a button.** A new run doesn't start by
-generating anything — it starts in `status: intake_active`, a plain-
-language conversation with the same Arbitrator role (a distinct prompt at
-`stage = 'intake'`, separate from its mid-pipeline rejection-interview
-prompt), where the writer describes what they want, pastes a reference
-link, or attaches a document, and the Arbitrator asks questions until it
-can compile a real creative brief. That conversation is what gives the
-Generator something to actually work from — without it, Stage 1 was
-previously producing a summary from nothing but existing Codex/facts,
-which only made sense for continuing an already-established book, never
-for starting a new one. `intakeChatTurn` gives Claude the server-side
-`web_fetch_20260209` tool — pasting a URL in the chat message lets
-Claude fetch and read that page itself within the same call, no scraping
-code needed here — and accepts an optional inline base64 document,
-read once for that call and never persisted (no Storage bucket needed,
-unlike a permanent asset such as a character portrait). `intake-finalize`
-compiles the conversation into `final_delta_directive` — the exact same
-field a post-rejection directive would set, since mechanically it's the
-same thing: extra direction for the Generator's next call — and flips
-status to `generating`, opening Stage 1.
+Every Generator/Critic call gets, in addition to `BOOK_CONTEXT`
+(existing Codex/facts):
 
-**Every agent's behavior is prompt-driven, not hardcoded.** Every
-`system_prompt`/`user_prompt_template` (plus `model` and `effort`) is a
-row in `agent_prompts`, authored and owned by the writer via the Prompt
-Editor, never written by this backend. Saving a new version deactivates
-the previous one and activates the new one immediately — a runtime
-change, not a redeploy. This backend supplies only the mechanics that
-make those prompts actually run reliably: the step loop, template
-interpolation, and a verify-don't-trust JSON parse with one corrective
-retry (same principle as Ghost Editor already established for banned
-terms — an instruction alone isn't a guarantee, so the result gets
-checked).
+1. **`BOOK_VISION`** — Stage 1's Core Summary, always the exact same
+   value regardless of how deep into the hierarchy the current unit is.
+   Deliberately *not* cascaded one hop at a time the way `PRIOR_STAGE_ARTIFACT`
+   works for the Generator — if it were, the book's actual premise/
+   ending-shape/theme would dilute by the time a call is several hops
+   deep (e.g. Act 2 Part 3's beats). Every unit stays anchored to it
+   directly.
+2. **`PARENT_ARTIFACT`** — the immediate parent unit's approved content:
+   an Act summary's parent is the Book Vision itself; a Part outline's
+   parent is its Act's approved summary; a beats chunk's parent is its
+   Part's approved outline.
+3. **`CONTINUITY_LEDGER`** — a running list of hard facts (numbers,
+   rules, established states) extracted after every approved beats
+   chunk (see below), fed to the Generator *and* all three critics (the
+   Continuity Critic in particular checks new content against it as its
+   #1 priority, ahead of even Codex contradiction).
+
+### The continuity ledger — reconciled against the real manuscript, not just the plan
+
+Because a Part can be drafted weeks or months before the next Act's
+summary gets written, a ledger built purely from what the *plan* claimed
+would drift from what was actually written — reintroducing the same
+contradiction problem the hierarchy exists to prevent, just one level
+up (plan vs. reality instead of plan vs. itself). `appendLedgerFacts`
+(`planningEngine.ts`), run automatically right after a beats chunk is
+approved and materialized:
+
+- For every chapter in the chunk, checks `manuscript_chapters.paragraphs`
+  (the editor's real content — **not** `manuscript_chunks`, the separate,
+  opt-in RAG index a chapter might not be synced to yet even once
+  written) for real, non-empty drafted text.
+- Where a chapter has real drafted content, extracts facts from *that* —
+  ground truth. Where it doesn't, falls back to what the chunk's own
+  beats claimed — the plan, since that's all there is yet.
+- Calls the `ledger_extractor` agent role with both the reconciled
+  per-chapter content and the existing ledger (so it doesn't re-extract
+  duplicates), gets back a short JSON array of fact strings, and appends
+  each as a `ContinuityLedgerEntry { fact, sourcedFrom: "plan"|"manuscript", unit }`
+  to `planning_runs.continuity_ledger`. Never pruned within a run.
+
+Auto-appended with **no separate review gate** — unlike Codex/World
+Category entries, the ledger isn't new writer-facing canon; it's a
+compressed memory of content (the beats chunk) that already went through
+its own human review gate. The full ledger is visible in every
+`GET /planning/runs/:id` response for inspection, just not a blocking
+step.
+
+### Entity extraction is now on-demand, not automatic
+
+A real behavior change from the old flat model, where extraction
+auto-fired once after the whole book's beats were approved and blocked
+the pipeline on a review screen (`awaiting_entity_review`) before
+finishing. Under the Act/Part hierarchy a Part can be approved months
+before the next one, so tying extraction (and a forced review screen) to
+*every* beats-chunk approval — potentially 9+ times per book — would be
+real, unwanted friction. Instead `extractEntities` (exported, callable
+whenever the writer wants via `POST .../entities/confirm`'s sibling
+endpoint below) scans every approved beats chunk in the run so far.
+Neither `extractEntities` nor `confirmEntities` touch the run's `status`
+anymore — extraction/confirmation is a side action independent of the
+run's actual pipeline position; an error extracting entities must never
+make the run's real position look "failed."
+
+### Every agent's behavior is prompt-driven, not hardcoded
+
+Every `system_prompt`/`user_prompt_template` (plus `model` and `effort`)
+is a row in `agent_prompts`, authored and owned by the writer via the
+Prompt Editor, never written by this backend. Saving a new version
+deactivates the previous one and activates the new one immediately — a
+runtime change, not a redeploy. This backend supplies only the mechanics
+that make those prompts actually run reliably: the unit-progression
+loop, template interpolation, and a verify-don't-trust JSON parse with
+one corrective retry (same principle as Ghost Editor already established
+for banned terms).
 
 **`max_tokens` is 16000 by default for every agent call, not lower —
 confirmed live, not a hypothetical.** A real test against production
-(Opus 5, effort `high`, a full-book `BOOK_CONTEXT` with hundreds of
-chapters' worth of Codex) spent its entire budget on adaptive thinking
-before emitting any visible text, and originally returned silently — an
-empty artifact saved with `status` advancing normally, as if generation
-had actually succeeded. `callAgent` now throws explicitly whenever a
-response comes back with no text (`stop_reason` included in the error),
-so a starved budget fails the run loudly instead of quietly producing
-nothing.
+(Opus 5, effort `high`, a full-book `BOOK_CONTEXT`) spent its entire
+budget on adaptive thinking before emitting any visible text, and
+originally returned silently — an empty artifact saved with `status`
+advancing normally, as if generation had actually succeeded. `callAgent`
+now throws explicitly whenever a response comes back with no text
+(`stop_reason` included in the error).
 
 **No LangGraph.** A step-based job table (`planning_runs`) plus one short
 HTTP call per step is the same pattern already proven in this project for
 `manuscript_import_jobs` — every request is one bounded LLM call (or one
-parallel pair for the two critics), so nothing risks a timeout on any
-hosting tier regardless of pipeline complexity. The client (test UI today,
-the real pipeline UI eventually) polls/drives the run forward step by
-step; nothing here holds state in memory between requests.
+parallel trio for the three critics), so nothing risks a timeout on any
+hosting tier regardless of pipeline complexity. The client polls/drives
+the run forward step by step; nothing here holds state in memory between
+requests. **Every unit** (Stage 1 Summary, each Act Summary, each Part
+Outline, each Part's beats chunks) goes through the identical cycle:
+`generate` → `critique` → `arbitrate` → `approve`/`reject`. The step
+functions (`generateStage`/`runCritique`/`runArbitration`/`approveStage`/
+etc.) are completely generic across every unit type — driven purely by
+`current_stage` (which prompt/JSON-contract applies) and
+`current_act`/`current_part`/`current_beat_chunk` (which specific unit
+this is) — so adding, say, a 4th Act later would be a constant change,
+not new code.
 
 ### `agent_prompts`
 
@@ -1455,50 +1470,51 @@ step; nothing here holds state in memory between requests.
 | --- | --- | --- |
 | `id` | UUID PK | |
 | `book_id` | UUID NOT NULL | prompts are scoped per book, not global |
-| `agent_role` | VARCHAR(50) NOT NULL | `generator` \| `continuity_critic` \| `pacing_critic` \| `craft_critic` \| `arbitrator_panel` \| `arbitrator_chat` \| `arbitrator_directive` \| `entity_extractor` — the 3 critic roles are `CRITIC_ROLES` in `src/types/domain.ts`, not hardcoded call sites |
-| `stage` | VARCHAR(50) NOT NULL | `stage_1_summary` \| `stage_2_acts` \| `stage_3_beats` \| `all` (for a role whose prompt doesn't vary by stage) \| `intake` (prompt-lookup only — never a run's real `current_stage`) |
+| `agent_role` | VARCHAR(50) NOT NULL | `generator` \| `continuity_critic` \| `pacing_critic` \| `craft_critic` \| `arbitrator_panel` \| `arbitrator_chat` \| `arbitrator_directive` \| `entity_extractor` \| `ledger_extractor` — the 3 critic roles are `CRITIC_ROLES` in `src/types/domain.ts`, not hardcoded call sites |
+| `stage` | VARCHAR(50) NOT NULL | `stage_1_summary` \| `act_summary` \| `part_outline` \| `part_beats` \| `all` (a role whose prompt doesn't vary by stage — all 3 critics, `arbitrator_panel`, `entity_extractor`, `ledger_extractor`) \| `intake` (prompt-lookup only — never a run's real `current_stage`) |
 | `version` | INT NOT NULL | auto-incremented per (book_id, agent_role, stage) on each save |
 | `is_active` | BOOLEAN NOT NULL | exactly one active version per (book_id, agent_role, stage); `getActivePrompt` tries the exact stage first, then falls back to `stage = 'all'` |
 | `system_prompt`, `user_prompt_template` | TEXT NOT NULL | 100% writer-authored; this backend contains none of the actual prompt content |
 | `model` | VARCHAR(50) NOT NULL | e.g. `claude-opus-5`, `claude-sonnet-5` — a runtime setting per role/stage, not hardcoded |
 | `effort` | VARCHAR(20) NOT NULL | `low` \| `medium` \| `high` \| `xhigh` \| `max` (`output_config.effort`) |
-| `authored_by` | VARCHAR(20) NOT NULL | default `writer`; `writer` \| `claude` — lets the Prompt Editor warn before the writer edits over a Claude-authored version rather than one they wrote themselves. Set explicitly to `claude` only when seeding writer-requested content this backend authored on their behalf; every other save (including an edit made over a `claude` version) defaults to `writer`, so provenance tracks who actually wrote the version currently active, not who wrote the role's very first prompt |
+| `authored_by` | VARCHAR(20) NOT NULL | default `writer`; `writer` \| `claude` — lets the Prompt Editor warn before the writer edits over a Claude-authored version rather than one they wrote themselves |
 | `created_at` | TIMESTAMPTZ | |
 
-Added in migration `022_planning_engine.sql`. Managed via `GET/POST/PATCH/DELETE /api/v1/agent-prompts` (`src/services/agentPrompts.ts`, `src/routes/agentPrompts.ts`) and the "Planning Engine — Agent Prompt Editor" panel in the test UI. `DELETE` refuses to remove the active version of a role/stage — that would silently leave the step with nothing to run.
+Added in migration `022_planning_engine.sql`. Managed via `GET/POST/PATCH/DELETE /api/v1/agent-prompts` (`src/services/agentPrompts.ts`, `src/routes/agentPrompts.ts`) and the "Planning Engine — Agent Prompt Editor" panel in the test UI. `DELETE` refuses to remove the active version of a role/stage.
 
 **`agent_prompts` is scoped per `book_id`, not global** — a brand-new
-book starts with zero rows, so the Planning Engine has nothing to run
-for it until prompts exist. `POST /api/v1/agent-prompts/clone` —
-`{ fromBookId, toBookId }` — closes that gap: copies every active
-prompt from one book to another, each landing as a new active version
-in the destination via the normal `createAgentPrompt` versioning path
-(so it's safe to call even if the destination already has some prompts —
-it deactivates/versions over them the same as any other save, it doesn't
-require an empty destination). This is the "use the same prompts as my
-other project" action for the Prompt Editor, instead of manually
-re-running the seed script for every new book. 404 if the source book
-has no active prompts to clone; 400 if `fromBookId === toBookId`.
+book starts with zero rows. `POST /api/v1/agent-prompts/clone` —
+`{ fromBookId, toBookId }` — copies every active prompt from one book to
+another, each landing as a new active version via the normal
+`createAgentPrompt` versioning path (safe to call even if the
+destination already has some prompts). 404 if the source book has no
+active prompts to clone; 400 if `fromBookId === toBookId`.
 
 **Template placeholders** (`interpolateTemplate` in `agentPrompts.ts` — a `{{KEY}}` not present in a given template is simply left alone):
 
 | Placeholder | Available to | Contents |
 | --- | --- | --- |
-| `{{BOOK_CONTEXT}}` | generator, continuity_critic, pacing_critic, craft_critic, entity_extractor | Book Facts (`get_book_facts`) + every current Codex entry, so planning stays consistent with what's already established, especially when continuing an already-written book |
-| `{{PRIOR_STAGE_ARTIFACT}}` | generator | The previous *stage's* approved artifact (e.g. Stage 2 sees Stage 1's summary) |
-| `{{PREVIOUS_ARTIFACT}}` | generator | This *same* stage's own last draft — empty on a stage's first generation, populated with the rejected draft when regenerating after a rejection. Exists so a regeneration is a revision of that exact text, not a blind rewrite from scratch — the Generator has no memory of its own prior output otherwise, the same statelessness Hanami has (see MCP Server's "Every Hanami call is stateless" note) |
-| `{{PREVIOUS_CRITIQUE}}` | continuity_critic, pacing_critic, craft_critic | This critic's *own* previous review of this same stage's artifact — empty on a first review, populated on a revision pass so the critic can mark its own prior issues resolved/unresolved instead of reviewing blind. Read from `panel_reviews` right before `runCritique`'s new result overwrites it — see the "no persistent session" note above |
+| `{{BOOK_CONTEXT}}` | generator, continuity_critic, pacing_critic, craft_critic, entity_extractor | Book Facts (`get_book_facts`) + every current Codex entry |
+| `{{BOOK_VISION}}` | generator, continuity_critic, pacing_critic, craft_critic, arbitrator_panel | Stage 1's approved Core Summary — always this exact value at every depth, never diluted by cascading one hop at a time. See "Three layers of context" above |
+| `{{PARENT_ARTIFACT}}` | generator (act_summary, part_outline, part_beats only) | The immediate parent unit's approved content — see "Three layers of context" above |
+| `{{CONTINUITY_LEDGER}}` | generator, continuity_critic, pacing_critic, craft_critic | Accumulated hard facts from every approved beats chunk so far, reconciled against the real manuscript wherever chapters have actually been drafted — see "The continuity ledger" above |
+| `{{PREVIOUS_ARTIFACT}}` | generator | This *exact same unit's* own last draft — empty on a first generation, populated with the rejected draft when regenerating after a rejection. The Generator has no memory of its own prior output otherwise, the same statelessness Hanami has |
+| `{{CHAPTER_RANGE}}` | generator (part_beats only) | Which specific chapter window this call must produce, plus the Part's full range for context |
 | `{{FINAL_DELTA_DIRECTIVE}}` | generator | Set only when regenerating after a rejection; consumed once and cleared |
 | `{{CURRENT_ARTIFACT}}` | continuity_critic, pacing_critic, craft_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
 | `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | All three critics' JSON output |
-| `{{PREVIOUS_SYNTHESIS}}` | arbitrator_panel | The Arbitrator's *own* previous synthesis of this same stage — empty on a first synthesis, populated on a revision pass so it can check whether its own prior `mustFix` items were actually addressed. Read from `arbitrator_synthesis` right before `runArbitration`'s new result overwrites it |
-| `{{CHAT_HISTORY}}` | arbitrator_directive | The writer's ENTIRE conversation with the Arbitrator so far — intake conversation plus every rejection interview across every stage, concatenated in order, not just the current cycle's turns. See "The Arbitrator has full, continuous memory" below |
+| `{{PREVIOUS_CRITIQUE}}` | continuity_critic, pacing_critic, craft_critic | This critic's *own* previous review of this same unit — empty on a first review, populated on a revision pass so the critic can mark its own prior issues resolved/unresolved instead of reviewing blind |
+| `{{PREVIOUS_SYNTHESIS}}` | arbitrator_panel | The Arbitrator's *own* previous synthesis of this same unit |
+| `{{CHAT_HISTORY}}` | arbitrator_directive | The writer's ENTIRE conversation with the Arbitrator so far — intake plus every rejection interview across the whole run, not just the current cycle |
+| `{{CONTENT}}`, `{{EXISTING_LEDGER}}` | ledger_extractor | The reconciled per-chapter content to extract facts from, and the ledger so far (so it doesn't re-extract duplicates) |
 
-**Two roles have a required output shape**, since their output gets parsed into real rows, not just displayed:
-- `generator` at `stage_3_beats` must return JSON: `{"chapters": [{"chapterNumber": 1, "title": "...", "beats": [{"title": "...", "outlineText": "..."}]}]}` — this is what `materializeBeats` inserts into `manuscript_chapters`/`chapter_beats` on approval.
+**Two roles have a required output shape**, since their output gets parsed into real data, not just displayed:
+- `generator` at `part_outline` must return JSON: `{"startChapter": N, "endChapter": M, "outline": "..."}` — this is what `approveStage` records into `part_chapter_ranges`.
+- `generator` at `part_beats` must return JSON: `{"chapters": [{"chapterNumber": 1, "title": "...", "beats": [{"title": "...", "outlineText": "..."}]}]}` — this is what `materializeBeats` inserts into `manuscript_chapters`/`chapter_beats` on approval.
 - `entity_extractor` must return a JSON array: `[{"type": "codex_entry" | "world_category", "name": "...", "entryType": "...", "description": "..."}]`.
+- `ledger_extractor` must return a JSON array of plain strings.
 
-Both go through `callAgentForJson`, which retries once with a corrective nudge if the first response isn't valid JSON before failing the run with a clear `last_error` rather than silently storing garbage.
+All go through `callAgentForJson`, which retries once with a corrective nudge if the first response isn't valid JSON before failing loudly rather than silently storing garbage.
 
 ### `planning_runs`
 
@@ -1506,58 +1522,45 @@ Both go through `callAgentForJson`, which retries once with a corrective nudge i
 | --- | --- | --- |
 | `id` | UUID PK | |
 | `book_id`, `user_id` | UUID NOT NULL | |
-| `current_stage` | VARCHAR(50) NOT NULL | default `stage_1_summary` |
-| `status` | VARCHAR(30) NOT NULL | default `intake_active`; `intake_active` \| `generating` \| `critiquing` \| `awaiting_arbitration` \| `awaiting_user_review` \| `user_chat_active` \| `awaiting_entity_review` \| `done` \| `failed` |
-| `stage_artifacts` | JSONB NOT NULL | keyed by stage, not a single overwritten column — Stage 2's Generator needs to read Stage 1's approved text, so earlier stages survive the transition |
-| `panel_reviews` | JSONB | keyed by critic role (`CRITIC_ROLES` — currently `continuity_critic`, `pacing_critic`, `craft_critic`), whatever shape each critic's own prompt asks for. Also doubles as the previous-verdict source for `{{PREVIOUS_CRITIQUE}}` — see above |
+| `current_stage` | VARCHAR(50) NOT NULL | default `stage_1_summary`; which prompt/JSON-contract applies right now — see `current_act`/`current_part`/`current_beat_chunk` for exactly which unit |
+| `current_act` | SMALLINT | 1-3; null while `current_stage` is `stage_1_summary` or during intake |
+| `current_part` | SMALLINT | 1-3; also null while `current_stage` is `act_summary` |
+| `current_beat_chunk` | SMALLINT | only meaningful during `part_beats` — which window of the Part's chapter range is being generated right now |
+| `part_chapter_ranges` | JSONB NOT NULL | keyed `"act-part"` (e.g. `"1-2"`); recorded once that Part's outline is approved: `{ startChapter, endChapter }` |
+| `continuity_ledger` | JSONB NOT NULL | array of `{ fact, sourcedFrom, unit }` — see "The continuity ledger" above |
+| `status` | VARCHAR(30) NOT NULL | default `intake_active`; `intake_active` \| `generating` \| `critiquing` \| `awaiting_arbitration` \| `awaiting_user_review` \| `user_chat_active` \| `done` \| `failed` |
+| `stage_artifacts` | JSONB NOT NULL | keyed by **unit**, not stage type — `'stage_1_summary'`, `'act_1_summary'`, `'act_1_part_2_outline'`, `'act_1_part_2_beats_chunk_1'`, etc. (`unitKey()` in `planningEngine.ts`). A beats chunk gets its own key per chunk, not one accumulated key per Part — each chunk is independently reviewable and materializes independently |
+| `panel_reviews` | JSONB | keyed by critic role (`CRITIC_ROLES`), whatever shape each critic's own prompt asks for. Also the previous-verdict source for `{{PREVIOUS_CRITIQUE}}` |
 | `arbitrator_synthesis` | JSONB | |
-| `stage_panel_history` | JSONB NOT NULL | keyed by stage; snapshot of that stage's `panel_reviews`/`arbitrator_synthesis` taken by `approveStage` right before they're cleared for the next stage's own cycle. Exists so `unapprove` (see below) can restore a stage's real critique when reopening its rejection interview, instead of it coming back empty — added in migration `025_planning_stage_panel_history.sql` after a real case of exactly that happening |
-| `chat_history` | JSONB NOT NULL | every rejection-interview turn across the WHOLE run, all stages, concatenated — no longer reset per rejection cycle. See "The Arbitrator has full, continuous memory" below |
-| `intake_chat_history` | JSONB NOT NULL | the one-time pre-Stage-1 conversation; separate thread from `chat_history` so a rejection at Stage 2 doesn't dredge up the original intake conversation, and vice versa. Not reset — kept as a permanent record |
+| `stage_panel_history` | JSONB NOT NULL | keyed by unit (same keys as `stage_artifacts`); snapshot of that unit's `panel_reviews`/`arbitrator_synthesis` taken by `approveStage` right before they're cleared. What `unapproveStage` restores from |
+| `chat_history` | JSONB NOT NULL | every rejection-interview turn across the WHOLE run, all units, concatenated — never reset |
+| `intake_chat_history` | JSONB NOT NULL | the one-time pre-Stage-1 conversation; separate thread from `chat_history`. Not reset |
 | `final_delta_directive` | TEXT | set by `finalize-directive` **or** `intake-finalize`, consumed by the next `generate` call, then cleared |
-| `extracted_entities` | JSONB | candidates proposed after Stage 3 approval, cleared once reviewed |
-| `last_error` | TEXT | set when a step fails, alongside `status: 'failed'` |
+| `extracted_entities` | JSONB | candidates proposed by an on-demand `entities/extract` call, cleared once reviewed |
+| `last_error` | TEXT | set when a main-pipeline step fails, alongside `status: 'failed'` — never set by the on-demand `entities/extract` action, which doesn't touch `status` |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
-Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `intake_active` default added in `023_planning_intake.sql`. `src/services/planningEngine.ts` / `src/routes/planning.ts`.
+Added in migration `022_planning_engine.sql`; `intake_chat_history`/`intake_active` default added in `023_planning_intake.sql`; the Act/Part hierarchy columns (`current_act`/`current_part`/`current_beat_chunk`/`part_chapter_ranges`/`continuity_ledger`) added in `026_planning_hierarchy.sql`, replacing the old flat `stage_2_acts`/`stage_3_beats` model — no backfill needed for existing runs, since `current_stage` has no `CHECK` constraint and a run already at `stage_1_summary` picks up the new hierarchy the moment it advances past Stage 1. `src/services/planningEngine.ts` / `src/routes/planning.ts`.
 
 ### Endpoints
 
 - `POST /api/v1/planning/runs` — `{ bookId, userId }`, starts a run in the intake conversation (`status: intake_active`) — **not** Stage 1 generation yet
-- `GET /api/v1/planning/runs?bookId=` — every run for a book, most
-  recently updated first. Lets the frontend resolve "what's this book's
-  current run" without depending on a run id surviving in a URL/local
-  state — the run's own state is never at risk, only the frontend's
-  pointer to it can be lost (e.g. closing the tab, clearing history)
+- `GET /api/v1/planning/runs?bookId=` — every run for a book, most recently updated first. Lets the frontend resolve "what's this book's current run" without depending on a run id surviving in a URL/local state
 - `POST /api/v1/planning/runs/:id/intake-chat` — `{ message, documentBase64?, documentMediaType? }`, one turn of the pre-Stage-1 conversation; has the `web_fetch_20260209` server tool available, so a pasted URL gets actually read
 - `POST /api/v1/planning/runs/:id/intake-finalize` — compiles the intake conversation into `final_delta_directive` and opens Stage 1 (`status -> generating`)
 - `GET /api/v1/planning/runs/:id` — poll current state
-- `POST /api/v1/planning/runs/:id/generate` — one Generator call for `current_stage`
+- `POST /api/v1/planning/runs/:id/generate` — one Generator call for the current unit
 - `POST /api/v1/planning/runs/:id/critique` — all of `CRITIC_ROLES` (Continuity, Pacing & Chapter-Economy, Craft & Suspense), fired in parallel in one request
 - `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate
-- `POST /api/v1/planning/runs/:id/approve` — the gate's approve action; on `stage_3_beats` this also materializes beats into the Outliner and starts entity extraction instead of finishing outright
+- `POST /api/v1/planning/runs/:id/approve` — the gate's approve action. On `part_outline`, records the Part's committed chapter range. On `part_beats`, also materializes the chunk into the Outliner and reconciles the continuity ledger. Advances to the next unit per the fixed Act→Part→Beats sequence, or marks the run `done` once all 3 Acts' 9 Parts are fully planned
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
-- `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever
-  stage came before `current_stage` and reopens its rejection interview
-  directly (skipping the review gate, since the review gate's job —
-  approve or reject — has already been answered). Restores that stage's
-  `panel_reviews`/`arbitrator_synthesis` from `stage_panel_history` so the
-  interview has the real critique to work from, not an empty one. `409`
-  if `current_stage` already has its own generated artifact (reverting
-  would discard it — reject that stage's own artifact instead)
-  or if there's no previous stage to reopen
-- `POST /api/v1/planning/runs/:id/discard-stage` — trashes the CURRENT
-  stage's draft outright (unlike `unapprove`, allowed even when one
-  exists — that's the point) and falls back to the PREVIOUS stage's
-  review gate, ready to re-approve into a genuinely fresh generation.
-  Deletes `stage_artifacts[current_stage]` so the next `generate` call's
-  `{{PREVIOUS_ARTIFACT}}` is truly empty, not a silent revision of the
-  discarded draft. No interview — the writer just doesn't want this
-  draft, there's nothing to discuss. `409` if there's no previous stage
+- `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever unit came before the current one and reopens its rejection interview directly, restoring its `panel_reviews`/`arbitrator_synthesis` from `stage_panel_history`. `409` if the current unit already has its own generated artifact, or if there's no previous unit
+- `POST /api/v1/planning/runs/:id/discard-stage` — trashes the CURRENT unit's draft outright (unlike `unapprove`, allowed even when one exists — that's the point) and falls back to the PREVIOUS unit's review gate, ready to re-approve into a genuinely fresh generation. No interview. `409` if there's no previous unit
 - `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
-- `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same stage
-- `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written
-- `DELETE /api/v1/planning/runs/:id` — abandons the run's own bookkeeping row only; does not touch anything already materialized from it (a `chapter_beats` row or `codex_entries` created by a prior approval on this run stay put — delete those through their own endpoints)
+- `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same unit
+- `POST /api/v1/planning/runs/:id/entities/extract` — on-demand, callable whenever the writer wants (not tied to any single beats-chunk approval — see "Entity extraction is now on-demand" above). Scans every approved beats chunk in the run so far. Does not touch `status`
+- `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written. Does not touch `status`
+- `DELETE /api/v1/planning/runs/:id` — abandons the run's own bookkeeping row only; does not touch anything already materialized from it
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 

@@ -13,6 +13,7 @@ import {
   discardStage,
   chatTurn,
   finalizeDirective,
+  extractEntities,
   confirmEntities,
   intakeChatTurn,
   finalizeIntake,
@@ -171,9 +172,10 @@ planningRouter.post("/planning/runs/:id/arbitrate", async (req: Request, res: Re
 });
 
 // POST /api/v1/planning/runs/:id/approve — the human review gate's
-// approve action. On Stage 3 (Beats), this also materializes the beats
-// into chapter_beats (the existing Outliner) and starts entity
-// extraction — see planningEngine.approveStage.
+// approve action. On a part_outline, this also records the Part's
+// committed chapter range; on a part_beats chunk, this also materializes
+// the beats into chapter_beats (the existing Outliner) and reconciles the
+// continuity ledger — see planningEngine.approveStage.
 planningRouter.post("/planning/runs/:id/approve", async (req: Request, res: Response) => {
   try {
     res.json({ run: await approveStage((req.params.id as string)) });
@@ -244,6 +246,19 @@ planningRouter.post("/planning/runs/:id/finalize-directive", async (req: Request
     res.json({ run: await finalizeDirective((req.params.id as string)) });
   } catch (error) {
     handleError(res, error, "finalize directive");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/entities/extract — on-demand entity
+// extraction, callable whenever the writer wants (not tied to any one
+// beats-chunk approval — see extractEntities). Scans every approved
+// part_beats chunk so far. Does not change the run's status; extraction
+// is a side action independent of the run's actual pipeline position.
+planningRouter.post("/planning/runs/:id/entities/extract", async (req: Request, res: Response) => {
+  try {
+    res.json({ run: await extractEntities((req.params.id as string)) });
+  } catch (error) {
+    handleError(res, error, "extract entities");
   }
 });
 

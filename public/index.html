@@ -425,7 +425,7 @@
 
 <fieldset>
   <legend>Planning Engine — Agent Prompt Editor</legend>
-  <p class="sub" style="margin-top:0;">Every agent's behavior is 100% prompt-driven — nothing here is hardcoded server-side. Saving creates a new version and activates it immediately; no redeploy needed. Available placeholders per role: BOOK_CONTEXT, PRIOR_STAGE_ARTIFACT, PREVIOUS_ARTIFACT, FINAL_DELTA_DIRECTIVE (generator) · BOOK_CONTEXT, CURRENT_ARTIFACT, PREVIOUS_CRITIQUE (critics) · BOOK_CONTEXT, CURRENT_ARTIFACT (entity_extractor) · CURRENT_ARTIFACT, PANEL_REVIEWS, PREVIOUS_SYNTHESIS (arbitrator_panel) · CURRENT_ARTIFACT, PANEL_REVIEWS (arbitrator_chat) · CHAT_HISTORY, PANEL_REVIEWS, CURRENT_ARTIFACT (arbitrator_directive). Stage 3 Beats' Generator prompt must produce JSON shaped <code>{"chapters":[{"chapterNumber":1,"title":"...","beats":[{"title":"...","outlineText":"..."}]}]}</code> — that's what gets parsed into real chapter_beats rows on approval. The entity_extractor prompt must produce a JSON array of <code>{"type":"codex_entry"|"world_category","name":"...","entryType":"...","description":"..."}</code>.</p>
+  <p class="sub" style="margin-top:0;">Every agent's behavior is 100% prompt-driven — nothing here is hardcoded server-side. Saving creates a new version and activates it immediately; no redeploy needed. Available placeholders per role: BOOK_CONTEXT, BOOK_VISION, PARENT_ARTIFACT, CONTINUITY_LEDGER, PREVIOUS_ARTIFACT, CHAPTER_RANGE (part_beats only), FINAL_DELTA_DIRECTIVE (generator) · BOOK_CONTEXT, BOOK_VISION, CONTINUITY_LEDGER, CURRENT_ARTIFACT, PREVIOUS_CRITIQUE (critics) · BOOK_CONTEXT, CURRENT_ARTIFACT (entity_extractor) · CONTENT, EXISTING_LEDGER (ledger_extractor) · BOOK_VISION, CURRENT_ARTIFACT, PANEL_REVIEWS, PREVIOUS_SYNTHESIS (arbitrator_panel) · CURRENT_ARTIFACT, PANEL_REVIEWS (arbitrator_chat) · CHAT_HISTORY, PANEL_REVIEWS, CURRENT_ARTIFACT (arbitrator_directive). <code>part_outline</code>'s Generator prompt must produce JSON shaped <code>{"startChapter":1,"endChapter":20,"outline":"..."}</code>. <code>part_beats</code>'s Generator prompt must produce JSON shaped <code>{"chapters":[{"chapterNumber":1,"title":"...","beats":[{"title":"...","outlineText":"..."}]}]}</code> — that's what gets parsed into real chapter_beats rows on approval. entity_extractor must produce a JSON array of <code>{"type":"codex_entry"|"world_category","name":"...","entryType":"...","description":"..."}</code>. ledger_extractor must produce a JSON array of plain fact strings.</p>
   <div class="row">
     <div><label>Agent role</label>
       <select id="agpRole">
@@ -442,8 +442,9 @@
     <div><label>Stage</label>
       <select id="agpStage">
         <option value="stage_1_summary">stage_1_summary</option>
-        <option value="stage_2_acts">stage_2_acts</option>
-        <option value="stage_3_beats">stage_3_beats</option>
+        <option value="act_summary">act_summary</option>
+        <option value="part_outline">part_outline</option>
+        <option value="part_beats">part_beats</option>
         <option value="all">all (role doesn't vary by stage)</option>
       </select>
     </div>
