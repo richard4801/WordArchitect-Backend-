@@ -1310,10 +1310,53 @@ specifically the client having no recovery signal for a stale session.
 ## Planning Engine
 
 A pre-writing pipeline — an **intake conversation**, then Stage 1 Core
-Summary → Stage 2 Act Outlines → Stage 3 Chapter Beats — with a 3-agent
-Scrutiny Panel (Logic Critic, Suspense Critic, Arbitrator) and a
-mandatory human review gate at every stage. Entirely separate from
-manuscript drafting: nothing in this pipeline ever writes prose.
+Summary → Stage 2 Act Outlines → Stage 3 Chapter Beats — with a 4-agent
+Scrutiny Panel (Continuity Critic, Pacing & Chapter-Economy Critic,
+Craft & Suspense Critic, Arbitrator) and a mandatory human review gate
+at every stage. Entirely separate from manuscript drafting: nothing in
+this pipeline ever writes prose.
+
+**Why 3 critics, not 2** — the original panel (Logic Critic, Suspense
+Critic) had no dedicated coverage for pacing at all; "emotional pacing"
+was one bullet buried inside a critic mostly focused on subtext/hooks,
+and real usage showed pacing/chapter-economy issues (the single biggest
+retention risk in serialized webnovel fiction) going uncaught as a
+result. Rather than bolting a 4th critic onto the existing 2, the panel
+was rebuilt as 3 narrower, non-overlapping critics: Continuity
+(canon/logic/timeline/world-mechanics — essentially the old Logic
+Critic's scope, renamed for clarity), Pacing & Chapter-Economy (new —
+chapter-to-plot ratio, decompression, cliffhanger cadence,
+retention-curve awareness, time-skip handling — a structural/
+quantitative lens), and Craft & Suspense (the old Suspense Critic minus
+the escalation/cadence concern, which now belongs to Pacing — subtext,
+hook *quality* as distinct from hook *frequency*, anti-cliché,
+foreshadowing/payoff). `CRITIC_ROLES` in `src/types/domain.ts` is a
+plain array driving `runCritique`'s parallel calls — adding or removing
+a critic later is a one-line change plus a prompt row, not new code.
+
+**Each critic (and the Arbitrator's synthesis) sees its own previous
+verdict on a revision pass, without a persistent session.** A critic
+reviewing a regenerated draft previously had no memory of what it
+flagged last time — it could only give a fresh opinion that happened not
+to mention an old issue, which is ambiguous ("fixed" vs. "just didn't
+notice"), not a verified fix-check. The fix is **not** a growing,
+resent conversation per role (that's the exact multi-turn-session
+pattern already explicitly rejected for Hanami elsewhere in this
+document, for the same reason: cost grows unboundedly with every
+revision, for no real gain over a fresh sharply-worded call — and it
+would also break this pipeline's deliberately stateless-per-request,
+step-job architecture). Instead, `runCritique`/`runArbitration` read the
+run's *current* `panel_reviews`/`arbitrator_synthesis` — which still
+holds the *previous* draft's verdict at the moment they're called,
+right before this call's new result overwrites it — and thread it back
+in as `{{PREVIOUS_CRITIQUE}}` (each critic sees only its own prior
+review) / `{{PREVIOUS_SYNTHESIS}}`. Every critic's prompt instructs it
+to mark each previously-raised issue `resolved`/`unresolved` before
+looking for anything new (`new`); the Arbitrator's prompt is instructed
+not to recommend `approve` on a revision that left a previous `mustFix`
+item unresolved just because nothing new turned up. Same trick as the
+Generator's `{{PREVIOUS_ARTIFACT}}` — one bounded call per step, cost
+never grows across revisions.
 "Generator" here means planning text — summaries, act structure, beat
 lists — never manuscript prose, which stays exclusively Hanami's job via
 the existing `/generate-prose` and MCP tools, unchanged by any of this.
@@ -1381,7 +1424,7 @@ step; nothing here holds state in memory between requests.
 | --- | --- | --- |
 | `id` | UUID PK | |
 | `book_id` | UUID NOT NULL | prompts are scoped per book, not global |
-| `agent_role` | VARCHAR(50) NOT NULL | `generator` \| `logic_critic` \| `suspense_critic` \| `arbitrator_panel` \| `arbitrator_chat` \| `arbitrator_directive` \| `entity_extractor` |
+| `agent_role` | VARCHAR(50) NOT NULL | `generator` \| `continuity_critic` \| `pacing_critic` \| `craft_critic` \| `arbitrator_panel` \| `arbitrator_chat` \| `arbitrator_directive` \| `entity_extractor` — the 3 critic roles are `CRITIC_ROLES` in `src/types/domain.ts`, not hardcoded call sites |
 | `stage` | VARCHAR(50) NOT NULL | `stage_1_summary` \| `stage_2_acts` \| `stage_3_beats` \| `all` (for a role whose prompt doesn't vary by stage) \| `intake` (prompt-lookup only — never a run's real `current_stage`) |
 | `version` | INT NOT NULL | auto-incremented per (book_id, agent_role, stage) on each save |
 | `is_active` | BOOLEAN NOT NULL | exactly one active version per (book_id, agent_role, stage); `getActivePrompt` tries the exact stage first, then falls back to `stage = 'all'` |
@@ -1410,12 +1453,14 @@ has no active prompts to clone; 400 if `fromBookId === toBookId`.
 
 | Placeholder | Available to | Contents |
 | --- | --- | --- |
-| `{{BOOK_CONTEXT}}` | generator, logic_critic, suspense_critic, entity_extractor | Book Facts (`get_book_facts`) + every current Codex entry, so planning stays consistent with what's already established, especially when continuing an already-written book |
+| `{{BOOK_CONTEXT}}` | generator, continuity_critic, pacing_critic, craft_critic, entity_extractor | Book Facts (`get_book_facts`) + every current Codex entry, so planning stays consistent with what's already established, especially when continuing an already-written book |
 | `{{PRIOR_STAGE_ARTIFACT}}` | generator | The previous *stage's* approved artifact (e.g. Stage 2 sees Stage 1's summary) |
 | `{{PREVIOUS_ARTIFACT}}` | generator | This *same* stage's own last draft — empty on a stage's first generation, populated with the rejected draft when regenerating after a rejection. Exists so a regeneration is a revision of that exact text, not a blind rewrite from scratch — the Generator has no memory of its own prior output otherwise, the same statelessness Hanami has (see MCP Server's "Every Hanami call is stateless" note) |
+| `{{PREVIOUS_CRITIQUE}}` | continuity_critic, pacing_critic, craft_critic | This critic's *own* previous review of this same stage's artifact — empty on a first review, populated on a revision pass so the critic can mark its own prior issues resolved/unresolved instead of reviewing blind. Read from `panel_reviews` right before `runCritique`'s new result overwrites it — see the "no persistent session" note above |
 | `{{FINAL_DELTA_DIRECTIVE}}` | generator | Set only when regenerating after a rejection; consumed once and cleared |
-| `{{CURRENT_ARTIFACT}}` | logic_critic, suspense_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
-| `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | Both critics' JSON output |
+| `{{CURRENT_ARTIFACT}}` | continuity_critic, pacing_critic, craft_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
+| `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | All three critics' JSON output |
+| `{{PREVIOUS_SYNTHESIS}}` | arbitrator_panel | The Arbitrator's *own* previous synthesis of this same stage — empty on a first synthesis, populated on a revision pass so it can check whether its own prior `mustFix` items were actually addressed. Read from `arbitrator_synthesis` right before `runArbitration`'s new result overwrites it |
 | `{{CHAT_HISTORY}}` | arbitrator_directive | The full rejection interview (or, at `stage = 'intake'`, the intake conversation), for compiling one directive from it |
 
 **Two roles have a required output shape**, since their output gets parsed into real rows, not just displayed:
@@ -1433,7 +1478,7 @@ Both go through `callAgentForJson`, which retries once with a corrective nudge i
 | `current_stage` | VARCHAR(50) NOT NULL | default `stage_1_summary` |
 | `status` | VARCHAR(30) NOT NULL | default `intake_active`; `intake_active` \| `generating` \| `critiquing` \| `awaiting_arbitration` \| `awaiting_user_review` \| `user_chat_active` \| `awaiting_entity_review` \| `done` \| `failed` |
 | `stage_artifacts` | JSONB NOT NULL | keyed by stage, not a single overwritten column — Stage 2's Generator needs to read Stage 1's approved text, so earlier stages survive the transition |
-| `panel_reviews` | JSONB | `{ logic_critic, suspense_critic }`, whatever shape each critic's own prompt asks for |
+| `panel_reviews` | JSONB | keyed by critic role (`CRITIC_ROLES` — currently `continuity_critic`, `pacing_critic`, `craft_critic`), whatever shape each critic's own prompt asks for. Also doubles as the previous-verdict source for `{{PREVIOUS_CRITIQUE}}` — see above |
 | `arbitrator_synthesis` | JSONB | |
 | `stage_panel_history` | JSONB NOT NULL | keyed by stage; snapshot of that stage's `panel_reviews`/`arbitrator_synthesis` taken by `approveStage` right before they're cleared for the next stage's own cycle. Exists so `unapprove` (see below) can restore a stage's real critique when reopening its rejection interview, instead of it coming back empty — added in migration `025_planning_stage_panel_history.sql` after a real case of exactly that happening |
 | `chat_history` | JSONB NOT NULL | mid-pipeline rejection interviews only; array of `{ role, content }`, reset on each new rejection cycle |
@@ -1457,7 +1502,7 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history` and the `int
 - `POST /api/v1/planning/runs/:id/intake-finalize` — compiles the intake conversation into `final_delta_directive` and opens Stage 1 (`status -> generating`)
 - `GET /api/v1/planning/runs/:id` — poll current state
 - `POST /api/v1/planning/runs/:id/generate` — one Generator call for `current_stage`
-- `POST /api/v1/planning/runs/:id/critique` — Logic + Suspense critics, fired in parallel in one request
+- `POST /api/v1/planning/runs/:id/critique` — all of `CRITIC_ROLES` (Continuity, Pacing & Chapter-Economy, Craft & Suspense), fired in parallel in one request
 - `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate
 - `POST /api/v1/planning/runs/:id/approve` — the gate's approve action; on `stage_3_beats` this also materializes beats into the Outliner and starts entity extraction instead of finishing outright
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview

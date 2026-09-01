@@ -278,8 +278,9 @@ export interface ChapterBeat {
 
 export type AgentRole =
   | "generator"
-  | "logic_critic"
-  | "suspense_critic"
+  | "continuity_critic"
+  | "pacing_critic"
+  | "craft_critic"
   | "arbitrator_panel"
   | "arbitrator_chat"
   | "arbitrator_directive"
@@ -287,13 +288,24 @@ export type AgentRole =
 
 export const VALID_AGENT_ROLES: AgentRole[] = [
   "generator",
-  "logic_critic",
-  "suspense_critic",
+  "continuity_critic",
+  "pacing_critic",
+  "craft_critic",
   "arbitrator_panel",
   "arbitrator_chat",
   "arbitrator_directive",
   "entity_extractor",
 ];
+
+// The critics that make up the Scrutiny Panel, run in parallel by
+// runCritique — a plain array, not hardcoded call sites, so adding or
+// removing a critic later is a one-line change plus a prompt row, not a
+// code change. Was logic_critic/suspense_critic (2); split into 3 after a
+// real case where pacing-specific issues (chapter economy, cliffhanger
+// cadence, decompression) went uncaught because "emotional pacing" was
+// buried as one bullet inside a critic mostly focused on subtext/hooks —
+// narrow, specialized critics catch more than fewer generalist ones.
+export const CRITIC_ROLES: AgentRole[] = ["continuity_critic", "pacing_critic", "craft_critic"];
 
 // 'intake' is a valid stage for prompt lookup only (never a run's
 // current_stage) — it's where arbitrator_chat/arbitrator_directive get a
@@ -362,7 +374,9 @@ export interface PlanningRun {
   current_stage: PlanningStage;
   status: PlanningRunStatus;
   stage_artifacts: Partial<Record<RealPlanningStage, string>>;
-  panel_reviews: { logic_critic?: unknown; suspense_critic?: unknown } | null;
+  // Keyed by critic role (see CRITIC_ROLES) — open rather than a fixed
+  // set of named keys, since the panel's composition isn't hardcoded.
+  panel_reviews: Partial<Record<AgentRole, unknown>> | null;
   arbitrator_synthesis: unknown | null;
   // Snapshot of a stage's panel_reviews/arbitrator_synthesis, keyed by
   // stage, taken right before approveStage clears them on advance — what

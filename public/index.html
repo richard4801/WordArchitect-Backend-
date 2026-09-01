@@ -425,13 +425,14 @@
 
 <fieldset>
   <legend>Planning Engine — Agent Prompt Editor</legend>
-  <p class="sub" style="margin-top:0;">Every agent's behavior is 100% prompt-driven — nothing here is hardcoded server-side. Saving creates a new version and activates it immediately; no redeploy needed. Available placeholders per role: BOOK_CONTEXT, PRIOR_STAGE_ARTIFACT, FINAL_DELTA_DIRECTIVE (generator) · BOOK_CONTEXT, CURRENT_ARTIFACT (critics, entity_extractor) · CURRENT_ARTIFACT, PANEL_REVIEWS (arbitrator_panel, arbitrator_chat) · CHAT_HISTORY, PANEL_REVIEWS, CURRENT_ARTIFACT (arbitrator_directive). Stage 3 Beats' Generator prompt must produce JSON shaped <code>{"chapters":[{"chapterNumber":1,"title":"...","beats":[{"title":"...","outlineText":"..."}]}]}</code> — that's what gets parsed into real chapter_beats rows on approval. The entity_extractor prompt must produce a JSON array of <code>{"type":"codex_entry"|"world_category","name":"...","entryType":"...","description":"..."}</code>.</p>
+  <p class="sub" style="margin-top:0;">Every agent's behavior is 100% prompt-driven — nothing here is hardcoded server-side. Saving creates a new version and activates it immediately; no redeploy needed. Available placeholders per role: BOOK_CONTEXT, PRIOR_STAGE_ARTIFACT, PREVIOUS_ARTIFACT, FINAL_DELTA_DIRECTIVE (generator) · BOOK_CONTEXT, CURRENT_ARTIFACT, PREVIOUS_CRITIQUE (critics) · BOOK_CONTEXT, CURRENT_ARTIFACT (entity_extractor) · CURRENT_ARTIFACT, PANEL_REVIEWS, PREVIOUS_SYNTHESIS (arbitrator_panel) · CURRENT_ARTIFACT, PANEL_REVIEWS (arbitrator_chat) · CHAT_HISTORY, PANEL_REVIEWS, CURRENT_ARTIFACT (arbitrator_directive). Stage 3 Beats' Generator prompt must produce JSON shaped <code>{"chapters":[{"chapterNumber":1,"title":"...","beats":[{"title":"...","outlineText":"..."}]}]}</code> — that's what gets parsed into real chapter_beats rows on approval. The entity_extractor prompt must produce a JSON array of <code>{"type":"codex_entry"|"world_category","name":"...","entryType":"...","description":"..."}</code>.</p>
   <div class="row">
     <div><label>Agent role</label>
       <select id="agpRole">
         <option value="generator">generator</option>
-        <option value="logic_critic">logic_critic</option>
-        <option value="suspense_critic">suspense_critic</option>
+        <option value="continuity_critic">continuity_critic</option>
+        <option value="pacing_critic">pacing_critic</option>
+        <option value="craft_critic">craft_critic</option>
         <option value="arbitrator_panel">arbitrator_panel</option>
         <option value="arbitrator_chat">arbitrator_chat</option>
         <option value="arbitrator_directive">arbitrator_directive</option>
