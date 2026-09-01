@@ -1357,6 +1357,37 @@ not to recommend `approve` on a revision that left a previous `mustFix`
 item unresolved just because nothing new turned up. Same trick as the
 Generator's `{{PREVIOUS_ARTIFACT}}` — one bounded call per step, cost
 never grows across revisions.
+
+**The Arbitrator has full, continuous memory — a deliberate exception to
+the "stay cheap" principle above, made for this one role specifically.**
+Generator/Critics are one-shot review/generation agents that only ever
+needed a snapshot of their own last output; the Arbitrator is different
+in kind — it's the writer's actual conversational point of contact with
+the whole pipeline (`arbitrator_chat`/`arbitrator_directive`), already
+persisting `intake_chat_history`/`chat_history` before this change. But
+until this was fixed, `chat_history` was wiped to `[]` on every single
+`reject` call and again after `finalize-directive`, and
+`intake_chat_history` was written once and never referenced again after
+`intake-finalize` compiled it — so the Arbitrator was actually several
+disconnected mini-conversations wearing one identity, with zero memory
+of the original intake (including anything from a pasted link/document
+not captured in the compiled brief) by the time a later stage's
+rejection interview opened.
+
+Fixed by no longer resetting `chat_history` anywhere (`rejectStage`,
+`unapproveStage`, `finalizeDirective` all used to clear it — none do
+now), and by `chatTurn`/`finalizeDirective` resending
+`intake_chat_history` + the ENTIRE accumulated `chat_history` — every
+rejection interview across every stage so far, not just the current
+cycle — on every conversational call, the same "resend everything,
+that's what a session means for a stateless API" pattern already
+accepted for the in-app Chat Assistant elsewhere in this document. The
+honest cost tradeoff, accepted deliberately here: the transcript never
+shrinks for the life of a run, so a Stage 3 rejection interview costs
+more per turn than a Stage 1 one did — unlike every other call in this
+pipeline, which stays flat-cost regardless of how far into the run it
+is.
+
 "Generator" here means planning text — summaries, act structure, beat
 lists — never manuscript prose, which stays exclusively Hanami's job via
 the existing `/generate-prose` and MCP tools, unchanged by any of this.
@@ -1461,7 +1492,7 @@ has no active prompts to clone; 400 if `fromBookId === toBookId`.
 | `{{CURRENT_ARTIFACT}}` | continuity_critic, pacing_critic, craft_critic, arbitrator_panel, arbitrator_chat, arbitrator_directive | The artifact currently being reviewed/discussed |
 | `{{PANEL_REVIEWS}}` | arbitrator_panel, arbitrator_chat, arbitrator_directive | All three critics' JSON output |
 | `{{PREVIOUS_SYNTHESIS}}` | arbitrator_panel | The Arbitrator's *own* previous synthesis of this same stage — empty on a first synthesis, populated on a revision pass so it can check whether its own prior `mustFix` items were actually addressed. Read from `arbitrator_synthesis` right before `runArbitration`'s new result overwrites it |
-| `{{CHAT_HISTORY}}` | arbitrator_directive | The full rejection interview (or, at `stage = 'intake'`, the intake conversation), for compiling one directive from it |
+| `{{CHAT_HISTORY}}` | arbitrator_directive | The writer's ENTIRE conversation with the Arbitrator so far — intake conversation plus every rejection interview across every stage, concatenated in order, not just the current cycle's turns. See "The Arbitrator has full, continuous memory" below |
 
 **Two roles have a required output shape**, since their output gets parsed into real rows, not just displayed:
 - `generator` at `stage_3_beats` must return JSON: `{"chapters": [{"chapterNumber": 1, "title": "...", "beats": [{"title": "...", "outlineText": "..."}]}]}` — this is what `materializeBeats` inserts into `manuscript_chapters`/`chapter_beats` on approval.
@@ -1481,7 +1512,7 @@ Both go through `callAgentForJson`, which retries once with a corrective nudge i
 | `panel_reviews` | JSONB | keyed by critic role (`CRITIC_ROLES` — currently `continuity_critic`, `pacing_critic`, `craft_critic`), whatever shape each critic's own prompt asks for. Also doubles as the previous-verdict source for `{{PREVIOUS_CRITIQUE}}` — see above |
 | `arbitrator_synthesis` | JSONB | |
 | `stage_panel_history` | JSONB NOT NULL | keyed by stage; snapshot of that stage's `panel_reviews`/`arbitrator_synthesis` taken by `approveStage` right before they're cleared for the next stage's own cycle. Exists so `unapprove` (see below) can restore a stage's real critique when reopening its rejection interview, instead of it coming back empty — added in migration `025_planning_stage_panel_history.sql` after a real case of exactly that happening |
-| `chat_history` | JSONB NOT NULL | mid-pipeline rejection interviews only; array of `{ role, content }`, reset on each new rejection cycle |
+| `chat_history` | JSONB NOT NULL | every rejection-interview turn across the WHOLE run, all stages, concatenated — no longer reset per rejection cycle. See "The Arbitrator has full, continuous memory" below |
 | `intake_chat_history` | JSONB NOT NULL | the one-time pre-Stage-1 conversation; separate thread from `chat_history` so a rejection at Stage 2 doesn't dredge up the original intake conversation, and vice versa. Not reset — kept as a permanent record |
 | `final_delta_directive` | TEXT | set by `finalize-directive` **or** `intake-finalize`, consumed by the next `generate` call, then cleared |
 | `extracted_entities` | JSONB | candidates proposed after Stage 3 approval, cleared once reviewed |

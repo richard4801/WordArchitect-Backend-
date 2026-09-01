@@ -426,8 +426,12 @@ export async function approveStage(runId: string): Promise<PlanningRun> {
 }
 
 // Writer rejects the artifact — opens the Arbitrator chat interview.
+// Deliberately does NOT reset chat_history — the Arbitrator is meant to
+// be one continuous point of contact for the whole run, not a fresh
+// stranger every time a stage gets rejected. See chatTurn/finalizeDirective
+// for how the accumulated history actually gets used.
 export async function rejectStage(runId: string): Promise<PlanningRun> {
-  return saveRun(runId, { status: "user_chat_active", chat_history: [] });
+  return saveRun(runId, { status: "user_chat_active" });
 }
 
 // Writer approved a stage but changes their mind before doing anything on
@@ -463,7 +467,6 @@ export async function unapproveStage(runId: string): Promise<PlanningRun> {
   return saveRun(runId, {
     current_stage: previousStage,
     status: "user_chat_active",
-    chat_history: [],
     panel_reviews: restored?.panel_reviews ?? null,
     arbitrator_synthesis: restored?.arbitrator_synthesis ?? null,
   });
@@ -474,13 +477,26 @@ export async function unapproveStage(runId: string): Promise<PlanningRun> {
 // "memory" only ever exists because the caller resends history, exactly
 // like the Chat Assistant and scene-draft-sessions already do elsewhere
 // in this project.
+//
+// The Arbitrator is the writer's one continuous point of contact with the
+// whole pipeline, not a fresh stranger at every rejection — so the
+// history resent here is intake_chat_history + the ENTIRE accumulated
+// chat_history across every stage/rejection cycle so far, not just the
+// current one (chat_history is no longer reset per rejection — see
+// rejectStage/unapproveStage). This is a deliberate exception to the
+// per-call-stays-cheap principle everywhere else in this pipeline
+// (Generator/Critics get only a snapshot of their own last output/
+// verdict, never a growing thread) — a real, accepted cost tradeoff for
+// this one specifically conversational role: later-stage interviews cost
+// more per turn than earlier ones, since the full transcript grows for
+// the life of the run.
 export async function chatTurn(runId: string, userMessage: string): Promise<PlanningRun> {
   const run = await loadRun(runId);
   try {
     const artifact = run.stage_artifacts[run.current_stage as RealPlanningStage] ?? "";
     const prompt = await getActivePrompt(run.book_id, "arbitrator_chat", run.current_stage);
 
-    const history: PlanningChatMessage[] = [...run.chat_history, { role: "user", content: userMessage }];
+    const priorTurns: PlanningChatMessage[] = [...run.intake_chat_history, ...run.chat_history];
 
     const anthropic = getAnthropicClient();
     const contextPreamble = interpolateTemplate(prompt.user_prompt_template, {
@@ -496,7 +512,8 @@ export async function chatTurn(runId: string, userMessage: string): Promise<Plan
       output_config: { effort: prompt.effort },
       messages: [
         { role: "user", content: contextPreamble },
-        ...history.map((m) => ({ role: m.role, content: m.content })),
+        ...priorTurns.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: userMessage },
       ],
     });
 
@@ -506,7 +523,9 @@ export async function chatTurn(runId: string, userMessage: string): Promise<Plan
       .join("\n")
       .trim();
 
-    return saveRun(runId, { chat_history: [...history, { role: "assistant", content: reply }] });
+    return saveRun(runId, {
+      chat_history: [...run.chat_history, { role: "user", content: userMessage }, { role: "assistant", content: reply }],
+    });
   } catch (error) {
     return markFailed(runId, error);
   }
@@ -514,13 +533,20 @@ export async function chatTurn(runId: string, userMessage: string): Promise<Plan
 
 // Compiles the chat interview into one crisp technical directive, then
 // loops back to the Generator for this same stage per the pipeline's own
-// diagram (reject -> chat -> directive -> regenerate).
+// diagram (reject -> chat -> directive -> regenerate). {{CHAT_HISTORY}}
+// is the full intake + accumulated rejection-interview history, same
+// "one continuous Arbitrator" memory chatTurn uses — not just this
+// cycle's turns — so the compiled directive can draw on anything the
+// writer has ever said, not just the most recent exchange. chat_history
+// itself is deliberately NOT cleared here anymore (was: `chat_history:
+// []`) — it keeps accumulating for the life of the run.
 export async function finalizeDirective(runId: string): Promise<PlanningRun> {
   const run = await loadRun(runId);
   try {
     const prompt = await getActivePrompt(run.book_id, "arbitrator_directive", run.current_stage);
+    const fullHistory: PlanningChatMessage[] = [...run.intake_chat_history, ...run.chat_history];
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {
-      CHAT_HISTORY: JSON.stringify(run.chat_history, null, 2),
+      CHAT_HISTORY: JSON.stringify(fullHistory, null, 2),
       PANEL_REVIEWS: JSON.stringify(run.panel_reviews ?? {}, null, 2),
       CURRENT_ARTIFACT: run.stage_artifacts[run.current_stage as RealPlanningStage] ?? "",
     });
@@ -532,7 +558,7 @@ export async function finalizeDirective(runId: string): Promise<PlanningRun> {
       effort: prompt.effort,
     });
 
-    return saveRun(runId, { status: "generating", final_delta_directive: directive, chat_history: [] });
+    return saveRun(runId, { status: "generating", final_delta_directive: directive });
   } catch (error) {
     return markFailed(runId, error);
   }
