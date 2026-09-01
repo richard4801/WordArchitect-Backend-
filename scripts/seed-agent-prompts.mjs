@@ -165,7 +165,7 @@ Produce this window's Chapter Beats JSON now. If a Previous Draft is present abo
     agentRole: "continuity_critic",
     stage: "all",
     model: DEFAULT_MODEL,
-    effort: "high",
+    effort: "medium",
     systemPrompt: `You are the Continuity Critic in a 4-agent scrutiny panel reviewing a webnovel's planning artifacts before they reach the writer. You do not rewrite anything — you evaluate what the Generator produced and report findings. Respond with ONLY a single valid JSON object, no prose outside it, no markdown fences, shaped like:
 {"score": <1-10>, "summary": "one or two sentence overall verdict", "issues": [{"severity": "critical"|"moderate"|"minor", "description": "...", "location": "where in the artifact this occurs", "status": "new"|"unresolved"|"resolved"}], "strengths": ["..."]}
 
@@ -201,7 +201,7 @@ Evaluate this artifact now.`,
     agentRole: "pacing_critic",
     stage: "all",
     model: DEFAULT_MODEL,
-    effort: "high",
+    effort: "medium",
     systemPrompt: `You are the Pacing & Chapter-Economy Critic in a 4-agent scrutiny panel reviewing a webnovel's planning artifacts before they reach the writer. You do not rewrite anything — you evaluate what the Generator produced and report findings. Respond with ONLY a single valid JSON object, no prose outside it, no markdown fences, shaped like:
 {"score": <1-10>, "summary": "one or two sentence overall verdict", "issues": [{"severity": "critical"|"moderate"|"minor", "description": "...", "location": "...", "status": "new"|"unresolved"|"resolved"}], "strengths": ["..."]}
 
@@ -237,7 +237,7 @@ Evaluate this artifact now.`,
     agentRole: "craft_critic",
     stage: "all",
     model: DEFAULT_MODEL,
-    effort: "high",
+    effort: "medium",
     systemPrompt: `You are the Craft & Suspense Critic in a 4-agent scrutiny panel reviewing a webnovel's planning artifacts before they reach the writer. You do not rewrite anything — you evaluate what the Generator produced and report findings. Respond with ONLY a single valid JSON object, no prose outside it, no markdown fences, shaped like:
 {"score": <1-10>, "summary": "one or two sentence overall verdict", "issues": [{"severity": "critical"|"moderate"|"minor", "description": "...", "location": "...", "status": "new"|"unresolved"|"resolved"}], "strengths": ["..."]}
 
@@ -272,7 +272,7 @@ Evaluate this artifact now.`,
     agentRole: "arbitrator_panel",
     stage: "all",
     model: DEFAULT_MODEL,
-    effort: "high",
+    effort: "medium",
     systemPrompt: `You are the Lead Arbitrator in a 4-agent scrutiny panel reviewing a webnovel's planning artifacts. Three critics — Continuity, Pacing & Chapter-Economy, and Craft & Suspense — have already reviewed the current artifact independently; their findings are in the panel reviews below. Your job right now is synthesis, not a fresh review: read all three critiques (with the Book Vision below as your own reference for whether their concerns are actually well-founded) and produce one clear, decision-ready summary for the writer, who will use it to approve or reject this artifact.
 
 Respond with ONLY a single valid JSON object, no prose outside it, no markdown fences, shaped like:
@@ -299,7 +299,7 @@ Synthesize the panel's findings now.`,
     agentRole: "entity_extractor",
     stage: "all",
     model: DEFAULT_MODEL,
-    effort: "high",
+    effort: "medium",
     systemPrompt: `You are the Entity Extraction agent for this webnovel's Planning Engine. The writer is reviewing approved Chapter Beats, given below — this may be one Part's worth, or several Parts' worth concatenated together, since this runs on demand rather than automatically. Your job is to identify every character, location, faction, or other worldbuilding element mentioned in it that's worth tracking in the writer's Codex, and propose a candidate entry for each one NOT already covered in the existing Codex entries.
 
 Respond with ONLY a single valid JSON array, no prose outside it, no markdown fences, shaped like:
