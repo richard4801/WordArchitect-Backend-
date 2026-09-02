@@ -527,8 +527,23 @@ export interface PlanningRun {
 // on demand via researchPlatformCraftNotes (Claude + web_search/web_fetch),
 // but only ever saved when the writer explicitly reviews and confirms the
 // draft — never written automatically.
+export type PlatformResearchStatus = "idle" | "running" | "ready" | "failed";
+export const VALID_PLATFORM_RESEARCH_STATUSES: PlatformResearchStatus[] = ["idle", "running", "ready", "failed"];
+
 export interface PlatformCraftNotes {
   bookId: string;
   content: string;
   updatedAt: string | null;
+  // A research pass runs detached from the HTTP request that started it
+  // (see researchPlatformCraftNotes.ts) so it survives the writer closing
+  // the tab — its progress/result lives here instead of in a response
+  // body nobody may still be listening to. "running" while in flight,
+  // "ready" with draftContent populated once done, "failed" with
+  // draftError populated on error. Saving via PATCH resets this to
+  // "idle" — a draft is either accepted (becomes `content`) or discarded,
+  // never left sitting as a stale "ready" banner.
+  draftStatus: PlatformResearchStatus;
+  draftContent: string | null;
+  draftError: string | null;
+  draftUpdatedAt: string | null;
 }

@@ -1652,23 +1652,54 @@ reference is exactly the kind of ungoverned drift every other write path
 in this project avoids (MCP's write tools, the Chat Assistant's
 `propose_*` tools, Codex/World Category batch review). Instead:
 
-- `POST /api/v1/platform-craft-notes/research` — `{ bookId }` — an
-  on-demand research pass. Calls Claude with the `web_search_20260209`
-  and `web_fetch_20260209` server-side tools (the same pattern
-  `intakeChatTurn` already uses for reading a pasted URL during intake)
-  to find genuinely current information on hook conventions, early-
-  chapter pacing expectations, and common rejection reasons for these
-  platforms — Anthropic runs the searches/fetches itself within the call,
-  no scraping code lives in this backend. Prompt-driven like every other
-  agent role — `platform_researcher`, stage `"all"`. Returns a **draft
-  only**; nothing is saved by this call.
+- `POST /api/v1/platform-craft-notes/research` — `{ bookId }` — starts an
+  on-demand research pass as a **detached background job** and returns
+  immediately (`202`) with `draftStatus: "running"` — it does not await
+  the LLM call. Calls Claude with the `web_search_20260209` and
+  `web_fetch_20260209` server-side tools (the same pattern `intakeChatTurn`
+  already uses for reading a pasted URL during intake) to find genuinely
+  current information on hook conventions, early-chapter pacing
+  expectations, and common rejection reasons for these platforms —
+  Anthropic runs the searches/fetches itself within the call, no scraping
+  code lives in this backend. Prompt-driven like every other agent role —
+  `platform_researcher`, stage `"all"`.
+
+  **Runs to completion server-side regardless of the writer's browser** —
+  `startPlatformResearchJob` (`platformCraftNotes.ts`) deliberately does
+  not `await` the Claude call before returning; the call is its own
+  outbound connection to Anthropic with no tie to the inbound request's
+  socket, so closing the tab or navigating away has no effect on it. Its
+  result lands on this book's `platform_craft_notes` row
+  (`draft_status`/`draft_content`/`draft_error`) when it finishes,
+  picked up by the writer via a normal `GET` whenever they next check —
+  same tab, a different tab, or a different device. Refuses to start a
+  second job while one is already `"running"` for the book (returns the
+  existing in-flight state instead) rather than double-billing an
+  impatient double-click. **Nothing is saved as the real notes by this
+  call** — see `PATCH` below.
+
+  One honest limitation, not engineered around for a v1: if the backend
+  process restarts (a redeploy) while a job is mid-flight, that job is
+  simply lost — `draft_status` stays stuck on `"running"` forever, since
+  there's no separate worker/queue with its own retry semantics, only a
+  detached in-process call. The same category of tradeoff this project
+  already accepts elsewhere (e.g. the MCP session map being wiped by
+  every deploy). Re-running research is the fix if this happens.
 - `PATCH /api/v1/platform-craft-notes` — `{ bookId, content }` — the only
   way notes actually get saved, whether the content came from editing a
-  research draft or writing it directly. The writer reviews before this
-  is ever called; the research step never writes here itself.
-- `GET /api/v1/platform-craft-notes?bookId=` — the current saved notes,
-  or an empty stub if none exist yet — a book with no notes isn't an
-  error, `{{PLATFORM_TRENDS}}` just renders empty.
+  research draft or writing it directly. Also resets `draft_status` back
+  to `"idle"` — a draft is either accepted (folded into `content` here)
+  or explicitly discarded, never left sitting as a stale "ready" banner.
+- `POST /api/v1/platform-craft-notes/research/discard` — `{ bookId }` —
+  discards a `"ready"`/`"failed"` draft without saving it, resetting to
+  `"idle"`. Leaves the last actually-saved `content` untouched.
+- `GET /api/v1/platform-craft-notes?bookId=` — the current saved notes
+  plus the draft job's live state (`draftStatus`/`draftContent`/
+  `draftError`/`draftUpdatedAt`), or an empty `"idle"` stub if none exist
+  yet — a book with no notes isn't an error, `{{PLATFORM_TRENDS}}` just
+  renders empty. **Poll this endpoint** (the same pattern already used to
+  poll a Planning Engine run) to watch a research pass started above
+  progress from `"running"` to `"ready"`/`"failed"`.
 
 `getActivePrompt`/`interpolateTemplate` already ignore a placeholder
 value no template references, so `PLATFORM_TRENDS` is fetched and passed
