@@ -360,6 +360,57 @@ export async function createPlanningRun(params: {
   return data as PlanningRun;
 }
 
+// Starts a new run reusing another run's ALREADY-APPROVED Stage 1 Summary
+// rather than regenerating one fresh via intake — for testing a different
+// pipeline against a book whose Core Summary is already settled (e.g.
+// trying the Contract Pipeline against the real book's existing full-
+// pipeline summary, without re-running intake or paying for a duplicate
+// Stage 1 generation). The source run just needs to have gotten PAST
+// stage_1_summary at some point — stage_artifacts accumulates and is
+// never cleared for already-approved units, so this works whether the
+// source run is still in progress or fully done. Skips straight past
+// Stage 1 to whatever unit comes right after it for the requested track
+// (codex_documentation for "contract", Act 1 Summary for "full") via the
+// same nextPosition every other transition in this file uses.
+export async function createPlanningRunFromExistingSummary(params: {
+  sourceRunId: string;
+  userId: string;
+  pipelineType: PipelineType;
+}): Promise<PlanningRun> {
+  const sourceRun = await loadRun(params.sourceRunId);
+  const summary = sourceRun.stage_artifacts["stage_1_summary"];
+  if (!summary) {
+    throw new Error("The source run has no approved Stage 1 Summary yet to reuse.");
+  }
+
+  const startPos = nextPosition(
+    { pipelineType: params.pipelineType, stage: "stage_1_summary", act: null, part: null, beatChunk: null },
+    {}
+  );
+  if (!startPos) {
+    throw new Error(`No unit follows stage_1_summary for pipeline type "${params.pipelineType}".`);
+  }
+
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("planning_runs")
+    .insert({
+      book_id: sourceRun.book_id,
+      user_id: params.userId,
+      pipeline_type: params.pipelineType,
+      status: "generating",
+      current_stage: startPos.stage,
+      current_act: startPos.act,
+      current_part: startPos.part,
+      current_beat_chunk: startPos.beatChunk,
+      stage_artifacts: { stage_1_summary: summary },
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`Failed to create planning run from existing summary: ${error.message}`);
+  return data as PlanningRun;
+}
+
 // A completed ("done") Contract Pipeline run hands off into the main
 // hierarchy as a brand new "full" run for the SAME book, seeded rather
 // than starting cold: Stage 1 reuses the already-approved summary (no

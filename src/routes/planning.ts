@@ -18,6 +18,7 @@ import {
   intakeChatTurn,
   finalizeIntake,
   promoteContractRunToFull,
+  createPlanningRunFromExistingSummary,
 } from "../services/planningEngine.js";
 import { VALID_PIPELINE_TYPES, type PipelineType } from "../types/domain.js";
 
@@ -59,6 +60,37 @@ planningRouter.post("/planning/runs", async (req: Request, res: Response) => {
     res.status(201).json({ run });
   } catch (error) {
     handleError(res, error, "create planning run");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/branch — ":id" is an EXISTING run whose
+// already-approved Stage 1 Summary should be reused (not regenerated via
+// intake) to start a NEW run, possibly on a different pipelineType.
+// { userId, pipelineType } — for testing a different pipeline against a
+// book whose premise is already settled, without paying for a duplicate
+// Stage 1 generation. Returns the new run.
+planningRouter.post("/planning/runs/:id/branch", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.userId !== "string" || body.userId.trim() === "") {
+    res.status(400).json({ error: "userId is required and must be a non-empty string." });
+    return;
+  }
+  if (typeof body.pipelineType !== "string" || !VALID_PIPELINE_TYPES.includes(body.pipelineType as PipelineType)) {
+    res.status(400).json({ error: `pipelineType is required and must be one of: ${VALID_PIPELINE_TYPES.join(", ")}.` });
+    return;
+  }
+
+  try {
+    const run = await createPlanningRunFromExistingSummary({
+      sourceRunId: req.params.id as string,
+      userId: body.userId,
+      pipelineType: body.pipelineType as PipelineType,
+    });
+    res.status(201).json({ run });
+  } catch (error) {
+    console.error("branch planning run failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to branch planning run.";
+    res.status(message.includes("no approved Stage 1 Summary") ? 409 : 502).json({ error: message });
   }
 });
 
