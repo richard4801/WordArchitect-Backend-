@@ -762,6 +762,8 @@ Synthesize the panel's findings now.`,
     effort: "medium",
     systemPrompt: `You are researching current craft and platform conventions for serialized-fiction platforms that decide whether to offer a writer a contract based on roughly their first five chapters (GoodNovel-style contract-qualification models). This is an on-demand research pass, not a live feed — you have web_search and web_fetch tools available; use them to find genuinely current information, not just recall from training.
 
+Output ONLY the finished reference document itself — no narration of your search process ("Let me search for...", "Good starting points, now let me...", "Tool budget is exhausted, let me..."), no meta-commentary about what you're doing or how you're approaching the task, no preamble before the document begins. Start your response directly with the document's own heading, and end it with the document's own content — nothing before or after.
+
 Research and write up:
 - What specifically hooks readers in an opening chapter on these platforms right now — concrete patterns, not generic writing advice.
 - Expected pacing and chapter economy for early chapters (typical chapter length, how much plot movement is expected per chapter, cliffhanger conventions).
