@@ -573,8 +573,25 @@ async function materializeBeats(bookId: string, userId: string, beatsArtifactJso
       status: "planned",
     }));
     if (beatRows.length > 0) {
-      const { error: beatsError } = await supabase.from("chapter_beats").insert(beatRows);
-      if (beatsError) throw new Error(`Failed to create beats for chapter ${chapter.chapterNumber}: ${beatsError.message}`);
+      // Idempotency guard against a retried approve after a failure later in
+      // this same call (e.g. appendLedgerFacts erroring out post-materialize,
+      // such as an LLM-billing failure) — markFailed leaves current_stage
+      // parked on this exact unit, so a retry re-runs this whole function.
+      // Skip any row whose (title, outlineText) already exists for this
+      // chapter rather than blind-delete-then-insert, since a chapter can
+      // also hold real writer-authored beats from the Outliner's own CRUD
+      // surface that must never be discarded as a side effect of this retry.
+      const { data: existingBeats, error: existingError } = await supabase
+        .from("chapter_beats")
+        .select("title, outline_text")
+        .eq("chapter_id", chapterId);
+      if (existingError) throw new Error(`Failed to check existing beats for chapter ${chapter.chapterNumber}: ${existingError.message}`);
+      const existingKeys = new Set((existingBeats ?? []).map((b) => `${b.title} ${b.outline_text}`));
+      const newRows = beatRows.filter((r) => !existingKeys.has(`${r.title} ${r.outline_text}`));
+      if (newRows.length > 0) {
+        const { error: beatsError } = await supabase.from("chapter_beats").insert(newRows);
+        if (beatsError) throw new Error(`Failed to create beats for chapter ${chapter.chapterNumber}: ${beatsError.message}`);
+      }
     }
   }
 }
@@ -629,7 +646,13 @@ async function appendLedgerFacts(run: PlanningRun, unit: string, beatsArtifactJs
   const facts = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === "string" && f.trim() !== "") : [];
 
   const newEntries: ContinuityLedgerEntry[] = facts.map((fact) => ({ fact, sourcedFrom, unit }));
-  return [...run.continuity_ledger, ...newEntries];
+  // Same retry scenario as materializeBeats's idempotency guard above: a
+  // unit's ledger contribution is only ever meant to land once. Strip any
+  // entries already tagged with this unit before appending the fresh set —
+  // the only way they could already be there is a prior failed attempt for
+  // this exact still-current unit, never a second legitimate contribution.
+  const withoutPriorAttempt = run.continuity_ledger.filter((e) => e.unit !== unit);
+  return [...withoutPriorAttempt, ...newEntries];
 }
 
 // Writer approves the unit at the human review gate. On part_outline, this
