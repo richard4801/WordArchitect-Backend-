@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import {
   getPlatformCraftNotes,
   savePlatformCraftNotes,
@@ -8,6 +8,21 @@ import {
 } from "../services/platformCraftNotes.js";
 
 export const platformCraftNotesRouter = Router();
+
+// Every route here represents live, frequently-polled state
+// (draft_status/draft_content in particular) — Express sets an ETag on
+// every JSON response by default but no Cache-Control, leaving this
+// endpoint's caching behavior to browser/proxy heuristics rather than an
+// explicit directive. For an endpoint the frontend polls repeatedly
+// against an identical URL specifically to observe a value changing over
+// time, that ambiguity is a real correctness risk, not a maybe — force
+// no-store unconditionally so nothing (browser HTTP cache, an
+// intermediate proxy, a service worker) can ever serve a stale copy of
+// this instead of hitting the network.
+platformCraftNotesRouter.use((_req: Request, res: Response, next: NextFunction) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
 
 const EMPTY_NOTES = (bookId: string) => ({
   bookId,
