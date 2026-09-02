@@ -4,6 +4,7 @@ import { getActivePrompt, interpolateTemplate } from "./agentPrompts.js";
 import { getBookFacts, formatBookFactsSection } from "./bookFacts.js";
 import { listCodexEntries } from "./bookContextTools.js";
 import { getPlatformCraftNotes } from "./platformCraftNotes.js";
+import { extractFinalText } from "../lib/anthropicContent.js";
 import { ACTS_PER_BOOK, CRITIC_ROLES, PARTS_PER_ACT } from "../types/domain.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type {
@@ -1221,11 +1222,7 @@ export async function intakeChatTurn(
       ],
     });
 
-    const reply = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("\n")
-      .trim();
+    const reply = extractFinalText(response.content);
 
     return saveRun(runId, { intake_chat_history: [...history, { role: "assistant", content: reply }] });
   } catch (error) {

@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { getAnthropicClient } from "../lib/anthropicClient.js";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { getActivePrompt, interpolateTemplate } from "./agentPrompts.js";
+import { extractFinalText } from "../lib/anthropicContent.js";
 import type { PlatformCraftNotes } from "../types/domain.js";
 
 // A per-book reference doc feeding {{PLATFORM_TRENDS}} into the Contract
@@ -141,11 +142,7 @@ async function runResearch(bookId: string, existingContent: string, signal: Abor
     { signal }
   );
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
+  const text = extractFinalText(response.content);
 
   if (!text) {
     throw new Error(
