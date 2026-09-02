@@ -74,28 +74,21 @@ export async function savePlatformCraftNotes(bookId: string, content: string): P
 // "idle" so the UI's banner clears. Leaves `content` (the last actually
 // saved notes) untouched.
 export async function discardPlatformResearchDraft(bookId: string): Promise<PlatformCraftNotes> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("platform_craft_notes")
-    .upsert(
-      { book_id: bookId, draft_status: "idle", draft_content: null, draft_error: null },
-      { onConflict: "book_id" }
-    )
-    .select("*")
-    .single();
-  if (error) throw new Error(`Failed to discard platform research draft: ${error.message}`);
-  return toPlatformCraftNotes(data);
+  return setDraftState(bookId, { draft_status: "idle", draft_content: null, draft_error: null });
 }
 
 async function setDraftState(
   bookId: string,
   patch: { draft_status: string; draft_content?: string | null; draft_error?: string | null }
-): Promise<void> {
+): Promise<PlatformCraftNotes> {
   const supabase = getSupabaseClient();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("platform_craft_notes")
-    .upsert({ book_id: bookId, ...patch, draft_updated_at: new Date().toISOString() }, { onConflict: "book_id" });
+    .upsert({ book_id: bookId, ...patch, draft_updated_at: new Date().toISOString() }, { onConflict: "book_id" })
+    .select("*")
+    .single();
   if (error) throw new Error(`Failed to update platform research draft state: ${error.message}`);
+  return toPlatformCraftNotes(data);
 }
 
 // Matches planningEngine.ts's callAgent default — a real generative call
@@ -105,6 +98,16 @@ async function setDraftState(
 // than re-learning that lesson with a smaller number.
 const DEFAULT_MAX_TOKENS = 16000;
 
+// Tracks the AbortController for whichever research job is currently
+// in flight per book, so cancelPlatformResearchJob below can actually
+// stop it rather than just hoping it finishes. In-memory, single-process
+// only — the same limitation this project already accepts for the MCP
+// session map (src/routes/mcp.ts): fine on Render's single instance, and
+// a process restart naturally kills any in-flight call anyway (its
+// result then has no controller to be found by, so cancel degrades to
+// "just reset the stored state," which is still the right outcome).
+const activeResearchJobs = new Map<string, AbortController>();
+
 // The actual research call — Claude with server-side web_search/web_fetch
 // tools, the same pattern intakeChatTurn already uses for reading a
 // pasted URL (planningEngine.ts) so the backend never scrapes HTML
@@ -112,28 +115,31 @@ const DEFAULT_MAX_TOKENS = 16000;
 // every other agent role — role "platform_researcher", stage "all". Not
 // exported — always run through startPlatformResearchJob below, which is
 // what actually persists the result.
-async function runResearch(bookId: string, existingContent: string): Promise<string> {
+async function runResearch(bookId: string, existingContent: string, signal: AbortSignal): Promise<string> {
   const prompt = await getActivePrompt(bookId, "platform_researcher", "all");
   const userMessage = interpolateTemplate(prompt.user_prompt_template, { EXISTING_NOTES: existingContent });
 
   const anthropic = getAnthropicClient();
-  const response = await anthropic.messages.create({
-    model: prompt.model,
-    max_tokens: DEFAULT_MAX_TOKENS,
-    system: prompt.system_prompt,
-    thinking: { type: "adaptive" },
-    output_config: { effort: prompt.effort },
-    // Server-side tools — Anthropic runs the searches/fetches itself
-    // within this same call, no client-side execution loop needed. Not in
-    // the SDK's plain Tool type (that's for custom tools with an
-    // input_schema), hence the through-unknown cast — same pattern
-    // intakeChatTurn already uses for web_fetch in planningEngine.ts.
-    tools: [
-      { type: "web_search_20260209", name: "web_search", max_uses: 8 } as unknown as Anthropic.Tool,
-      { type: "web_fetch_20260209", name: "web_fetch", max_uses: 8 } as unknown as Anthropic.Tool,
-    ],
-    messages: [{ role: "user", content: userMessage }],
-  });
+  const response = await anthropic.messages.create(
+    {
+      model: prompt.model,
+      max_tokens: DEFAULT_MAX_TOKENS,
+      system: prompt.system_prompt,
+      thinking: { type: "adaptive" },
+      output_config: { effort: prompt.effort },
+      // Server-side tools — Anthropic runs the searches/fetches itself
+      // within this same call, no client-side execution loop needed. Not in
+      // the SDK's plain Tool type (that's for custom tools with an
+      // input_schema), hence the through-unknown cast — same pattern
+      // intakeChatTurn already uses for web_fetch in planningEngine.ts.
+      tools: [
+        { type: "web_search_20260209", name: "web_search", max_uses: 8 } as unknown as Anthropic.Tool,
+        { type: "web_fetch_20260209", name: "web_fetch", max_uses: 8 } as unknown as Anthropic.Tool,
+      ],
+      messages: [{ role: "user", content: userMessage }],
+    },
+    { signal }
+  );
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -163,34 +169,70 @@ async function runResearch(bookId: string, existingContent: string): Promise<str
 // Refuses to start a second job while one is already "running" for this
 // book — returns the existing in-flight state instead — so an impatient
 // double-click doesn't fire (and pay for) two concurrent research calls.
-export async function startPlatformResearchJob(bookId: string): Promise<PlatformCraftNotes> {
+//
+// Also refuses to start when there's an unsaved "ready" draft already
+// waiting for review, unless `force` is passed — starting a new pass
+// overwrites draft_content, and a writer who never got to see/save the
+// previous result losing it silently is exactly the kind of thing this
+// guard exists to prevent. force: true discards that draft and proceeds
+// (equivalent to calling discardPlatformResearchDraft first).
+export async function startPlatformResearchJob(bookId: string, force = false): Promise<PlatformCraftNotes> {
   const existing = await getPlatformCraftNotes(bookId);
   if (existing?.draftStatus === "running") {
     return existing;
   }
+  if (existing?.draftStatus === "ready" && !force) {
+    throw new Error(
+      "An unsaved research draft is already waiting for review for this book — save or discard it before running research again, or pass force to discard it and start a fresh pass."
+    );
+  }
 
-  await setDraftState(bookId, { draft_status: "running", draft_content: null, draft_error: null });
+  const controller = new AbortController();
+  activeResearchJobs.set(bookId, controller);
+
+  const started = await setDraftState(bookId, { draft_status: "running", draft_content: null, draft_error: null });
 
   // Deliberately not awaited — this is the detached background job.
-  // Every path below must resolve (persist success or failure) and never
-  // throw uncaught, or this becomes an unhandled rejection.
-  void runResearch(bookId, existing?.content ?? "")
+  void runResearch(bookId, existing?.content ?? "", controller.signal)
     .then((draft) => setDraftState(bookId, { draft_status: "ready", draft_content: draft, draft_error: null }))
     .catch((error) => {
+      // Cancellation is handled entirely by cancelPlatformResearchJob's
+      // own write (draft_status back to "idle") — persisting "failed"
+      // here on top of that would clobber an intentional cancel into
+      // looking like an error. Anything else is a real failure.
+      const isAbort = error instanceof Error && error.name === "AbortError";
+      if (isAbort) {
+        console.log(`platform research job for book ${bookId} was cancelled`);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("platform research job failed:", message);
       return setDraftState(bookId, { draft_status: "failed", draft_error: message }).catch((persistError) => {
         console.error("failed to persist platform research job failure:", persistError);
       });
+    })
+    .finally(() => {
+      // Only clear if this job's controller is still the registered one —
+      // a later job for the same book could have already replaced it.
+      if (activeResearchJobs.get(bookId) === controller) {
+        activeResearchJobs.delete(bookId);
+      }
     });
 
-  return {
-    bookId,
-    content: existing?.content ?? "",
-    updatedAt: existing?.updatedAt ?? null,
-    draftStatus: "running",
-    draftContent: null,
-    draftError: null,
-    draftUpdatedAt: new Date().toISOString(),
-  };
+  return started;
+}
+
+// Stops an in-flight research pass. Only effective if this same process
+// is still the one running it (see activeResearchJobs above) — if no
+// controller is found (the process restarted since the job started, or
+// nothing is actually running for this book), this still resets
+// draft_status back to "idle" so the writer isn't stuck looking at a
+// permanently "running" state either way.
+export async function cancelPlatformResearchJob(bookId: string): Promise<PlatformCraftNotes> {
+  const controller = activeResearchJobs.get(bookId);
+  if (controller) {
+    activeResearchJobs.delete(bookId);
+    controller.abort();
+  }
+  return setDraftState(bookId, { draft_status: "idle", draft_content: null, draft_error: null });
 }

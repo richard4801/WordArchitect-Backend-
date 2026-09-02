@@ -1678,13 +1678,29 @@ in this project avoids (MCP's write tools, the Chat Assistant's
   impatient double-click. **Nothing is saved as the real notes by this
   call** — see `PATCH` below.
 
-  One honest limitation, not engineered around for a v1: if the backend
+  One honest limitation, not fully engineered around: if the backend
   process restarts (a redeploy) while a job is mid-flight, that job is
-  simply lost — `draft_status` stays stuck on `"running"` forever, since
-  there's no separate worker/queue with its own retry semantics, only a
-  detached in-process call. The same category of tradeoff this project
-  already accepts elsewhere (e.g. the MCP session map being wiped by
-  every deploy). Re-running research is the fix if this happens.
+  lost — `draft_status` stays stuck on `"running"` forever unless
+  explicitly reset via the cancel endpoint below, since there's no
+  separate worker/queue with its own retry semantics, only a detached
+  in-process call. The same category of tradeoff this project already
+  accepts elsewhere (e.g. the MCP session map being wiped by every
+  deploy).
+
+  **Refuses to overwrite an unsaved `"ready"` draft** — if one is
+  already sitting there waiting for review, this returns `409` instead
+  of silently discarding it by starting a fresh pass over it. Pass
+  `force: true` to discard and proceed anyway (equivalent to calling
+  `research/discard` first).
+- `POST /api/v1/platform-craft-notes/research/cancel` — `{ bookId }` —
+  stops an in-flight pass and resets `draft_status` back to `"idle"`.
+  Tracked via an in-memory `Map<bookId, AbortController>`
+  (`activeResearchJobs` in `platformCraftNotes.ts`) — same single-process
+  limitation as the MCP session map, so this only actually aborts the
+  live Anthropic call if the same server process that started it is
+  still running; otherwise (a restart happened since) it still resets
+  the stored state so the writer isn't stuck looking at a permanently
+  `"running"` job either way.
 - `PATCH /api/v1/platform-craft-notes` — `{ bookId, content }` — the only
   way notes actually get saved, whether the content came from editing a
   research draft or writing it directly. Also resets `draft_status` back

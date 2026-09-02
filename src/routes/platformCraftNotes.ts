@@ -4,6 +4,7 @@ import {
   savePlatformCraftNotes,
   startPlatformResearchJob,
   discardPlatformResearchDraft,
+  cancelPlatformResearchJob,
 } from "../services/platformCraftNotes.js";
 
 export const platformCraftNotesRouter = Router();
@@ -68,18 +69,21 @@ platformCraftNotesRouter.patch("/platform-craft-notes", async (req: Request, res
   }
 });
 
-// POST /api/v1/platform-craft-notes/research — { bookId } — starts an
-// on-demand research pass (Claude + web_search/web_fetch) as a detached
-// background job and returns immediately with draft_status "running".
-// The actual call is NOT awaited by this request — it keeps running
-// server-side after this response is sent, unaffected by the writer
-// closing the tab or navigating away, since it's an independent
+// POST /api/v1/platform-craft-notes/research — { bookId, force? } — starts
+// an on-demand research pass (Claude + web_search/web_fetch) as a
+// detached background job and returns immediately with draft_status
+// "running". The actual call is NOT awaited by this request — it keeps
+// running server-side after this response is sent, unaffected by the
+// writer closing the tab or navigating away, since it's an independent
 // connection to Anthropic with no tie to this request's socket. Poll
 // GET /platform-craft-notes above to see it land. Refuses to start a
 // second job while one is already running for this book (returns the
 // existing in-flight state instead) rather than double-billing an
-// impatient double-click. Deliberately not automatic/scheduled — this is
-// a real, billed LLM call the writer triggers themselves every time.
+// impatient double-click. Also refuses (409) to overwrite an unsaved
+// "ready" draft already waiting for review unless force: true is passed
+// — starting a new pass would otherwise silently discard it. Deliberately
+// not automatic/scheduled — this is a real, billed LLM call the writer
+// triggers themselves every time.
 platformCraftNotesRouter.post("/platform-craft-notes/research", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   if (typeof body.bookId !== "string" || body.bookId.trim() === "") {
@@ -88,11 +92,36 @@ platformCraftNotesRouter.post("/platform-craft-notes/research", async (req: Requ
   }
 
   try {
-    const notes = await startPlatformResearchJob(body.bookId);
+    const notes = await startPlatformResearchJob(body.bookId, body.force === true);
     res.status(202).json({ notes });
   } catch (error) {
     console.error("start platform research job failed:", error);
-    res.status(502).json({ error: error instanceof Error ? error.message : "Failed to start platform craft notes research." });
+    const message = error instanceof Error ? error.message : "Failed to start platform craft notes research.";
+    res.status(message.includes("unsaved research draft") ? 409 : 502).json({ error: message });
+  }
+});
+
+// POST /api/v1/platform-craft-notes/research/cancel — { bookId } — stops
+// an in-flight research pass and resets draft_status back to "idle".
+// Only actually aborts the in-flight call if this same server process is
+// still the one running it (see activeResearchJobs in
+// platformCraftNotes.ts — in-memory, single-process only, same
+// limitation this project already accepts for the MCP session map); if
+// not found, this still resets the stored state so the writer isn't
+// stuck looking at a permanently "running" job either way.
+platformCraftNotesRouter.post("/platform-craft-notes/research/cancel", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.bookId !== "string" || body.bookId.trim() === "") {
+    res.status(400).json({ error: "bookId is required and must be a non-empty string." });
+    return;
+  }
+
+  try {
+    const notes = await cancelPlatformResearchJob(body.bookId);
+    res.json({ notes });
+  } catch (error) {
+    console.error("cancel platform research job failed:", error);
+    res.status(502).json({ error: error instanceof Error ? error.message : "Failed to cancel platform craft notes research." });
   }
 });
 
