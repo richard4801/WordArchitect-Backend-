@@ -1572,6 +1572,140 @@ to a full Codex entry) is far cheaper to catch on one review screen than
 to clean up after the fact. `confirmEntities` is the only thing that
 ever actually writes — `extractEntities` only stages candidates.
 
+## Contract Pipeline
+
+A second, shorter Planning Engine track, alongside the Act/Part/Beats
+hierarchy above — same `planning_runs` table, same generate → critique →
+arbitrate → approve machinery, distinguished only by
+`pipeline_type: "full" | "contract"`. Built to mirror how serialized-
+fiction platforms (GoodNovel-style) decide whether a book gets picked
+up: on roughly its first five chapters, judged on hook strength and
+early pacing, not the whole book. Where the full pipeline plans an
+entire book incrementally, the Contract Pipeline plans exactly enough to
+give a book its strongest possible shot at clearing that read — a
+Core Summary, initial Codex documentation, and a fixed 5-chapter hook
+outline — nothing more.
+
+**Never writes prose**, same as the full pipeline — the five "hook
+chapters" this pipeline produces are an outline (beats), not manuscript
+text. Turning that outline into actual chapters is still Hanami's job,
+via the existing `/generate-prose` flow or the MCP scene-draft tools,
+unchanged by any of this.
+
+### The three units
+
+- `stage_1_summary` — identical to the full pipeline's Stage 1, same
+  Generator prompt, same intake flow. Both tracks share this exact unit;
+  they only diverge afterward.
+- `codex_documentation` — the book's initial character/world
+  documentation, generated fresh from the Book Vision (its Parent
+  Artifact) before any chapters exist. Unlike on-demand entity extraction
+  (`extractEntities`/`confirmEntities`, which stays proposal-only), this
+  stage's whole job IS to produce the book's starting Codex — approving
+  it writes directly into `codex_entries` (`materializeCodexDocumentation`
+  in `planningEngine.ts`), the same non-proposal treatment
+  `materializeBeats` already gives an approved beats chunk. JSON
+  contract: `{"entries": [{"name", "entryType", "description", "aliases"?,
+  "tier"?, "personalityTraits"?, "motivations"?}]}` — the same field
+  subset Layer 1 (`rag.ts`) actually injects into prose generation,
+  deliberately not the full Codex field list; richer fields stay
+  writer-editable afterward through the normal Codex CRUD surface, same
+  as any entry.
+- `hook_chapters_outline` — Chapter Beats for exactly chapters 1-5,
+  fixed, the same way `ACTS_PER_BOOK`/`PARTS_PER_ACT` are fixed and never
+  model-decided. Same JSON contract as `part_beats`
+  (`{"chapters": [{"chapterNumber", "title"?, "beats": [{"title",
+  "outlineText"}]}]}`), so approving it reuses `materializeBeats` and
+  `appendLedgerFacts` unchanged — a hook chapter lands in the Outliner
+  and contributes to the continuity ledger exactly like a full-pipeline
+  beats chunk does.
+
+Both `codex_documentation` and `hook_chapters_outline` go through the
+identical generate → critique → arbitrate → approve cycle every unit in
+this system uses — no shortcut, no unsupervised write. The 3 critics and
+the Arbitrator run at these stages too, via `getActivePrompt`'s existing
+exact-stage-then-`"all"`-fallback lookup — this needed zero new
+architecture, just new prompt rows scoped to these two stage names.
+`pacing_critic` in particular is deliberately re-purposed per stage
+rather than skipped: at `codex_documentation` its rubric becomes
+coverage/completeness (is every character the premise needs actually
+documented, not padded with excess), and at `hook_chapters_outline` it
+becomes the pipeline's most consequential critic — a strict, zero-
+tolerance check that chapter 1 hooks immediately and that literally
+every one of the five chapters ends on a real cliffhanger, not just some
+of them. `craft_critic` at `hook_chapters_outline` weights hook
+specificity and anti-cliché harder than its full-pipeline job, since a
+generic first impression is a worse defect here than mid-book. No
+pipeline can literally guarantee a platform will offer a contract —
+every prompt at this stage frames its job as maximizing the known hook/
+pacing signals these platforms actually reward, not promising the
+outcome.
+
+### Platform Craft Notes
+
+A per-book reference doc (`platform_craft_notes`, one row per `book_id`)
+feeding a `{{PLATFORM_TRENDS}}` placeholder into the `hook_chapters_
+outline` stage's Generator and critics. Deliberately **not** a live or
+scheduled feed — scraping ranking/algorithm behavior in real time is
+fragile and platform-ToS-risky, and a silently-updating judgment
+reference is exactly the kind of ungoverned drift every other write path
+in this project avoids (MCP's write tools, the Chat Assistant's
+`propose_*` tools, Codex/World Category batch review). Instead:
+
+- `POST /api/v1/platform-craft-notes/research` — `{ bookId }` — an
+  on-demand research pass. Calls Claude with the `web_search_20260209`
+  and `web_fetch_20260209` server-side tools (the same pattern
+  `intakeChatTurn` already uses for reading a pasted URL during intake)
+  to find genuinely current information on hook conventions, early-
+  chapter pacing expectations, and common rejection reasons for these
+  platforms — Anthropic runs the searches/fetches itself within the call,
+  no scraping code lives in this backend. Prompt-driven like every other
+  agent role — `platform_researcher`, stage `"all"`. Returns a **draft
+  only**; nothing is saved by this call.
+- `PATCH /api/v1/platform-craft-notes` — `{ bookId, content }` — the only
+  way notes actually get saved, whether the content came from editing a
+  research draft or writing it directly. The writer reviews before this
+  is ever called; the research step never writes here itself.
+- `GET /api/v1/platform-craft-notes?bookId=` — the current saved notes,
+  or an empty stub if none exist yet — a book with no notes isn't an
+  error, `{{PLATFORM_TRENDS}}` just renders empty.
+
+`getActivePrompt`/`interpolateTemplate` already ignore a placeholder
+value no template references, so `PLATFORM_TRENDS` is fetched and passed
+unconditionally for every `pipeline_type: "contract"` call
+(`generateStage`/`runCritique`/`runArbitration` in `planningEngine.ts`)
+rather than only at `hook_chapters_outline` specifically — harmless, and
+one fewer stage-specific branch to maintain.
+
+### Handoff into the full pipeline
+
+`POST /api/v1/planning/runs/:id/promote-to-full` — takes a **completed**
+(`status: "done"`) contract-pipeline run and creates a brand new
+`pipeline_type: "full"` run for the same book (`promoteContractRunToFull`
+in `planningEngine.ts`), seeded rather than starting cold:
+
+- Stage 1 reuses the contract run's already-approved summary directly —
+  no regeneration.
+- Part 1 of Act 1 (chapters 1-5) is pre-recorded as already materialized:
+  `part_chapter_ranges["1-1"]` is set to `{startChapter: 1, endChapter: 5}`
+  up front, and `stage_artifacts` is seeded with a display placeholder
+  for Part 1's outline and the contract run's actual `hook_chapters_
+  outline` JSON for Part 1's beats — real content already sitting in the
+  Outliner from the Contract Pipeline's own approval, not regenerated.
+- `continuity_ledger` carries over every fact already extracted from the
+  five hook chapters.
+- The new run starts at Act 1's Summary — genuinely generated fresh,
+  informed by the Book Context now reflecting the real chapters/Codex
+  entries that already exist — and `nextPosition`'s one special case
+  (`planningEngine.ts`) takes it straight to **Part 2's** outline once
+  Act 1's Summary is approved, skipping a Part that's already written
+  rather than re-planning it.
+
+The original contract run is left completely untouched — this creates a
+new row, never mutates the contract run in place — so it stays as an
+intact historical record of exactly what got the contract, independent
+of whatever happens to the book afterward.
+
 ## Development Stages
 
 1. Repository & Architectural Blueprint (this document)

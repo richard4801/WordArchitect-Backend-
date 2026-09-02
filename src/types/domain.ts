@@ -285,7 +285,8 @@ export type AgentRole =
   | "arbitrator_chat"
   | "arbitrator_directive"
   | "entity_extractor"
-  | "ledger_extractor";
+  | "ledger_extractor"
+  | "platform_researcher";
 
 export const VALID_AGENT_ROLES: AgentRole[] = [
   "generator",
@@ -297,6 +298,7 @@ export const VALID_AGENT_ROLES: AgentRole[] = [
   "arbitrator_directive",
   "entity_extractor",
   "ledger_extractor",
+  "platform_researcher",
 ];
 
 // The critics that make up the Scrutiny Panel, run in parallel by
@@ -324,14 +326,40 @@ export const CRITIC_ROLES: AgentRole[] = ["continuity_critic", "pacing_critic", 
 // plans more of the book than the writer has actually approved so far.
 // See PlanningRun.current_act/current_part/current_beat_chunk for how a
 // run's exact position in that hierarchy is tracked.
-export type PlanningStage = "stage_1_summary" | "act_summary" | "part_outline" | "part_beats" | "all" | "intake";
+// codex_documentation/hook_chapters_outline are the Contract Pipeline's own
+// two units (see PipelineType below) — a flatter, separate track sharing
+// only stage_1_summary with the main Act/Part/Beats hierarchy.
+export type PlanningStage =
+  | "stage_1_summary"
+  | "act_summary"
+  | "part_outline"
+  | "part_beats"
+  | "codex_documentation"
+  | "hook_chapters_outline"
+  | "all"
+  | "intake";
 
 // The subset of PlanningStage a run's current_stage or a stage_artifacts
 // key's phase can actually be — excludes "all" and "intake", which only
 // ever appear as a prompt-lookup stage, never a run's real position.
-export type RealPlanningStage = "stage_1_summary" | "act_summary" | "part_outline" | "part_beats";
+export type RealPlanningStage =
+  | "stage_1_summary"
+  | "act_summary"
+  | "part_outline"
+  | "part_beats"
+  | "codex_documentation"
+  | "hook_chapters_outline";
 
-export const VALID_PLANNING_STAGES: PlanningStage[] = ["stage_1_summary", "act_summary", "part_outline", "part_beats", "all", "intake"];
+export const VALID_PLANNING_STAGES: PlanningStage[] = [
+  "stage_1_summary",
+  "act_summary",
+  "part_outline",
+  "part_beats",
+  "codex_documentation",
+  "hook_chapters_outline",
+  "all",
+  "intake",
+];
 
 // Fixed, not model-decided — "the AI can never go against it." A 600-
 // chapter serial and a 90k-word single-POV romance both get exactly 3
@@ -339,6 +367,21 @@ export const VALID_PLANNING_STAGES: PlanningStage[] = ["stage_1_summary", "act_s
 // varies how many chapters worth of beats one Part gets planned in.
 export const ACTS_PER_BOOK = 3;
 export const PARTS_PER_ACT = 3;
+
+// "full" is the Act/Part/Beats hierarchy described above. "contract" is a
+// separate, much shorter track — a summary, then a Codex documentation
+// pass, then a fixed 5-chapter hook outline — built to mirror how
+// serialized-fiction platforms (GoodNovel-style) decide whether a book
+// gets picked up: on roughly its first five chapters, judged on hook
+// strength and early pacing, not the whole book. Both tracks share the
+// same stage_1_summary unit and the same generate->critique->arbitrate->
+// approve machinery; only the stage sequence after Stage 1 differs (see
+// nextPosition in planningEngine.ts). A completed contract run can be
+// promoted into a fresh full-pipeline run (promoteContractRunToFull) that
+// starts already past Part 1 of Act 1, since those first five chapters
+// are already planned and approved.
+export type PipelineType = "full" | "contract";
+export const VALID_PIPELINE_TYPES: PipelineType[] = ["full", "contract"];
 
 // A Part's own stated chapter range, recorded once its outline is
 // approved (the outline is the first point in the hierarchy concrete
@@ -419,6 +462,11 @@ export interface PlanningRun {
   id: string;
   book_id: string;
   user_id: string;
+  // "full" (default) or "contract" — see PipelineType. Fixed for the life
+  // of a run; a promoted contract run creates a brand new "full" row
+  // rather than converting itself in place, so the contract run stays as
+  // an intact historical record of what actually got the contract.
+  pipeline_type: PipelineType;
   current_stage: PlanningStage;
   status: PlanningRunStatus;
   // A run's exact position once it's past stage_1_summary — null/null/null
@@ -472,4 +520,15 @@ export interface PlanningRun {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// A per-book reference doc for the Contract Pipeline's hook-focused
+// generator/critics — see PLATFORM_TRENDS in planningEngine.ts. Refreshed
+// on demand via researchPlatformCraftNotes (Claude + web_search/web_fetch),
+// but only ever saved when the writer explicitly reviews and confirms the
+// draft — never written automatically.
+export interface PlatformCraftNotes {
+  bookId: string;
+  content: string;
+  updatedAt: string | null;
 }

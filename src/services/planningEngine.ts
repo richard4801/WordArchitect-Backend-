@@ -3,6 +3,7 @@ import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { getActivePrompt, interpolateTemplate } from "./agentPrompts.js";
 import { getBookFacts, formatBookFactsSection } from "./bookFacts.js";
 import { listCodexEntries } from "./bookContextTools.js";
+import { getPlatformCraftNotes } from "./platformCraftNotes.js";
 import { ACTS_PER_BOOK, CRITIC_ROLES, PARTS_PER_ACT } from "../types/domain.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import type {
@@ -11,6 +12,7 @@ import type {
   EffortLevel,
   ExtractedEntityCandidate,
   PartChapterRange,
+  PipelineType,
   PlanningChatMessage,
   PlanningRun,
   RealPlanningStage,
@@ -53,6 +55,12 @@ import type {
 const PART_BEATS_CHAPTER_WINDOW = 15;
 
 interface UnitPosition {
+  // Which track this position belongs to — see PipelineType. Only matters
+  // at the one fork point (what comes right after stage_1_summary) and at
+  // the "promoted run skips Part 1" special case in nextPosition below;
+  // everywhere else the stage alone already disambiguates (codex_
+  // documentation/hook_chapters_outline only ever exist in "contract").
+  pipelineType: PipelineType;
   stage: RealPlanningStage;
   act: number | null;
   part: number | null;
@@ -78,6 +86,10 @@ function unitKey(pos: UnitPosition): string {
   switch (pos.stage) {
     case "stage_1_summary":
       return "stage_1_summary";
+    case "codex_documentation":
+      return "codex_documentation";
+    case "hook_chapters_outline":
+      return "hook_chapters_outline";
     case "act_summary":
       return `act_${pos.act}_summary`;
     case "part_outline":
@@ -89,6 +101,7 @@ function unitKey(pos: UnitPosition): string {
 
 function currentPosition(run: PlanningRun): UnitPosition {
   return {
+    pipelineType: run.pipeline_type,
     stage: run.current_stage as RealPlanningStage,
     act: run.current_act,
     part: run.current_part,
@@ -105,52 +118,86 @@ function currentUnitKey(run: PlanningRun): string {
 // Acts' all 9 Parts are fully planned — the whole book.
 function nextPosition(pos: UnitPosition, partChapterRanges: Record<string, PartChapterRange>): UnitPosition | null {
   if (pos.stage === "stage_1_summary") {
-    return { stage: "act_summary", act: 1, part: null, beatChunk: null };
+    if (pos.pipelineType === "contract") {
+      return { ...pos, stage: "codex_documentation", act: null, part: null, beatChunk: null };
+    }
+    return { ...pos, stage: "act_summary", act: 1, part: null, beatChunk: null };
+  }
+  if (pos.stage === "codex_documentation") {
+    return { ...pos, stage: "hook_chapters_outline", act: null, part: null, beatChunk: null };
+  }
+  if (pos.stage === "hook_chapters_outline") {
+    // The Contract Pipeline is exactly these three units — done once this
+    // is approved. See promoteContractRunToFull for how an approved run
+    // continues into the main hierarchy, as a brand new "full" run.
+    return null;
   }
   if (pos.stage === "act_summary") {
-    return { stage: "part_outline", act: pos.act, part: 1, beatChunk: null };
+    // A run created by promoteContractRunToFull already has Part 1
+    // (chapters 1-5) materialized before Act 1's summary is even
+    // generated — its chapter range was pre-seeded. Skip straight to
+    // Part 2 rather than re-planning a Part that's already written and
+    // approved via the Contract Pipeline.
+    if (pos.act === 1 && partChapterRanges[partRangeKey(1, 1)]) {
+      return { ...pos, stage: "part_outline", part: 2, beatChunk: null };
+    }
+    return { ...pos, stage: "part_outline", part: 1, beatChunk: null };
   }
   if (pos.stage === "part_outline") {
-    return { stage: "part_beats", act: pos.act, part: pos.part, beatChunk: 1 };
+    return { ...pos, stage: "part_beats", beatChunk: 1 };
   }
   // part_beats
   const range = partChapterRanges[partRangeKey(pos.act as number, pos.part as number)];
   const totalChunks = range ? chunksNeededForRange(range) : 1;
   if ((pos.beatChunk ?? 1) < totalChunks) {
-    return { stage: "part_beats", act: pos.act, part: pos.part, beatChunk: (pos.beatChunk ?? 1) + 1 };
+    return { ...pos, beatChunk: (pos.beatChunk ?? 1) + 1 };
   }
   if ((pos.part as number) < PARTS_PER_ACT) {
-    return { stage: "part_outline", act: pos.act, part: (pos.part as number) + 1, beatChunk: null };
+    return { ...pos, stage: "part_outline", part: (pos.part as number) + 1, beatChunk: null };
   }
   if ((pos.act as number) < ACTS_PER_BOOK) {
-    return { stage: "act_summary", act: (pos.act as number) + 1, part: null, beatChunk: null };
+    return { ...pos, stage: "act_summary", act: (pos.act as number) + 1, part: null, beatChunk: null };
   }
   return null;
 }
 
 // Mirror of nextPosition — the unit BEFORE `pos`, used by
 // unapproveStage/discardStage. Null if `pos` is the very first unit.
+// Note: deliberately does NOT mirror nextPosition's "skip Part 1" special
+// case for a promoted run — stepping back from Act 1 Part 2's outline
+// before anything else has been generated would fall through to Part 1's
+// beats position, which (for a promoted run) was never generated through
+// this run's own cycle and has no real critique history to restore. A
+// rare, low-stakes edge case (unapprove/discard immediately after the
+// very first generation of a promoted run) rather than something worth
+// the extra branching to special-case here too.
 function previousPosition(pos: UnitPosition, partChapterRanges: Record<string, PartChapterRange>): UnitPosition | null {
   if (pos.stage === "stage_1_summary") return null;
+  if (pos.stage === "codex_documentation") {
+    return { ...pos, stage: "stage_1_summary", act: null, part: null, beatChunk: null };
+  }
+  if (pos.stage === "hook_chapters_outline") {
+    return { ...pos, stage: "codex_documentation", act: null, part: null, beatChunk: null };
+  }
   if (pos.stage === "act_summary") {
-    if ((pos.act as number) === 1) return { stage: "stage_1_summary", act: null, part: null, beatChunk: null };
+    if ((pos.act as number) === 1) return { ...pos, stage: "stage_1_summary", act: null, part: null, beatChunk: null };
     const prevAct = (pos.act as number) - 1;
     const range = partChapterRanges[partRangeKey(prevAct, PARTS_PER_ACT)];
     const lastChunk = range ? chunksNeededForRange(range) : 1;
-    return { stage: "part_beats", act: prevAct, part: PARTS_PER_ACT, beatChunk: lastChunk };
+    return { ...pos, stage: "part_beats", act: prevAct, part: PARTS_PER_ACT, beatChunk: lastChunk };
   }
   if (pos.stage === "part_outline") {
-    if ((pos.part as number) === 1) return { stage: "act_summary", act: pos.act, part: null, beatChunk: null };
+    if ((pos.part as number) === 1) return { ...pos, stage: "act_summary", part: null, beatChunk: null };
     const prevPart = (pos.part as number) - 1;
     const range = partChapterRanges[partRangeKey(pos.act as number, prevPart)];
     const lastChunk = range ? chunksNeededForRange(range) : 1;
-    return { stage: "part_beats", act: pos.act, part: prevPart, beatChunk: lastChunk };
+    return { ...pos, stage: "part_beats", part: prevPart, beatChunk: lastChunk };
   }
   // part_beats
   if ((pos.beatChunk ?? 1) > 1) {
-    return { stage: "part_beats", act: pos.act, part: pos.part, beatChunk: (pos.beatChunk ?? 1) - 1 };
+    return { ...pos, beatChunk: (pos.beatChunk ?? 1) - 1 };
   }
-  return { stage: "part_outline", act: pos.act, part: pos.part, beatChunk: null };
+  return { ...pos, stage: "part_outline", beatChunk: null };
 }
 
 // The immediate parent unit's approved content — what this unit is a
@@ -159,6 +206,8 @@ function previousPosition(pos: UnitPosition, partChapterRanges: Record<string, P
 function parentArtifactFor(run: PlanningRun): string {
   const pos = currentPosition(run);
   if (pos.stage === "stage_1_summary") return "";
+  if (pos.stage === "codex_documentation") return run.stage_artifacts["stage_1_summary"] ?? "";
+  if (pos.stage === "hook_chapters_outline") return run.stage_artifacts["codex_documentation"] ?? "";
   if (pos.stage === "act_summary") return run.stage_artifacts["stage_1_summary"] ?? "";
   if (pos.stage === "part_outline") return run.stage_artifacts[`act_${pos.act}_summary`] ?? "";
   return run.stage_artifacts[`act_${pos.act}_part_${pos.part}_outline`] ?? "";
@@ -287,14 +336,87 @@ async function buildBookContext(bookId: string): Promise<string> {
 // New runs start in the intake conversation, not mid-generation — there's
 // nothing for the Generator to work from until the writer has actually
 // described what this book is, via intakeChatTurn/finalizeIntake below.
-export async function createPlanningRun(params: { bookId: string; userId: string }): Promise<PlanningRun> {
+// pipelineType defaults to "full"; pass "contract" to start the shorter
+// hook-chapters track instead (see PipelineType). Both share the exact
+// same intake flow and Stage 1 Summary — they only diverge afterward, in
+// nextPosition.
+export async function createPlanningRun(params: {
+  bookId: string;
+  userId: string;
+  pipelineType?: PipelineType;
+}): Promise<PlanningRun> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("planning_runs")
-    .insert({ book_id: params.bookId, user_id: params.userId, status: "intake_active" })
+    .insert({
+      book_id: params.bookId,
+      user_id: params.userId,
+      pipeline_type: params.pipelineType ?? "full",
+      status: "intake_active",
+    })
     .select("*")
     .single();
   if (error) throw new Error(`Failed to create planning run: ${error.message}`);
+  return data as PlanningRun;
+}
+
+// A completed ("done") Contract Pipeline run hands off into the main
+// hierarchy as a brand new "full" run for the SAME book, seeded rather
+// than starting cold: Stage 1 reuses the already-approved summary (no
+// regeneration), Part 1 of Act 1 (chapters 1-5) is pre-recorded as already
+// materialized — real chapter/beat rows already exist in the Outliner
+// from the Contract Pipeline's own hook_chapters_outline approval — and
+// the continuity ledger carries over whatever facts were already
+// extracted from those chapters. The new run starts at Act 1's summary
+// (still genuinely generated fresh, informed by what was actually
+// written) and nextPosition's "skip Part 1" special case takes it
+// straight to Part 2's outline once that's approved. The original
+// contract run is left untouched — a new row, not a mutation — so it
+// stays as an intact historical record of what actually got the contract.
+export async function promoteContractRunToFull(contractRunId: string): Promise<PlanningRun> {
+  const seedRun = await loadRun(contractRunId);
+  if (seedRun.pipeline_type !== "contract") {
+    throw new Error("Only a Contract Pipeline run can be promoted to the full pipeline.");
+  }
+  if (seedRun.status !== "done") {
+    throw new Error(
+      "This Contract Pipeline run must be fully approved (status: done) before promoting it — the Codex documentation and the five hook chapters need to be locked in first."
+    );
+  }
+
+  const supabase = getSupabaseClient();
+  const summary = seedRun.stage_artifacts["stage_1_summary"] ?? "";
+  const hookBeats = seedRun.stage_artifacts["hook_chapters_outline"] ?? "{}";
+  const part1OutlineKey = unitKey({ pipelineType: "full", stage: "part_outline", act: 1, part: 1, beatChunk: null });
+  const part1BeatsKey = unitKey({ pipelineType: "full", stage: "part_beats", act: 1, part: 1, beatChunk: 1 });
+
+  const { data, error } = await supabase
+    .from("planning_runs")
+    .insert({
+      book_id: seedRun.book_id,
+      user_id: seedRun.user_id,
+      pipeline_type: "full",
+      status: "generating",
+      current_stage: "act_summary",
+      current_act: 1,
+      current_part: null,
+      current_beat_chunk: null,
+      part_chapter_ranges: { [partRangeKey(1, 1)]: { startChapter: 1, endChapter: 5 } },
+      continuity_ledger: seedRun.continuity_ledger,
+      stage_artifacts: {
+        stage_1_summary: summary,
+        // Display-only placeholder — Part 1 never goes through its own
+        // outline review gate on this run (it was already reviewed as the
+        // Contract Pipeline's hook_chapters_outline unit); this just keeps
+        // the Pipeline Map from showing an unexplained gap for it.
+        [part1OutlineKey]:
+          "Chapters 1-5 were already planned and approved via the Contract Pipeline — see the Codex and this Part's Beats for full detail.",
+        [part1BeatsKey]: hookBeats,
+      },
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`Failed to promote Contract Pipeline run to the full pipeline: ${error.message}`);
   return data as PlanningRun;
 }
 
@@ -367,7 +489,20 @@ export async function generateStage(runId: string): Promise<PlanningRun> {
       }
       const chunk = chunkChapterRange(range, run.current_beat_chunk ?? 1);
       chapterRangeText = `Chapters ${chunk.startChapter}-${chunk.endChapter} (this Part's full range is ${range.startChapter}-${range.endChapter}).`;
+    } else if (run.current_stage === "hook_chapters_outline") {
+      // Fixed, not model-decided — same "AI can never go against it"
+      // principle as ACTS_PER_BOOK/PARTS_PER_ACT. The Contract Pipeline
+      // always covers exactly chapters 1-5.
+      chapterRangeText = "Chapters 1-5 (fixed — the Contract Pipeline always covers exactly the first five chapters).";
     }
+
+    // Only relevant to the Contract Pipeline's hook-focused units — see
+    // platformCraftNotes.ts. Harmless to fetch/pass unconditionally for
+    // "contract" runs even on stage_1_summary/codex_documentation, since
+    // interpolateTemplate silently ignores a value no placeholder in the
+    // template actually references.
+    const platformTrends =
+      run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
 
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {
       BOOK_CONTEXT: bookContext,
@@ -377,14 +512,23 @@ export async function generateStage(runId: string): Promise<PlanningRun> {
       PREVIOUS_ARTIFACT: previousArtifact,
       FINAL_DELTA_DIRECTIVE: run.final_delta_directive ?? "",
       CHAPTER_RANGE: chapterRangeText,
+      PLATFORM_TRENDS: platformTrends,
     });
 
-    // part_outline and part_beats both come back as structured JSON —
-    // part_outline commits to a real chapter range (parsed by approveStage
-    // to record part_chapter_ranges), part_beats gets parsed straight into
-    // chapter_beats rows on approval. act_summary and stage_1_summary stay
-    // plain text — they're meant to be read, not parsed.
-    const isJsonUnit = run.current_stage === "part_outline" || run.current_stage === "part_beats";
+    // part_outline, part_beats, codex_documentation, and hook_chapters_
+    // outline all come back as structured JSON — part_outline commits to
+    // a real chapter range (parsed by approveStage to record part_chapter_
+    // ranges), part_beats and hook_chapters_outline get parsed straight
+    // into chapter_beats rows on approval (materializeBeats — the same
+    // JSON contract for both), codex_documentation gets parsed straight
+    // into codex_entries rows on approval (materializeCodexDocumentation).
+    // act_summary and stage_1_summary stay plain text — they're meant to
+    // be read, not parsed.
+    const isJsonUnit =
+      run.current_stage === "part_outline" ||
+      run.current_stage === "part_beats" ||
+      run.current_stage === "codex_documentation" ||
+      run.current_stage === "hook_chapters_outline";
     const artifact = isJsonUnit
       ? JSON.stringify(
           await callAgentForJson({ systemPrompt: prompt.system_prompt, userMessage, model: prompt.model, effort: prompt.effort })
@@ -422,6 +566,8 @@ export async function runCritique(runId: string): Promise<PlanningRun> {
     const bookVision = run.stage_artifacts["stage_1_summary"] ?? "";
     const ledgerText = formatLedger(run.continuity_ledger);
     const previousPanelReviews = run.panel_reviews ?? {};
+    const platformTrends =
+      run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
 
     const prompts = await Promise.all(CRITIC_ROLES.map((role) => getActivePrompt(run.book_id, role, run.current_stage)));
 
@@ -437,6 +583,7 @@ export async function runCritique(runId: string): Promise<PlanningRun> {
             CONTINUITY_LEDGER: ledgerText,
             CURRENT_ARTIFACT: artifact,
             PREVIOUS_CRITIQUE: previousCritique !== undefined ? JSON.stringify(previousCritique, null, 2) : "",
+            PLATFORM_TRENDS: platformTrends,
           }),
           model: prompt.model,
           effort: prompt.effort,
@@ -468,12 +615,15 @@ export async function runArbitration(runId: string): Promise<PlanningRun> {
     // Read before this call's new synthesis overwrites it — same
     // previous-verdict trick runCritique uses for {{PREVIOUS_CRITIQUE}}.
     const previousSynthesis = run.arbitrator_synthesis;
+    const platformTrends =
+      run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
 
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {
       BOOK_VISION: bookVision,
       CURRENT_ARTIFACT: artifact,
       PANEL_REVIEWS: JSON.stringify(run.panel_reviews ?? {}, null, 2),
       PREVIOUS_SYNTHESIS: previousSynthesis != null ? JSON.stringify(previousSynthesis, null, 2) : "",
+      PLATFORM_TRENDS: platformTrends,
     });
 
     const synthesis = await callAgentForJson({
@@ -655,6 +805,78 @@ async function appendLedgerFacts(run: PlanningRun, unit: string, beatsArtifactJs
   return [...withoutPriorAttempt, ...newEntries];
 }
 
+interface ParsedCodexDocumentationArtifact {
+  entries: {
+    name: string;
+    entryType: string;
+    description: string;
+    aliases?: string[];
+    tier?: string;
+    personalityTraits?: string[];
+    motivations?: string[];
+  }[];
+}
+
+function parseCodexDocumentationArtifact(raw: string): ParsedCodexDocumentationArtifact {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Codex documentation artifact is not valid JSON — cannot write entries to the Codex.");
+  }
+  const entries = (parsed as { entries?: unknown }).entries;
+  if (!Array.isArray(entries)) {
+    throw new Error(
+      'Codex documentation artifact JSON must have a top-level "entries" array — see the codex_documentation Generator prompt contract in CLAUDE.md.'
+    );
+  }
+  return { entries: entries as ParsedCodexDocumentationArtifact["entries"] };
+}
+
+// Writes an approved codex_documentation unit directly into codex_entries
+// — unlike on-demand entity extraction (extractEntities/confirmEntities),
+// which stays proposal-only elsewhere, this stage's whole job IS to
+// produce the book's initial character/world documentation, so approving
+// it commits the entries the same way approving a part_beats chunk
+// commits its beats. Only the fields Layer 1 (rag.ts) and the human-
+// facing Codex UI actually care about most for a fresh book — richer
+// fields (background, life_events, etc.) stay writer-editable afterward
+// through the normal Codex CRUD surface, same as any other entry.
+async function materializeCodexDocumentation(bookId: string, userId: string, artifactJson: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { entries } = parseCodexDocumentationArtifact(artifactJson);
+  if (entries.length === 0) return;
+
+  // Idempotency guard against a retry after a later failure in the same
+  // approve call — same reasoning as materializeBeats's guard above. Skip
+  // any entry that's already an exact (name, entryType) match for this
+  // book rather than risk a duplicate Codex entry on a retried approve.
+  const { data: existing, error: existingError } = await supabase
+    .from("codex_entries")
+    .select("name, entry_type")
+    .eq("book_id", bookId);
+  if (existingError) throw new Error(`Failed to check existing Codex entries: ${existingError.message}`);
+  const existingKeys = new Set((existing ?? []).map((e) => `${e.name} ${e.entry_type}`));
+
+  const rows = entries
+    .filter((e) => !existingKeys.has(`${e.name} ${e.entryType}`))
+    .map((e) => ({
+      user_id: userId,
+      book_id: bookId,
+      name: e.name,
+      entry_type: e.entryType || "character",
+      description: e.description ?? "",
+      aliases: e.aliases ?? null,
+      tier: e.tier ?? null,
+      personality_traits: e.personalityTraits ?? null,
+      motivations: e.motivations ?? null,
+    }));
+  if (rows.length === 0) return;
+
+  const { error } = await supabase.from("codex_entries").insert(rows);
+  if (error) throw new Error(`Failed to write Codex documentation entries: ${error.message}`);
+}
+
 // Writer approves the unit at the human review gate. On part_outline, this
 // records the Part's committed chapter range (part_chapter_ranges) for
 // part_beats to use. On part_beats, this also materializes the chunk into
@@ -678,10 +900,18 @@ export async function approveStage(runId: string): Promise<PlanningRun> {
     }
   }
 
-  if (pos.stage === "part_beats") {
+  if (pos.stage === "part_beats" || pos.stage === "hook_chapters_outline") {
     try {
       await materializeBeats(run.book_id, run.user_id, run.stage_artifacts[unit] ?? "{}");
       continuityLedger = await appendLedgerFacts(run, unit, run.stage_artifacts[unit] ?? "{}");
+    } catch (error) {
+      return markFailed(runId, error);
+    }
+  }
+
+  if (pos.stage === "codex_documentation") {
+    try {
+      await materializeCodexDocumentation(run.book_id, run.user_id, run.stage_artifacts[unit] ?? "{}");
     } catch (error) {
       return markFailed(runId, error);
     }

@@ -17,7 +17,9 @@ import {
   confirmEntities,
   intakeChatTurn,
   finalizeIntake,
+  promoteContractRunToFull,
 } from "../services/planningEngine.js";
+import { VALID_PIPELINE_TYPES, type PipelineType } from "../types/domain.js";
 
 export const planningRouter = Router();
 
@@ -30,6 +32,9 @@ function handleError(res: Response, error: unknown, context: string) {
 // conversation (status: intake_active) — NOT Stage 1 generation yet. The
 // writer talks to the Arbitrator via intake-chat below until they're
 // ready to call intake-finalize, which is what actually opens Stage 1.
+// Optional pipelineType: "full" (default) or "contract" — see
+// PipelineType in src/types/domain.ts. Both share this exact same intake
+// flow; they only diverge after Stage 1 is approved.
 planningRouter.post("/planning/runs", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   if (typeof body.bookId !== "string" || body.bookId.trim() === "") {
@@ -40,12 +45,38 @@ planningRouter.post("/planning/runs", async (req: Request, res: Response) => {
     res.status(400).json({ error: "userId is required and must be a non-empty string." });
     return;
   }
+  if (body.pipelineType !== undefined && !VALID_PIPELINE_TYPES.includes(body.pipelineType as PipelineType)) {
+    res.status(400).json({ error: `pipelineType must be one of: ${VALID_PIPELINE_TYPES.join(", ")}.` });
+    return;
+  }
 
   try {
-    const run = await createPlanningRun({ bookId: body.bookId, userId: body.userId });
+    const run = await createPlanningRun(
+      body.pipelineType !== undefined
+        ? { bookId: body.bookId, userId: body.userId, pipelineType: body.pipelineType as PipelineType }
+        : { bookId: body.bookId, userId: body.userId }
+    );
     res.status(201).json({ run });
   } catch (error) {
     handleError(res, error, "create planning run");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/promote-to-full — takes a COMPLETED
+// (status: done) Contract Pipeline run and creates a brand new "full"
+// pipeline run for the same book, seeded with its approved Stage 1
+// Summary and its already-materialized Part 1 (chapters 1-5). Returns the
+// NEW run — the frontend should switch to its id, the original contract
+// run is left untouched as a historical record. 409 if the source run
+// isn't a completed contract run.
+planningRouter.post("/planning/runs/:id/promote-to-full", async (req: Request, res: Response) => {
+  try {
+    const run = await promoteContractRunToFull(req.params.id as string);
+    res.status(201).json({ run });
+  } catch (error) {
+    console.error("promote contract run to full failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to promote Contract Pipeline run.";
+    res.status(message.includes("must be") || message.includes("Only a Contract Pipeline run") ? 409 : 502).json({ error: message });
   }
 });
 
