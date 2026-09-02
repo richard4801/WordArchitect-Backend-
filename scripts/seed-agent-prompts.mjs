@@ -758,7 +758,7 @@ Synthesize the panel's findings now.`,
   {
     agentRole: "platform_researcher",
     stage: "all",
-    model: "claude-opus-5",
+    model: DEFAULT_MODEL,
     effort: "medium",
     systemPrompt: `You are researching current craft and platform conventions for serialized-fiction platforms that decide whether to offer a writer a contract based on roughly their first five chapters (GoodNovel-style contract-qualification models). This is an on-demand research pass, not a live feed — you have web_search and web_fetch tools available; use them to find genuinely current information, not just recall from training.
 
