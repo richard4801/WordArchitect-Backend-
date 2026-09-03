@@ -20,6 +20,9 @@ import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.
 import type { NoteCategory } from "../types/domain.js";
 import { listWorldCategories, slugify } from "../routes/worldCategories.js";
 import { listNotesForBook } from "../routes/notes.js";
+import { listAgentPrompts, getAgentPromptById, createAgentPrompt, updateAgentPrompt, getActivePrompt } from "../services/agentPrompts.js";
+import { VALID_AGENT_ROLES, VALID_PLANNING_STAGES } from "../types/domain.js";
+import type { AgentRole, PlanningStage } from "../types/domain.js";
 
 const SEARCH_MATCH_COUNT = 8;
 
@@ -206,6 +209,119 @@ export function registerWordArchitectTools(server: McpServer): void {
 
       if (error) return errorResult(`Failed to create note: ${error.message}`);
       return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  const truncatePreview = (text: string, max = 220) => (text.length > max ? text.slice(0, max - 1) + "…" : text);
+
+  server.registerTool(
+    "list_agent_prompts",
+    {
+      title: "List Agent Prompts",
+      description:
+        "Lists the CURRENTLY ACTIVE prompt for every Planning Engine agent role/stage on this book (generator, the 3 critics, arbitrator_panel/chat/directive, entity_extractor, ledger_extractor, platform_researcher — see CLAUDE.md's Planning Engine section for what each governs). Returns compact summaries (id, agentRole, stage, version, model, effort, authoredBy, and a short preview of each prompt's text) — not full text, to keep this call cheap. Call get_agent_prompt with a specific id once you know which one the writer wants to discuss or change.",
+      inputSchema: { bookId: z.string().describe("The book's ID") },
+    },
+    async ({ bookId }) => {
+      try {
+        const prompts = await listAgentPrompts(bookId);
+        const active = prompts
+          .filter((p) => p.is_active)
+          .map((p) => ({
+            id: p.id,
+            agentRole: p.agent_role,
+            stage: p.stage,
+            version: p.version,
+            model: p.model,
+            effort: p.effort,
+            authoredBy: p.authored_by,
+            systemPromptPreview: truncatePreview(p.system_prompt),
+            userPromptTemplatePreview: truncatePreview(p.user_prompt_template),
+          }));
+        return textResult(JSON.stringify(active, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_agent_prompt",
+    {
+      title: "Get Agent Prompt",
+      description:
+        "Fetches one specific agent_prompts row's full text (systemPrompt and userPromptTemplate in full, not truncated) by its id — from list_agent_prompts, or from update_agent_prompt's own response. Use this to actually read a prompt's current wording before discussing changes to it, or to pull up an older/inactive version for comparison before reverting via activate_agent_prompt_version.",
+      inputSchema: { promptId: z.string().describe("The agent_prompts row id") },
+    },
+    async ({ promptId }) => {
+      try {
+        const prompt = await getAgentPromptById(promptId);
+        return textResult(JSON.stringify(prompt, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "update_agent_prompt",
+    {
+      title: "Update Agent Prompt",
+      description:
+        "Rewrites an agent's prompt (systemPrompt and/or userPromptTemplate) for a specific role/stage — the actual write action once you and the writer have talked through a change and agreed on the new wording. Only call this once that agreement is explicit, the same 'a human is actively directing this write in real time' standard every other write tool here holds to — never speculatively mid-brainstorm. This ALWAYS creates a new version (never edits existing text in place) and activates it immediately, exactly like the writer saving an edit in the Prompt Editor UI themselves — the previous version is deactivated but not deleted, so it's fully visible in list_agent_prompts (with includeInactive-style history via get_agent_prompt on its id) and instantly restorable via activate_agent_prompt_version if the change doesn't work out. The new version is tagged authoredBy 'claude' so the Prompt Editor UI flags it as AI-authored. Deliberately CANNOT change model or effort (which stays whatever the current active version already uses) — those are operational/cost settings, not prompt content, and stay writer-controlled through the Prompt Editor UI only. If systemPrompt or userPromptTemplate is omitted, that half of the prompt carries over unchanged from the current active version — pass both when you're rewriting the whole thing, or just the one half you're actually changing.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        agentRole: z.enum(VALID_AGENT_ROLES as [AgentRole, ...AgentRole[]]).describe("Which agent role's prompt to update"),
+        stage: z
+          .enum(VALID_PLANNING_STAGES as [PlanningStage, ...PlanningStage[]])
+          .describe("Which stage this prompt applies to (use 'all' for a role whose prompt doesn't vary by stage)"),
+        systemPrompt: z.string().optional().describe("The new system prompt text — omit to leave it unchanged from the current active version"),
+        userPromptTemplate: z
+          .string()
+          .optional()
+          .describe("The new user prompt template text (with {{PLACEHOLDER}} tokens) — omit to leave it unchanged from the current active version"),
+      },
+    },
+    async ({ bookId, agentRole, stage, systemPrompt, userPromptTemplate }) => {
+      if (systemPrompt === undefined && userPromptTemplate === undefined) {
+        return errorResult("Provide at least one of systemPrompt or userPromptTemplate to change.");
+      }
+      try {
+        const current = await getActivePrompt(bookId, agentRole, stage);
+        const updated = await createAgentPrompt({
+          bookId,
+          agentRole,
+          stage,
+          systemPrompt: systemPrompt ?? current.system_prompt,
+          userPromptTemplate: userPromptTemplate ?? current.user_prompt_template,
+          model: current.model,
+          effort: current.effort,
+          authoredBy: "claude",
+        });
+        return textResult(
+          `Saved as version ${updated.version} and activated immediately (model/effort unchanged: ${updated.model}/${updated.effort}). Previous version ${current.version} is now inactive but still available via get_agent_prompt (id ${current.id}) if you need to revert with activate_agent_prompt_version.\n\n${JSON.stringify(updated, null, 2)}`
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "activate_agent_prompt_version",
+    {
+      title: "Activate Agent Prompt Version",
+      description:
+        "Reactivates an older (currently inactive) prompt version by its id, deactivating whatever is currently active for that same role/stage — an instant revert with no retyping, for when a change made via update_agent_prompt doesn't work out. Does not modify any prompt's text, model, or effort — it only changes which existing version is active.",
+      inputSchema: { promptId: z.string().describe("The agent_prompts row id of the version to reactivate") },
+    },
+    async ({ promptId }) => {
+      try {
+        const activated = await updateAgentPrompt(promptId, { isActive: true });
+        return textResult(JSON.stringify(activated, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 

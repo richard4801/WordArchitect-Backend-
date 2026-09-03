@@ -1226,6 +1226,13 @@ Read (safe to call freely):
   check this before guessing an `entryType`
 - `list_notes` — `{ bookId, category? }` — a book's brainstorming notes,
   pinned first then most recently updated
+- `list_agent_prompts` — `{ bookId }` — every Planning Engine agent
+  role/stage's CURRENTLY ACTIVE prompt (see `agent_prompts` above),
+  compact: id/role/stage/version/model/effort/authoredBy plus a short
+  truncated preview of each prompt's text, not the full text — cheap to
+  call broadly before narrowing in with `get_agent_prompt`
+- `get_agent_prompt` — `{ promptId }` — one specific version's full,
+  untruncated `systemPrompt`/`userPromptTemplate` text, by id
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
@@ -1246,6 +1253,31 @@ unsupervised):
   there for future generations (Claude-assisted or automatic) and visible
   in the editor too — same shared function `POST /api/v1/manuscript/save-scene`
   and the Chat Assistant's `propose_save_manuscript_scene` confirm step call
+- `update_agent_prompt` — `{ bookId, agentRole, stage, systemPrompt?,
+  userPromptTemplate? }` — lets a writer iterate on a Planning Engine
+  prompt conversationally (discuss it, land on wording, then have Claude
+  actually apply it) instead of only through the Prompt Editor UI. Always
+  creates a genuinely new version and activates it immediately — never an
+  in-place overwrite — tagged `authoredBy: "claude"`, exactly like the
+  writer saving an edit in the UI themselves; the previous version is
+  deactivated but never deleted, so it stays inspectable and instantly
+  restorable. **Cannot change `model` or `effort`** — those aren't
+  exposed as tool parameters at all; the new version always inherits
+  whatever the current active version already uses. This is deliberate:
+  `model`/`effort` are operational/cost settings (which real model runs,
+  at what thinking effort, i.e. what it costs per call), not prompt
+  *content* — keeping them out of this tool's reach means a chat
+  conversation about wording can never accidentally escalate a role to a
+  more expensive model or effort level; that stays writer-controlled
+  through the Prompt Editor UI only. Omitting `systemPrompt` or
+  `userPromptTemplate` carries that half over unchanged from the current
+  active version, so a small wording tweak to just one half doesn't
+  require resending the other
+- `activate_agent_prompt_version` — `{ promptId }` — instantly reverts to
+  an older, currently-inactive version (deactivating whatever's active
+  now) with no retyping — the undo for a chat-driven `update_agent_prompt`
+  change that didn't work out. Touches only which version is active,
+  never any version's actual text/model/effort
 
 Generation:
 - `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the

@@ -20,6 +20,17 @@ export async function listAgentPrompts(bookId: string): Promise<AgentPrompt[]> {
   return (data ?? []) as AgentPrompt[];
 }
 
+// Fetches one specific prompt version by row id, full text included —
+// used by the MCP get_agent_prompt tool to pull up a version's exact
+// content (e.g. an inactive one, for comparison before reverting to it).
+export async function getAgentPromptById(id: string): Promise<AgentPrompt> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.from("agent_prompts").select("*").eq("id", id).maybeSingle();
+  if (error) throw new Error(`Failed to load agent prompt: ${error.message}`);
+  if (!data) throw new Error(`No agent prompt found with id ${id}.`);
+  return data as AgentPrompt;
+}
+
 // Tries the exact (agent_role, stage) first, then falls back to
 // (agent_role, 'all') for a role whose prompt doesn't vary by stage. Throws
 // a clear, specific error rather than silently running with no prompt —
