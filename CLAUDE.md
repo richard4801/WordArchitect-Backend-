@@ -1551,7 +1551,7 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history`/`intake_acti
 - `GET /api/v1/planning/runs/:id` — poll current state
 - `POST /api/v1/planning/runs/:id/generate` — one Generator call for the current unit
 - `POST /api/v1/planning/runs/:id/critique` — all of `CRITIC_ROLES` (Continuity, Pacing & Chapter-Economy, Craft & Suspense), fired in parallel in one request
-- `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate. Optional `{ excludedCritics: string[] }` — critic roles (from `CRITIC_ROLES`) the writer has unchecked on that critic's own panel in the UI; excluded critiques are dropped from what the Arbitrator actually synthesizes from, not just visually hidden. Filtered server-side against `CRITIC_ROLES` so a bad value can't silently no-op or throw deep in the service
+- `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate. Optional `{ excludedCritics: string[], excludedIssues: { role: string; index: number }[] }` — `excludedCritics` drops a critic's entire review (score/summary/strengths/every issue); `excludedIssues` is the finer-grained sibling, dropping individual flagged issues inside an otherwise-included critique, addressed by the critic's role and that issue's index into its own `issues` array as last returned by `GET /planning/runs/:id` (stable until the next `/critique` regenerates it). Both filtered server-side against `CRITIC_ROLES` (and `index` to a non-negative integer) so a bad value can't silently no-op or throw deep in the service — see "Per-issue and per-critique inclusion" below
 - `POST /api/v1/planning/runs/:id/approve` — the gate's approve action. On `part_outline`, records the Part's committed chapter range. On `part_beats`, also materializes the chunk into the Outliner and reconciles the continuity ledger. Advances to the next unit per the fixed Act→Part→Beats sequence, or marks the run `done` once all 3 Acts' 9 Parts are fully planned
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
 - `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever unit came before the current one and reopens its rejection interview directly, restoring its `panel_reviews`/`arbitrator_synthesis` from `stage_panel_history`. `409` if the current unit already has its own generated artifact, or if there's no previous unit
@@ -1643,18 +1643,35 @@ have caused anyway, just without the writer's own click as the last gate.
 `finalize-directive` is kept callable directly as a fallback for exactly
 this kind of miss, and for resuming an older run.
 
-### Per-critique inclusion — letting the writer drop a critic's review before synthesis
+### Per-issue and per-critique inclusion — letting the writer choose exactly what reaches the Arbitrator
 
-Each critique panel in the review UI carries its own checkbox
-(default checked); unchecking one and then calling `/arbitrate` again with
-that critic's role in `excludedCritics` (see the endpoint above) means the
-Arbitrator's synthesis is built from only the remaining critiques — an
-excluded critic's `issues` never reach `{{PANEL_REVIEWS}}` for that
-`/arbitrate` call, so its concerns can't surface in `mustFix`/
-`worthConsidering` even indirectly. The excluded critic's own review stays
-stored in `panel_reviews` and visible in the run (nothing is deleted), it's
-just not what the Arbitrator reasons from for that particular synthesis
-call — re-arbitrating with all critics included again picks it back up.
+Two independent granularities, both filtering `{{PANEL_REVIEWS}}` before a
+given `/arbitrate` call — neither ever deletes anything from `panel_reviews`
+itself, they only control what that one synthesis call actually reasons
+from:
+
+- **Per-issue** (`excludedIssues`) — the primary mechanism. Each individual
+  flagged issue inside a critique panel (not the panel as a whole) carries
+  its own checkbox, default checked. Unchecking one and sending
+  `{ role, index }` for it in `excludedIssues` drops just that issue from
+  the critic's `issues` array before `{{PANEL_REVIEWS}}` is built — the
+  critic's `score`/`summary`/`strengths` and every issue the writer left
+  checked still reach the Arbitrator normally. `index` is the issue's
+  position in that critic's own `issues` array exactly as last returned by
+  `GET /planning/runs/:id` — stable until the next `/critique` call
+  regenerates the array, so an index read off a fresh fetch is always safe
+  to send back.
+- **Per-critique** (`excludedCritics`) — a coarser, all-or-nothing toggle
+  for dropping one critic's entire review (score, summary, strengths, every
+  issue) from a synthesis pass, independent of the per-issue mechanism
+  above. Useful for "I don't trust this critic's read at all this time,"
+  distinct from "most of what it flagged is right, but not this one item."
+
+Either way, nothing an excluded critic or excluded issue said can surface
+in that call's `mustFix`/`worthConsidering`/`whatWorks` even indirectly,
+since the Arbitrator never sees it for that pass. Re-arbitrating with
+everything included again picks it all back up — this only affects the one
+`/arbitrate` call it's sent with, not any stored state.
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 

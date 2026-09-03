@@ -670,13 +670,30 @@ export async function runCritique(runId: string): Promise<PlanningRun> {
 // Arbitrator's panel-synthesis pass: compiles all three critiques into
 // whatever form the writer's own prompt asks for, then opens the human
 // review gate.
-// excludedCritics lets the writer uncheck a critic's card in the review
-// UI before arbitrating — that critic's review still exists in
-// panel_reviews (nothing is deleted), it's just left out of what the
-// Arbitrator actually synthesizes from this pass. Defaults to every
-// critic included, matching "reviews arrive checked, uncheck what you
-// don't want" — an empty/omitted list changes nothing from before.
-export async function runArbitration(runId: string, excludedCritics: AgentRole[] = []): Promise<PlanningRun> {
+//
+// excludedCritics lets the writer uncheck a critic's whole card in the
+// review UI before arbitrating — that critic's review still exists in
+// panel_reviews (nothing is deleted), it's just left out entirely (score,
+// summary, strengths, every issue) from what the Arbitrator actually
+// synthesizes from this pass.
+//
+// excludedIssues is the finer-grained sibling: individual flagged issues
+// INSIDE an otherwise-included critique, addressed by { role, index } —
+// index into that critic's own issues array as it currently stands in
+// panel_reviews (stable until the next /critique call regenerates it, so
+// an index captured from the last GET is safe to send back here). The
+// critic's score/summary/strengths still reach the Arbitrator; only the
+// specific issues the writer unchecked are dropped from its issues list —
+// this is what actually lets "carry this flagged issue into the
+// Arbitrator's synthesis, drop that one" work, as opposed to the coarser
+// all-or-nothing per-critic toggle above.
+// Both default to nothing excluded — every critic's every issue included,
+// matching "reviews arrive checked, uncheck what you don't want."
+export async function runArbitration(
+  runId: string,
+  excludedCritics: AgentRole[] = [],
+  excludedIssues: Array<{ role: AgentRole; index: number }> = []
+): Promise<PlanningRun> {
   const run = await loadRun(runId);
   try {
     const unit = currentUnitKey(run);
@@ -690,8 +707,26 @@ export async function runArbitration(runId: string, excludedCritics: AgentRole[]
       run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
 
     const excludedSet = new Set(excludedCritics);
+    const excludedIssueIndexes = new Map<AgentRole, Set<number>>();
+    for (const { role, index } of excludedIssues) {
+      if (!excludedIssueIndexes.has(role)) excludedIssueIndexes.set(role, new Set());
+      excludedIssueIndexes.get(role)!.add(index);
+    }
+
     const includedPanelReviews = Object.fromEntries(
-      Object.entries(run.panel_reviews ?? {}).filter(([role]) => !excludedSet.has(role as AgentRole))
+      Object.entries(run.panel_reviews ?? {})
+        .filter(([role]) => !excludedSet.has(role as AgentRole))
+        .map(([role, review]) => {
+          const droppedIndexes = excludedIssueIndexes.get(role as AgentRole);
+          const issues = (review as { issues?: unknown[] } | null)?.issues;
+          if (!droppedIndexes || droppedIndexes.size === 0 || !Array.isArray(issues)) {
+            return [role, review];
+          }
+          return [
+            role,
+            { ...(review as Record<string, unknown>), issues: issues.filter((_, i) => !droppedIndexes.has(i)) },
+          ];
+        })
     );
 
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {

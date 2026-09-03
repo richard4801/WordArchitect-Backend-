@@ -227,19 +227,33 @@ planningRouter.post("/planning/runs/:id/critique", async (req: Request, res: Res
   }
 });
 
-// Optional { excludedCritics: string[] } — critic roles the writer has
-// unchecked in the UI (see the per-critique checkboxes on each critique
-// panel) that the Arbitrator should not consider when synthesizing this
-// unit's review. Filtered against CRITIC_ROLES so an unrecognized value
-// can't silently do nothing or throw deep inside the service layer.
+// Optional { excludedCritics: string[], excludedIssues: {role, index}[] }
+// — excludedCritics drops a whole critic's card (checkbox at the top of a
+// critique panel); excludedIssues drops individual flagged issues INSIDE
+// an otherwise-included critique (the checkbox on each issue row itself),
+// addressed by the critic's role and that issue's index into its own
+// issues array as currently returned by GET /planning/runs/:id — stable
+// until the next /critique call. Both filtered server-side (role against
+// CRITIC_ROLES, index to a non-negative integer) so a bad value can't
+// silently no-op or throw deep in the service layer.
 planningRouter.post("/planning/runs/:id/arbitrate", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const excludedCritics = Array.isArray(body.excludedCritics)
     ? body.excludedCritics.filter((r): r is AgentRole => CRITIC_ROLES.includes(r as AgentRole))
     : [];
+  const excludedIssues = Array.isArray(body.excludedIssues)
+    ? body.excludedIssues
+        .filter(
+          (e): e is { role: unknown; index: unknown } => typeof e === "object" && e !== null && "role" in e && "index" in e
+        )
+        .filter(
+          (e): e is { role: AgentRole; index: number } =>
+            CRITIC_ROLES.includes(e.role as AgentRole) && typeof e.index === "number" && Number.isInteger(e.index) && e.index >= 0
+        )
+    : [];
 
   try {
-    res.json({ run: await runArbitration((req.params.id as string), excludedCritics) });
+    res.json({ run: await runArbitration((req.params.id as string), excludedCritics, excludedIssues) });
   } catch (error) {
     handleError(res, error, "run arbitration");
   }
