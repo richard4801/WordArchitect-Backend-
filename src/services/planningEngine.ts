@@ -657,7 +657,13 @@ export async function runCritique(runId: string): Promise<PlanningRun> {
 // Arbitrator's panel-synthesis pass: compiles all three critiques into
 // whatever form the writer's own prompt asks for, then opens the human
 // review gate.
-export async function runArbitration(runId: string): Promise<PlanningRun> {
+// excludedCritics lets the writer uncheck a critic's card in the review
+// UI before arbitrating — that critic's review still exists in
+// panel_reviews (nothing is deleted), it's just left out of what the
+// Arbitrator actually synthesizes from this pass. Defaults to every
+// critic included, matching "reviews arrive checked, uncheck what you
+// don't want" — an empty/omitted list changes nothing from before.
+export async function runArbitration(runId: string, excludedCritics: AgentRole[] = []): Promise<PlanningRun> {
   const run = await loadRun(runId);
   try {
     const unit = currentUnitKey(run);
@@ -670,10 +676,15 @@ export async function runArbitration(runId: string): Promise<PlanningRun> {
     const platformTrends =
       run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
 
+    const excludedSet = new Set(excludedCritics);
+    const includedPanelReviews = Object.fromEntries(
+      Object.entries(run.panel_reviews ?? {}).filter(([role]) => !excludedSet.has(role as AgentRole))
+    );
+
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {
       BOOK_VISION: bookVision,
       CURRENT_ARTIFACT: artifact,
-      PANEL_REVIEWS: JSON.stringify(run.panel_reviews ?? {}, null, 2),
+      PANEL_REVIEWS: JSON.stringify(includedPanelReviews, null, 2),
       PREVIOUS_SYNTHESIS: previousSynthesis != null ? JSON.stringify(previousSynthesis, null, 2) : "",
       PLATFORM_TRENDS: platformTrends,
     });
@@ -1150,6 +1161,50 @@ export async function chatTurn(runId: string, userMessage: string): Promise<Plan
   } catch (error) {
     return markFailed(runId, error);
   }
+}
+
+// Skips the rejection interview entirely — takes the Arbitrator's
+// ALREADY-COMPILED synthesis from this unit's last arbitrate call and
+// sends it straight to the Generator as a directive, the same way
+// finalizeDirective's chat-derived directive does. Deliberately not an
+// LLM call: mustFix/worthConsidering are already exactly what the writer
+// would otherwise spend a whole interview re-deriving, so this is pure
+// deterministic formatting — free, instant, and (unlike a chat-compiled
+// directive) guaranteed to actually be a numbered checklist rather than
+// hoping a generation renders it that way. Requires arbitrate to have
+// already run for this unit; throws a clear error if there's no
+// synthesis yet rather than silently sending an empty directive.
+export async function applyCritiqueDirectly(runId: string): Promise<PlanningRun> {
+  const run = await loadRun(runId);
+  const synthesis = run.arbitrator_synthesis as { mustFix?: unknown; worthConsidering?: unknown } | null;
+  if (!synthesis) {
+    throw new Error(
+      "No arbitrator synthesis available yet for this unit — run critique and arbitrate before applying critique."
+    );
+  }
+
+  const mustFix = Array.isArray(synthesis.mustFix) ? synthesis.mustFix.filter((s): s is string => typeof s === "string") : [];
+  const worthConsidering = Array.isArray(synthesis.worthConsidering)
+    ? synthesis.worthConsidering.filter((s): s is string => typeof s === "string")
+    : [];
+  if (mustFix.length === 0 && worthConsidering.length === 0) {
+    throw new Error("The arbitrator's synthesis has no mustFix or worthConsidering items to apply.");
+  }
+
+  const lines: string[] = [];
+  if (mustFix.length > 0) {
+    lines.push(
+      "MUST FIX — every one of these is required. Before returning the revised artifact, verify each numbered item below is genuinely resolved, not just superficially touched:"
+    );
+    mustFix.forEach((item, i) => lines.push(`${i + 1}. ${item}`));
+  }
+  if (worthConsidering.length > 0) {
+    if (mustFix.length > 0) lines.push("");
+    lines.push("WORTH CONSIDERING — address these too where it doesn't conflict with the must-fix items above:");
+    worthConsidering.forEach((item, i) => lines.push(`${mustFix.length + i + 1}. ${item}`));
+  }
+
+  return saveRun(runId, { status: "generating", final_delta_directive: lines.join("\n") });
 }
 
 // Compiles the chat interview into one crisp technical directive, then

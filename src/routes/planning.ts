@@ -13,6 +13,7 @@ import {
   discardStage,
   chatTurn,
   finalizeDirective,
+  applyCritiqueDirectly,
   extractEntities,
   confirmEntities,
   intakeChatTurn,
@@ -20,7 +21,7 @@ import {
   promoteContractRunToFull,
   createPlanningRunFromExistingSummary,
 } from "../services/planningEngine.js";
-import { VALID_PIPELINE_TYPES, type PipelineType } from "../types/domain.js";
+import { VALID_PIPELINE_TYPES, CRITIC_ROLES, type PipelineType, type AgentRole } from "../types/domain.js";
 
 export const planningRouter = Router();
 
@@ -226,9 +227,19 @@ planningRouter.post("/planning/runs/:id/critique", async (req: Request, res: Res
   }
 });
 
+// Optional { excludedCritics: string[] } — critic roles the writer has
+// unchecked in the UI (see the per-critique checkboxes on each critique
+// panel) that the Arbitrator should not consider when synthesizing this
+// unit's review. Filtered against CRITIC_ROLES so an unrecognized value
+// can't silently do nothing or throw deep inside the service layer.
 planningRouter.post("/planning/runs/:id/arbitrate", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const excludedCritics = Array.isArray(body.excludedCritics)
+    ? body.excludedCritics.filter((r): r is AgentRole => CRITIC_ROLES.includes(r as AgentRole))
+    : [];
+
   try {
-    res.json({ run: await runArbitration((req.params.id as string)) });
+    res.json({ run: await runArbitration((req.params.id as string), excludedCritics) });
   } catch (error) {
     handleError(res, error, "run arbitration");
   }
@@ -309,6 +320,24 @@ planningRouter.post("/planning/runs/:id/finalize-directive", async (req: Request
     res.json({ run: await finalizeDirective((req.params.id as string)) });
   } catch (error) {
     handleError(res, error, "finalize directive");
+  }
+});
+
+// POST /api/v1/planning/runs/:id/apply-critique — skips the chat interview
+// entirely: takes the Arbitrator's already-compiled synthesis (mustFix +
+// worthConsidering from the last /arbitrate call) and sends it straight to
+// the Generator as a numbered directive, the same way finalize-directive
+// hands off a chat-derived directive. No extra LLM call — the synthesis
+// already exists from arbitrate, this just reformats and applies it.
+planningRouter.post("/planning/runs/:id/apply-critique", async (req: Request, res: Response) => {
+  try {
+    res.json({ run: await applyCritiqueDirectly((req.params.id as string)) });
+  } catch (error) {
+    console.error("apply critique directly failed:", error);
+    const message = error instanceof Error ? error.message : "Failed to apply critique directly.";
+    res
+      .status(message.includes("No arbitrator synthesis available") || message.includes("no mustFix or worthConsidering items") ? 400 : 502)
+      .json({ error: message });
   }
 });
 

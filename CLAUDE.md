@@ -1551,16 +1551,82 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history`/`intake_acti
 - `GET /api/v1/planning/runs/:id` — poll current state
 - `POST /api/v1/planning/runs/:id/generate` — one Generator call for the current unit
 - `POST /api/v1/planning/runs/:id/critique` — all of `CRITIC_ROLES` (Continuity, Pacing & Chapter-Economy, Craft & Suspense), fired in parallel in one request
-- `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate
+- `POST /api/v1/planning/runs/:id/arbitrate` — Arbitrator panel-synthesis call, opens the human review gate. Optional `{ excludedCritics: string[] }` — critic roles (from `CRITIC_ROLES`) the writer has unchecked on that critic's own panel in the UI; excluded critiques are dropped from what the Arbitrator actually synthesizes from, not just visually hidden. Filtered server-side against `CRITIC_ROLES` so a bad value can't silently no-op or throw deep in the service
 - `POST /api/v1/planning/runs/:id/approve` — the gate's approve action. On `part_outline`, records the Part's committed chapter range. On `part_beats`, also materializes the chunk into the Outliner and reconciles the continuity ledger. Advances to the next unit per the fixed Act→Part→Beats sequence, or marks the run `done` once all 3 Acts' 9 Parts are fully planned
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
 - `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever unit came before the current one and reopens its rejection interview directly, restoring its `panel_reviews`/`arbitrator_synthesis` from `stage_panel_history`. `409` if the current unit already has its own generated artifact, or if there's no previous unit
 - `POST /api/v1/planning/runs/:id/discard-stage` — trashes the CURRENT unit's draft outright (unlike `unapprove`, allowed even when one exists — that's the point) and falls back to the PREVIOUS unit's review gate, ready to re-approve into a genuinely fresh generation. No interview. `409` if there's no previous unit
 - `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
 - `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same unit
+- `POST /api/v1/planning/runs/:id/apply-critique` — a second, zero-extra-LLM-call path to the same place `finalize-directive` reaches, for when the writer agrees with the Arbitrator's already-compiled synthesis and doesn't need a chat interview to get there. Takes the current `arbitrator_synthesis` (`mustFix` + `worthConsidering` from the last `/arbitrate` call) and formats it directly into a numbered checklist directive (`applyCritiqueDirectly` in `planningEngine.ts`) — the exact same shape `arbitrator_directive`'s own prompt now produces (see "Generator instruction-following" below) — then sets `status: "generating"` with that as `final_delta_directive`, same as `finalize-directive` does. 400 if there's no synthesis yet for this unit (arbitrate hasn't run) or if it has neither `mustFix` nor `worthConsidering` items to apply
 - `POST /api/v1/planning/runs/:id/entities/extract` — on-demand, callable whenever the writer wants (not tied to any single beats-chunk approval — see "Entity extraction is now on-demand" above). Scans every approved beats chunk in the run so far. Does not touch `status`
 - `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written. Does not touch `status`
 - `DELETE /api/v1/planning/runs/:id` — abandons the run's own bookkeeping row only; does not touch anything already materialized from it
+
+### Generator instruction-following — checklist-verifiable directives, not prose
+
+Real usage surfaced a genuine Generator reliability gap: on a revision pass,
+the Generator would sometimes leave a `mustFix` item from the Arbitrator's
+synthesis effectively untouched — sometimes literally unaddressed,
+sometimes only superficially reworded — and a critic's own next review
+would independently confirm the same item was still unresolved. The root
+cause wasn't (only) the Generator ignoring instructions; it was that a
+correction directive was, until this fix, a single free-form paragraph —
+easy for a model to partially address and move on from, with nothing
+forcing it to verify each distinct requested change actually landed,
+unlike a critic's own `issues` array, where every item already carries an
+explicit `resolved`/`unresolved` status the critic is required to set.
+
+Two changes close this gap, both text-only (no new architecture):
+
+- **Every correction directive is now a numbered checklist, not prose,
+  regardless of which of the two paths produced it.** `arbitrator_directive`'s
+  prompt (`stage: "all"`, used by `finalize-directive`) now requires its
+  output to be a numbered list of discrete, individually-verifiable action
+  items rather than a paragraph — the same shape `applyCritiqueDirectly`
+  (see `apply-critique` above) already produces deterministically from
+  `mustFix`/`worthConsidering` with no LLM call at all. Both paths now hand
+  the Generator the exact same kind of directive.
+- **Every Generator prompt's revision-mode instructions (`stage_1_summary`,
+  `act_summary`, `part_outline`, `part_beats`, `codex_documentation`,
+  `hook_chapters_outline`) now explicitly require treating the directive as
+  a checklist**: go through it item by item and confirm each one is
+  genuinely and fully resolved before returning — not superficially
+  touched, partially addressed, or reworded without the substance actually
+  changing — mirroring the resolved/unresolved discipline the critics
+  already use on their own prior issues.
+
+This is prompt engineering, not a code-level guarantee — nothing server-side
+parses the Generator's output to verify compliance the way, say, the Ghost
+Editor's paragraph-recheck loop does for banned terms. The next critique
+pass remains the actual backstop: a critic explicitly re-checks its own
+prior issues on every revision (`{{PREVIOUS_CRITIQUE}}`) and marks anything
+still present `unresolved` rather than dropping it, so a Generator miss
+surfaces again rather than silently passing.
+
+`hook_chapters_outline` and `part_beats` also had their `outlineText` rules
+strengthened specifically: this text is what a downstream prose generator
+actually sees, so a vague label or euphemism here is simply missing
+content later, not a style problem. Both now require a full, detailed
+paragraph per beat — concretely who does what, what's physically
+happening, what's actually said or revealed — explicitly banning
+gesture-at-it phrasing ("things escalate," "she reveals something
+shocking") and reaffirming that this platform doesn't sanitize dark or
+explicit content regardless of how uncomfortable a vague phrasing might
+feel to produce.
+
+### Per-critique inclusion — letting the writer drop a critic's review before synthesis
+
+Each critique panel in the review UI carries its own checkbox
+(default checked); unchecking one and then calling `/arbitrate` again with
+that critic's role in `excludedCritics` (see the endpoint above) means the
+Arbitrator's synthesis is built from only the remaining critiques — an
+excluded critic's `issues` never reach `{{PANEL_REVIEWS}}` for that
+`/arbitrate` call, so its concerns can't surface in `mustFix`/
+`worthConsidering` even indirectly. The excluded critic's own review stays
+stored in `panel_reviews` and visible in the run (nothing is deleted), it's
+just not what the Arbitrator reasons from for that particular synthesis
+call — re-arbitrating with all critics included again picks it back up.
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 
