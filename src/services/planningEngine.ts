@@ -55,6 +55,19 @@ import type {
 // constants (Layer 3's match threshold, the context token ceiling).
 const PART_BEATS_CHAPTER_WINDOW = 15;
 
+// Emitted by the Arbitrator's own rejection-interview reply (arbitrator_chat
+// stage "all") as the very last thing in its message, and ONLY when it has
+// both understood the correction clearly AND the writer's own latest message
+// confirmed they're ready — see the prompt for the exact condition. chatTurn
+// below detects it, strips it from what's actually stored/shown to the
+// writer, and auto-chains straight into finalizeDirective so the writer
+// never has to find and press a separate "send directive" action once
+// they've already said yes in conversation. Same code-level marker-detection
+// pattern this project already uses for <<DIRECTIVE: ...>> tags (llm.ts) and
+// the <<<GHOST_EDITOR_REPORT>>> marker (generateProse.ts) — a structural
+// signal from the model, not a heuristic guess at its prose.
+const READY_TO_FINALIZE_MARKER = "<<READY_TO_FINALIZE>>";
+
 interface UnitPosition {
   // Which track this position belongs to — see PipelineType. Only matters
   // at the one fork point (what comes right after stage_1_summary) and at
@@ -1149,15 +1162,26 @@ export async function chatTurn(runId: string, userMessage: string): Promise<Plan
       ],
     });
 
-    const reply = response.content
+    const rawReply = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
       .map((b) => b.text)
       .join("\n")
       .trim();
 
-    return saveRun(runId, {
+    const readyToFinalize = rawReply.includes(READY_TO_FINALIZE_MARKER);
+    const reply = rawReply.split(READY_TO_FINALIZE_MARKER).join("").trim();
+
+    const afterReply = await saveRun(runId, {
       chat_history: [...run.chat_history, { role: "user", content: userMessage }, { role: "assistant", content: reply }],
     });
+
+    // The Arbitrator itself just signaled the writer has agreed and it has
+    // enough clarity to compile the directive — don't make the writer find
+    // a separate action for something they already confirmed in
+    // conversation. Chain straight into the same compile-and-regenerate
+    // finalizeDirective already does for a manually-triggered finalize.
+    if (!readyToFinalize) return afterReply;
+    return finalizeDirective(runId);
   } catch (error) {
     return markFailed(runId, error);
   }

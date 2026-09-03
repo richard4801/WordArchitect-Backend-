@@ -1556,8 +1556,8 @@ Added in migration `022_planning_engine.sql`; `intake_chat_history`/`intake_acti
 - `POST /api/v1/planning/runs/:id/reject` — opens the Arbitrator chat interview
 - `POST /api/v1/planning/runs/:id/unapprove` — undoes approving whatever unit came before the current one and reopens its rejection interview directly, restoring its `panel_reviews`/`arbitrator_synthesis` from `stage_panel_history`. `409` if the current unit already has its own generated artifact, or if there's no previous unit
 - `POST /api/v1/planning/runs/:id/discard-stage` — trashes the CURRENT unit's draft outright (unlike `unapprove`, allowed even when one exists — that's the point) and falls back to the PREVIOUS unit's review gate, ready to re-approve into a genuinely fresh generation. No interview. `409` if there's no previous unit
-- `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn
-- `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same unit
+- `POST /api/v1/planning/runs/:id/chat` — `{ message }`, one interview turn. Can auto-finalize (see "Auto-finalizing the rejection interview" below) — the returned run may already be back to `status: "generating"` with a fresh directive applied, not just an updated `chat_history`
+- `POST /api/v1/planning/runs/:id/finalize-directive` — compiles the chat into one directive, loops back to `generate` for the same unit. Still exists as an explicit fallback for resuming a run where auto-finalize's signal was missed; the normal path is `/chat` triggering this itself
 - `POST /api/v1/planning/runs/:id/apply-critique` — a second, zero-extra-LLM-call path to the same place `finalize-directive` reaches, for when the writer agrees with the Arbitrator's already-compiled synthesis and doesn't need a chat interview to get there. Takes the current `arbitrator_synthesis` (`mustFix` + `worthConsidering` from the last `/arbitrate` call) and formats it directly into a numbered checklist directive (`applyCritiqueDirectly` in `planningEngine.ts`) — the exact same shape `arbitrator_directive`'s own prompt now produces (see "Generator instruction-following" below) — then sets `status: "generating"` with that as `final_delta_directive`, same as `finalize-directive` does. 400 if there's no synthesis yet for this unit (arbitrate hasn't run) or if it has neither `mustFix` nor `worthConsidering` items to apply
 - `POST /api/v1/planning/runs/:id/entities/extract` — on-demand, callable whenever the writer wants (not tied to any single beats-chunk approval — see "Entity extraction is now on-demand" above). Scans every approved beats chunk in the run so far. Does not touch `status`
 - `POST /api/v1/planning/runs/:id/entities/confirm` — `{ approvedIndexes }`, writes only the approved candidates into `codex_entries`/`world_categories`; anything not listed is discarded, never written. Does not touch `status`
@@ -1614,6 +1614,34 @@ gesture-at-it phrasing ("things escalate," "she reveals something
 shocking") and reaffirming that this platform doesn't sanitize dark or
 explicit content regardless of how uncomfortable a vague phrasing might
 feel to produce.
+
+### Auto-finalizing the rejection interview
+
+There used to be a manual "send directive and regenerate" action the writer
+had to find and press once the chat interview reached agreement — an extra
+step for something already settled in conversation. `chatTurn`
+(`planningEngine.ts`) now auto-finalizes instead: the `arbitrator_chat`
+prompt (`stage: "all"`) is instructed to end its reply with the literal
+token `<<READY_TO_FINALIZE>>`, as the very last thing in the message and
+nothing after it, but ONLY when both (1) it has already said plainly that
+it understands the correction and (2) the writer's message it's replying to
+is itself a clear go-ahead ("yes", "go ahead", "let's regenerate" — not a
+continued description of the problem, and not the Arbitrator asking
+permission). `chatTurn` detects the token, strips it before the message is
+ever stored or shown to the writer, and — only when present — chains
+straight into `finalizeDirective` for the same run, returning that result
+instead of the plain chat-turn update. The same code-level marker-detection
+pattern this project already uses for `<<DIRECTIVE: ...>>` tags (`llm.ts`)
+and the `<<<GHOST_EDITOR_REPORT>>>` marker (`generateProse.ts`) — a
+structural signal from the model, not a frontend heuristic guessing at
+prose.
+
+This is a real, accepted tradeoff, not a hidden one: a false-positive
+trigger (the model deciding "ready" prematurely) costs one Generator call
+that wouldn't otherwise have run — the same cost a manual button click would
+have caused anyway, just without the writer's own click as the last gate.
+`finalize-directive` is kept callable directly as a fallback for exactly
+this kind of miss, and for resuming an older run.
 
 ### Per-critique inclusion — letting the writer drop a critic's review before synthesis
 

@@ -299,7 +299,13 @@ planningRouter.post("/planning/runs/:id/discard-stage", async (req: Request, res
 });
 
 // POST /api/v1/planning/runs/:id/chat — one turn of the Arbitrator
-// interview. { message: string }
+// interview. { message: string }. Can auto-finalize: if the Arbitrator's
+// reply signals it understood the correction AND this message confirmed the
+// writer is ready, chatTurn strips that internal signal and chains straight
+// into finalizeDirective itself — the response run may already be back to
+// status "generating" with a fresh directive applied, not just an updated
+// chat_history. finalize-directive below still exists as an explicit
+// fallback (e.g. resuming a run where the signal was missed).
 planningRouter.post("/planning/runs/:id/chat", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   if (typeof body.message !== "string" || body.message.trim() === "") {
