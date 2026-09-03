@@ -910,17 +910,29 @@ async function materializeCodexDocumentation(bookId: string, userId: string, art
   if (existingError) throw new Error(`Failed to check existing Codex entries: ${existingError.message}`);
   const existingKeys = new Set((existing ?? []).map((e) => `${e.name} ${e.entry_type}`));
 
+  // Defensive backstop, not just a prompt instruction — confirmed live: the
+  // Generator wrote a personality trait longer than the schema's
+  // VARCHAR(100) cap on `personality_traits`, failing the whole insert
+  // ("value too long for type character varying(100)") after the
+  // generate/critique/arbitrate/approve cycle had already run. Truncating
+  // here means a verbose trait degrades gracefully instead of losing the
+  // entire approved unit's Codex writes to a schema violation. Same
+  // "prompting mitigates, code is the real backstop" principle already
+  // used for the <<DIRECTIVE>> tag leak (llm.ts) and tool-use narration
+  // (anthropicContent.ts).
+  const truncate = (s: string, max: number) => (s.length > max ? s.slice(0, max - 1) + "…" : s);
+
   const rows = entries
     .filter((e) => !existingKeys.has(`${e.name} ${e.entryType}`))
     .map((e) => ({
       user_id: userId,
       book_id: bookId,
       name: e.name,
-      entry_type: e.entryType || "character",
+      entry_type: truncate(e.entryType || "character", 50),
       description: e.description ?? "",
       aliases: e.aliases ?? null,
       tier: e.tier ?? null,
-      personality_traits: e.personalityTraits ?? null,
+      personality_traits: e.personalityTraits ? e.personalityTraits.map((t) => truncate(t, 100)) : null,
       motivations: e.motivations ?? null,
     }));
   if (rows.length === 0) return;
