@@ -1705,6 +1705,36 @@ since the Arbitrator never sees it for that pass. Re-arbitrating with
 everything included again picks it all back up — this only affects the one
 `/arbitrate` call it's sent with, not any stored state.
 
+**Every surviving issue is `mustFix`, regardless of severity.** This
+checkbox filtering is what makes that the right rule, not an accident of
+prompt wording: severity (critical/moderate/minor) is a critic's own
+diagnostic framing of how bad a problem is, not a signal that the writer
+wants it deprioritized — and by the time an issue reaches the Arbitrator,
+the writer has already decided, one checkbox at a time, that it's worth
+carrying forward. `arbitrator_panel` (all three stage variants — `all`,
+`codex_documentation`, `hook_chapters_outline`) is explicitly instructed
+to put every surviving issue into `mustFix` regardless of the critic's own
+severity label, never sort moderate/minor ones into `worthConsidering`.
+`worthConsidering` is reserved only for the Arbitrator's own optional
+suggestions that aren't tied to any specific critic-flagged issue — a
+genuine "you could also consider..." with nothing upstream backing it,
+never a place a real finding quietly loses its urgency. The recommendation
+gate moved with it: "revise" is recommended whenever `mustFix` is
+non-empty at all, not only when a critical-severity item is present.
+
+This closes a real compliance gap, not just a naming inconsistency: before
+this, a moderate/minor issue landed in `worthConsidering`, and
+`applyCritiqueDirectly`'s own formatting (see `apply-critique` above)
+explicitly treats that list as lower-priority ("address these too where it
+doesn't conflict with the must-fix items") — so the Generator had an
+actual textual permission slip to deprioritize exactly the class of issue
+a writer had just deliberately chosen to keep. A live case: minor/moderate
+issues repeatedly came back marked `unresolved` on the next critique pass
+after a revision, consistent with the Generator treating "worth
+considering" as optional. Once severity stops gating urgency, every issue
+that survives the checkboxes gets the same binding, individually-verified
+treatment described in "Generator instruction-following" above.
+
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 
 The writer's own framing was "we won't have to do that by hand" — but
