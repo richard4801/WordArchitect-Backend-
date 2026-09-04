@@ -1850,11 +1850,22 @@ in this project avoids (MCP's write tools, the Chat Assistant's
   the LLM call. Calls Claude with the `web_search_20260209` and
   `web_fetch_20260209` server-side tools (the same pattern `intakeChatTurn`
   already uses for reading a pasted URL during intake) to find genuinely
-  current information on hook conventions, early-chapter pacing
-  expectations, and common rejection reasons for these platforms —
-  Anthropic runs the searches/fetches itself within the call, no scraping
-  code lives in this backend. Prompt-driven like every other agent role —
-  `platform_researcher`, stage `"all"`.
+  current information, covering **two angles explicitly, not just one**:
+  opening-chapters/contract-qualification craft (hook conventions,
+  early-chapter pacing, why submissions get rejected — grounds the
+  Contract Pipeline and Act 1) and sustained engagement across a full
+  serialized run (trending tropes/subgenres/tags, multi-arc pacing
+  conventions, why reader engagement drops off deep into a book, paywall/
+  premium-placement mechanics — grounds every later Act/Part of the full
+  pipeline, per "Not Contract-Pipeline-exclusive" above). The prompt used
+  to only ask about the first angle, which made sense back when this fed
+  only the Contract Pipeline's five-chapter outline — broadened once
+  `{{PLATFORM_TRENDS}}` started feeding the whole-book pipeline too, since
+  a research pass scoped only to opening-chapter hooks has little to say
+  about pacing an Act 2 Part outline. Anthropic runs the searches/fetches
+  itself within the call, no scraping code lives in this backend.
+  Prompt-driven like every other agent role — `platform_researcher`,
+  stage `"all"`.
 
   **Runs to completion server-side regardless of the writer's browser** —
   `startPlatformResearchJob` (`platformCraftNotes.ts`) deliberately does

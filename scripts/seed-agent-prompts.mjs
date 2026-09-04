@@ -802,23 +802,32 @@ Synthesize the panel's findings now.`,
     stage: "all",
     model: DEFAULT_MODEL,
     effort: "medium",
-    systemPrompt: `You are researching current craft and platform conventions for serialized-fiction platforms that decide whether to offer a writer a contract based on roughly their first five chapters (GoodNovel-style contract-qualification models). This is an on-demand research pass, not a live feed — you have web_search and web_fetch tools available; use them to find genuinely current information, not just recall from training.
+    systemPrompt: `You are researching current craft and platform conventions for serialized-fiction platforms like GoodNovel — the notes you produce ground TWO different planning pipelines, not just one, and both matter equally here: (1) the Contract Pipeline, which plans a book's first five chapters specifically to clear these platforms' contract-qualification read, and (2) the full Act/Part/Beats pipeline, which plans an entire book across dozens or hundreds of chapters over weeks of real writing. Research and write for both — don't default to only covering the opening-chapter/contract-read angle, since a full-length book lives or dies on what keeps readers subscribed chapter after chapter for months, not just on what gets it signed. This is an on-demand research pass, not a live feed — you have web_search and web_fetch tools available; use them to find genuinely current information, not just recall from training.
 
 Output ONLY the finished reference document itself — no narration of your search process ("Let me search for...", "Good starting points, now let me...", "Tool budget is exhausted, let me..."), no meta-commentary about what you're doing or how you're approaching the task, no preamble before the document begins. Start your response directly with the document's own heading, and end it with the document's own content — nothing before or after.
 
-Research and write up:
+Research and write up, covering both the opening-chapters/contract angle AND the full-length/ongoing-serialization angle as clearly separate sections:
+
+Opening chapters / contract-qualification (feeds the Contract Pipeline and Act 1 of the full pipeline):
 - What specifically hooks readers in an opening chapter on these platforms right now — concrete patterns, not generic writing advice.
 - Expected pacing and chapter economy for early chapters (typical chapter length, how much plot movement is expected per chapter, cliffhanger conventions).
 - Common, specific reasons submissions get rejected or fail to convert, if you can find real discussion of this (writer forums, platform guidance pages, editor commentary).
-- Any recent shifts in what these platforms reward, if you find evidence of one — note it as recent, don't present it as a timeless rule if the evidence suggests it's a trend.
+
+Sustained engagement / the full serialized run (feeds every later Act/Part/beats chunk of the full pipeline):
+- Currently trending tropes, subgenres, and tags on these platforms — not just what hooks an opening chapter, but what's actually popular and converting well as a sustained premise across a full-length serial right now (e.g. which romance/fantasy/system-progression subgenres, relationship dynamics, or plot-arc shapes are trending versus fading).
+- What keeps readers subscribed and paying chapter after chapter deep into a long-running serial — pacing/arc-structuring conventions across dozens or hundreds of chapters, not just the first handful; how these platforms structure multi-arc or "season" pacing; common patterns for maintaining momentum across a long run rather than just a strong open.
+- Common, specific reasons readers drop off or a serialized book's engagement declines well past the opening chapters, if you can find real discussion of this — distinct from why a submission gets rejected at the contract stage, since that's an earlier and different failure mode.
+- Any platform mechanics tied to ongoing chapters specifically (premium/paywall placement, algorithmic promotion requirements, completion bonuses, update-cadence expectations) that a writer planning a full book's pacing should know about.
+
+Any recent shifts in what these platforms reward, in either category above, if you find evidence of one — note it as recent, don't present it as a timeless rule if the evidence suggests it's a trend.
 
 Write this as a concise, well-organized reference document a fiction-planning AI will actually use as grounding for judging a real outline against — not a listicle, not generic "show don't tell" advice, an actual usable craft reference specific to this platform category. Cite what you found in a way that makes clear this is grounded in real current sources, not just asserted.
 
-If Existing Notes are provided below, revise and update them rather than starting over — keep what's still accurate, correct or remove what's outdated, add what's newly found.`,
+If Existing Notes are provided below, revise and update them rather than starting over — keep what's still accurate, correct or remove what's outdated, add what's newly found. If the existing notes only cover the opening-chapters/contract angle from an earlier research pass, treat filling in the sustained-engagement/full-run angle as new material to add, not something to skip because notes already exist.`,
     userPromptTemplate: `## Existing Notes (present only if notes already exist for this book — revise/update these rather than starting from scratch)
 {{EXISTING_NOTES}}
 
-Research current information and produce the notes now.`,
+Research current information and produce the notes now — covering both the opening-chapters/contract angle and the sustained-engagement/full-serialized-run angle.`,
   },
 ];
 
