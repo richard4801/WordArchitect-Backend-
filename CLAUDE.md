@@ -1233,6 +1233,12 @@ Read (safe to call freely):
   call broadly before narrowing in with `get_agent_prompt`
 - `get_agent_prompt` — `{ promptId }` — one specific version's full,
   untruncated `systemPrompt`/`userPromptTemplate` text, by id
+- `get_platform_craft_notes` — `{ bookId }` — this book's saved Platform
+  Craft Notes (trending tropes/tags, hook/pacing conventions, common
+  rejection reasons for serialized-fiction platforms like GoodNovel — see
+  Platform Craft Notes above), plus the app's own research-job draft
+  state. Read this before proposing an update so a save extends the
+  existing notes rather than silently discarding them
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
@@ -1278,6 +1284,15 @@ unsupervised):
   now) with no retyping — the undo for a chat-driven `update_agent_prompt`
   change that didn't work out. Touches only which version is active,
   never any version's actual text/model/effort
+- `update_platform_craft_notes` — `{ bookId, content }` — saves this
+  book's Platform Craft Notes after the writer has Claude research
+  current platform trends conversationally (using the MCP session's own
+  live web access), a parallel path to the app's own automated
+  `platform_researcher` research pass — see Platform Craft Notes above.
+  `content` replaces the notes wholesale, same as the app's own save
+  action, so the tool's description tells Claude to read the existing
+  notes via `get_platform_craft_notes` first and send back the complete
+  merged document, not just new findings alone
 
 Generation:
 - `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the
@@ -1816,9 +1831,13 @@ outcome.
 
 ### Platform Craft Notes
 
+Documented under Contract Pipeline since that's where it originated, but
+**not Contract-Pipeline-exclusive** — see the note near the end of this
+section; it now feeds the full Act/Part/Beats hierarchy too.
+
 A per-book reference doc (`platform_craft_notes`, one row per `book_id`)
-feeding a `{{PLATFORM_TRENDS}}` placeholder into the `hook_chapters_
-outline` stage's Generator and critics. Deliberately **not** a live or
+feeding a `{{PLATFORM_TRENDS}}` placeholder into the Generator and
+critics across both pipelines. Deliberately **not** a live or
 scheduled feed — scraping ranking/algorithm behavior in real time is
 fragile and platform-ToS-risky, and a silently-updating judgment
 reference is exactly the kind of ungoverned drift every other write path
@@ -1890,12 +1909,39 @@ in this project avoids (MCP's write tools, the Chat Assistant's
   poll a Planning Engine run) to watch a research pass started above
   progress from `"running"` to `"ready"`/`"failed"`.
 
-`getActivePrompt`/`interpolateTemplate` already ignore a placeholder
-value no template references, so `PLATFORM_TRENDS` is fetched and passed
-unconditionally for every `pipeline_type: "contract"` call
+**Not Contract-Pipeline-exclusive** — `platform_craft_notes` is one row
+per `book_id`, not per `pipeline_type`, and now feeds the full Act/Part/
+Beats hierarchy too, not just the Contract Pipeline's hook-focused units:
+`generator`/`pacing_critic`/`craft_critic` at `stage_1_summary`,
+`act_summary`, `part_outline`, and `part_beats` all reference
+`{{PLATFORM_TRENDS}}` now, the same way their Contract-Pipeline
+counterparts already did — trending tropes/tags and pacing conventions
+matter for planning the whole book, not only its first five chapters.
+`getActivePrompt`/`interpolateTemplate` already ignore a placeholder no
+template references, so `PLATFORM_TRENDS` is fetched and passed
+unconditionally for EVERY `generate`/`critique`/`arbitrate` call
 (`generateStage`/`runCritique`/`runArbitration` in `planningEngine.ts`)
-rather than only at `hook_chapters_outline` specifically — harmless, and
-one fewer stage-specific branch to maintain.
+regardless of `pipeline_type` or stage — harmless, and one fewer
+stage/pipeline-specific branch to maintain.
+
+**A second, MCP-side path for populating these notes**: `get_platform_
+craft_notes`/`update_platform_craft_notes` (see MCP Server's Tools list
+below) expose the same read/save actions to an MCP-connected Claude
+session (Desktop/claude.ai), parallel to the app's own automated
+`platform_researcher` research pass above. The difference is who does the
+research and how: the app's pass runs a single, one-shot backend
+`web_search`/`web_fetch`-equipped Claude call server-side; the MCP path
+lets the writer instead research conversationally in a live Claude
+session — using that session's own live web access, which can be more
+interactive and current than a one-shot backend call — and have Claude
+save what it found directly once the writer's satisfied with it. Same
+direct-write reasoning as every other MCP write tool: safe specifically
+because a human is steering the research and the save decision in real
+time, not because the content is low-stakes. `update_platform_craft_notes`
+calls the exact same `savePlatformCraftNotes` function the app's own
+`PATCH /platform-craft-notes` uses — a whole-document replace, not a
+merge, so the tool's description tells Claude to read the existing notes
+first and send back the complete merged document, not just new findings.
 
 ### Handoff into the full pipeline
 

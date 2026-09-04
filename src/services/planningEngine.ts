@@ -561,13 +561,13 @@ export async function generateStage(runId: string): Promise<PlanningRun> {
       chapterRangeText = "Chapters 1-5 (fixed — the Contract Pipeline always covers exactly the first five chapters).";
     }
 
-    // Only relevant to the Contract Pipeline's hook-focused units — see
-    // platformCraftNotes.ts. Harmless to fetch/pass unconditionally for
-    // "contract" runs even on stage_1_summary/codex_documentation, since
-    // interpolateTemplate silently ignores a value no placeholder in the
-    // template actually references.
-    const platformTrends =
-      run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
+    // Craft notes apply to both pipelines now, not just the Contract
+    // Pipeline's hook-focused units — see platformCraftNotes.ts. One row
+    // per book_id regardless of which pipeline_type is running against it;
+    // fetching unconditionally is harmless even for a stage whose prompt
+    // doesn't reference {{PLATFORM_TRENDS}} at all, since interpolateTemplate
+    // silently ignores a value no placeholder in the template references.
+    const platformTrends = (await getPlatformCraftNotes(run.book_id))?.content ?? "";
 
     const userMessage = interpolateTemplate(prompt.user_prompt_template, {
       BOOK_CONTEXT: bookContext,
@@ -631,8 +631,7 @@ export async function runCritique(runId: string): Promise<PlanningRun> {
     const bookVision = run.stage_artifacts["stage_1_summary"] ?? "";
     const ledgerText = formatLedger(run.continuity_ledger);
     const previousPanelReviews = run.panel_reviews ?? {};
-    const platformTrends =
-      run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
+    const platformTrends = (await getPlatformCraftNotes(run.book_id))?.content ?? "";
 
     const prompts = await Promise.all(CRITIC_ROLES.map((role) => getActivePrompt(run.book_id, role, run.current_stage)));
 
@@ -703,8 +702,7 @@ export async function runArbitration(
     // Read before this call's new synthesis overwrites it — same
     // previous-verdict trick runCritique uses for {{PREVIOUS_CRITIQUE}}.
     const previousSynthesis = run.arbitrator_synthesis;
-    const platformTrends =
-      run.pipeline_type === "contract" ? ((await getPlatformCraftNotes(run.book_id))?.content ?? "") : "";
+    const platformTrends = (await getPlatformCraftNotes(run.book_id))?.content ?? "";
 
     const excludedSet = new Set(excludedCritics);
     const excludedIssueIndexes = new Map<AgentRole, Set<number>>();

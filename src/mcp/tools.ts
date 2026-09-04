@@ -21,6 +21,7 @@ import type { NoteCategory } from "../types/domain.js";
 import { listWorldCategories, slugify } from "../routes/worldCategories.js";
 import { listNotesForBook } from "../routes/notes.js";
 import { listAgentPrompts, getAgentPromptById, createAgentPrompt, updateAgentPrompt, getActivePrompt } from "../services/agentPrompts.js";
+import { getPlatformCraftNotes, savePlatformCraftNotes } from "../services/platformCraftNotes.js";
 import { VALID_AGENT_ROLES, VALID_PLANNING_STAGES } from "../types/domain.js";
 import type { AgentRole, PlanningStage } from "../types/domain.js";
 
@@ -319,6 +320,45 @@ export function registerWordArchitectTools(server: McpServer): void {
       try {
         const activated = await updateAgentPrompt(promptId, { isActive: true });
         return textResult(JSON.stringify(activated, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_platform_craft_notes",
+    {
+      title: "Get Platform Craft Notes",
+      description:
+        "Fetches this book's saved Platform Craft Notes — a reference doc on what actually hooks readers, converts, and stays trending (tropes, tags, pacing/chapter-economy conventions, common rejection reasons) on serialized-fiction platforms like GoodNovel. Feeds the {{PLATFORM_TRENDS}} placeholder used by generator/pacing_critic/craft_critic across both the full Act/Part/Beats pipeline and the Contract Pipeline. Read this first before proposing an update, so you revise/extend the existing notes rather than silently overwriting research already saved.",
+      inputSchema: { bookId: z.string().describe("The book's ID") },
+    },
+    async ({ bookId }) => {
+      try {
+        const notes = await getPlatformCraftNotes(bookId);
+        return textResult(JSON.stringify(notes ?? { bookId, content: "", updatedAt: null }, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "update_platform_craft_notes",
+    {
+      title: "Update Platform Craft Notes",
+      description:
+        "Saves this book's Platform Craft Notes — the actual write action, once you've researched (using your own live web access in this conversation, not a backend tool) what's currently converting on serialized-fiction platforms like GoodNovel: trending tropes and tags, hook/pacing conventions, common rejection reasons, any recent shifts. This is a parallel path to the backend's own automated research pass (POST /platform-craft-notes/research in the app) — use this when the writer wants you to do the research directly in this conversation instead. content REPLACES the notes wholesale, the same as the app's save action — call get_platform_craft_notes first and pass back the complete merged document (keep what's still accurate, correct or remove what's outdated, add what's newly found), not just the new findings alone, or you'll silently delete everything not restated. Only call this once the writer has actually asked you to save what you found, not speculatively mid-research. Note: if the app has a research pass sitting unsaved and ready for the writer's own review, this call will silently replace it — check get_platform_craft_notes's draftStatus/draftContent first if you're unsure whether that's the case.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        content: z.string().describe("The complete Platform Craft Notes document to save, replacing whatever is currently saved"),
+      },
+    },
+    async ({ bookId, content }) => {
+      try {
+        const notes = await savePlatformCraftNotes(bookId, content);
+        return textResult(JSON.stringify(notes, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

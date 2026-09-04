@@ -25,6 +25,8 @@ A strong Core Summary includes, explicitly and by name:
 - Thematic throughline: what this story is actually ABOUT underneath the plot.
 - Ending shape: not a full ending, but the emotional destination — what changes, what's earned by the end.
 
+If Platform Trends notes are included below, use them as real, current grounding for genre/trope choices — what's actually trending and converting on these platforms right now (e.g. GoodNovel-style serialized fiction), not generic writing advice. This doesn't mean chasing every trend indiscriminately; it means knowing which trope/tag choices for this premise are landing with readers right now versus which read as dated, so the Core Summary's genre and tone commitments are informed rather than a guess.
+
 Ground everything in the book context below — if this is a new book, invent freely from the writer's brief; if Codex entries already exist, treat them as fixed canon and build consistently around them, never contradicting an established name, relationship, or fact.
 
 Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact document. Treat the Writer's Brief / Correction Directive below as a checklist of separate, individually-verifiable items, whether it arrives as a numbered list or as prose — before you finish, go through it point by point and confirm each one is genuinely and fully resolved in your output, not superficially touched, partially addressed, or reworded without the substance actually changing. Do not return a revision that leaves any directive item unresolved. Apply every requested change precisely, and leave everything else in the Previous Draft unchanged in wording and structure wherever the directive doesn't call for a change there. Do not rewrite passages, rephrase sections, or make unrelated "while I'm at it" edits — a change the writer didn't ask for is itself a defect, even if you think it reads better. If no Previous Draft is included below, this is the first attempt at this stage: write it fresh from the Book Context and Writer's Brief.
@@ -32,6 +34,9 @@ Revision mode: if a Previous Draft is included below, this is not a first attemp
 Write only the Core Summary itself. No preamble, no meta-commentary about what you're doing, no "Here is the summary:" — just the document.`,
     userPromptTemplate: `## Book Context
 {{BOOK_CONTEXT}}
+
+## Platform Trends (current research on what's converting on these platforms right now — weight this as real, current guidance if present; a book with no craft notes saved yet will see this section empty, which is fine)
+{{PLATFORM_TRENDS}}
 
 ## Previous Draft of this Core Summary (present only if this is a revision after a rejection — otherwise blank, meaning this is the first attempt)
 {{PREVIOUS_ARTIFACT}}
@@ -56,6 +61,8 @@ A strong Act summary includes, explicitly:
 - How it ends — the specific event or revelation that pushes into the next Act (or, for Act 3, that resolves the book, honoring the ending shape the Book Vision already committed to).
 - A brief (one or two sentences each) indication of how this Act's own 3 Parts will roughly divide up the movements above — NOT full outlines, just enough that Part 1's detailed outline (generated next, separately) has a clear starting point. Do not write full outlines for the Parts here; that is explicitly the next stage's job, not yours.
 
+If Platform Trends notes are included below, use them as real, current grounding for which plot movements/tropes are actually landing on these platforms right now — informing how this Act paces and escalates, not just what it contains.
+
 Stay strictly consistent with the Book Vision and the Continuity Ledger below — never contradict a fact, character detail, or tone commitment already established there. If this is Act 2 or Act 3, also stay consistent with the previous Act(s) already approved (visible in the Continuity Ledger).
 
 Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact document. Treat the Correction Directive below as a checklist of separate, individually-verifiable items, whether it arrives as a numbered list or as prose — before you finish, go through it point by point and confirm each one is genuinely and fully resolved in your output, not superficially touched, partially addressed, or reworded without the substance actually changing. Do not return a revision that leaves any directive item unresolved. Apply every requested change precisely, and leave everything else in the Previous Draft unchanged wherever the directive doesn't call for a change there. If no Previous Draft is included below, this is the first attempt at this Act: write it fresh from the Book Vision, Book Context, and Continuity Ledger.
@@ -69,6 +76,9 @@ Write only the Act summary itself. No preamble, no meta-commentary, no "Here is 
 
 ## Continuity Ledger (hard facts already true of this book, including everything established by previous Acts if any)
 {{CONTINUITY_LEDGER}}
+
+## Platform Trends (current research on what's converting on these platforms right now — weight this as real, current guidance if present)
+{{PLATFORM_TRENDS}}
 
 ## Previous Draft of this Act Summary (present only if this is a revision — otherwise blank, meaning this is the first attempt)
 {{PREVIOUS_ARTIFACT}}
@@ -99,6 +109,8 @@ The outline text itself should include:
 - How this Part ends and connects into the next Part (or, if this is Part 3 of an Act, into the next Act).
 - Foreshadowing: if the Act Summary or Continuity Ledger promises something that pays off later, note explicitly where in this Part's range the seeds get planted.
 
+If Platform Trends notes are included below, use them as real, current grounding for pacing/hook-density conventions on these platforms — how much reader-facing momentum a Part this length actually needs to sustain, not just what happens in it.
+
 Stay strictly consistent with the Book Vision, the approved Act Summary, and the Continuity Ledger below — never contradict a fact, number, or commitment already established there.
 
 Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact JSON (same chapter range unless the directive explicitly asks you to change it, which should be rare and only for a real structural problem). Treat the Correction Directive below as a checklist of separate, individually-verifiable items, whether it arrives as a numbered list or as prose — before you finish, go through it point by point and confirm each one is genuinely and fully resolved in your output, not superficially touched, partially addressed, or reworded without the substance actually changing. Do not return a revision that leaves any directive item unresolved. Apply every requested change precisely, and leave everything else in the Previous Draft unchanged wherever the directive doesn't call for a change there. If no Previous Draft is included below, this is the first attempt at this Part.`,
@@ -113,6 +125,9 @@ Revision mode: if a Previous Draft is included below, this is not a first attemp
 
 ## Continuity Ledger (hard facts already true of this book)
 {{CONTINUITY_LEDGER}}
+
+## Platform Trends (current research on what's converting on these platforms right now — weight this as real, current guidance if present)
+{{PLATFORM_TRENDS}}
 
 ## Previous Draft of this Part's Outline (present only if this is a revision — otherwise blank, meaning this is the first attempt)
 {{PREVIOUS_ARTIFACT}}
@@ -140,6 +155,8 @@ Each chapter typically needs 1-4 beats depending on chapter length and complexit
 
 Cover every plot point from this window's slice of the Part's approved outline — nothing it establishes for these specific chapters should be missing from the beats, and nothing should appear here that contradicts it, the Book Vision, or the Continuity Ledger below.
 
+Use the Platform Trends notes below if present — they reflect current, specific research on what's actually converting on these platforms right now; weight them as real, current guidance, not generic advice, when deciding how a beat lands (hook placement, trope execution, what's worth lingering on versus moving past quickly).
+
 Revision mode: if a Previous Draft is included below, this is not a first attempt — it is a revision of that exact JSON. Treat the Correction Directive below as a checklist of separate, individually-verifiable items, whether it arrives as a numbered list or as prose — before you finish, go through it point by point and confirm each one is genuinely and fully resolved in your output, not superficially touched, partially addressed, or reworded without the substance actually changing. Do not return a revision that leaves any directive item unresolved. Apply every requested change precisely, and output the complete corrected JSON object again — copy every chapter/beat the directive doesn't address over exactly as it was in the Previous Draft, unchanged, and change only what the directive requires. Do not silently renumber, reorder, merge, or drop chapters/beats the directive didn't ask you to touch. If no Previous Draft is included below, this is the first attempt at this window.`,
     userPromptTemplate: `## Chapter Range For This Call — produce ONLY these chapters
 {{CHAPTER_RANGE}}
@@ -152,6 +169,9 @@ Revision mode: if a Previous Draft is included below, this is not a first attemp
 
 ## Continuity Ledger (hard facts already true of this book)
 {{CONTINUITY_LEDGER}}
+
+## Platform Trends (current research on what's converting on these platforms right now — weight this as real, current guidance if present)
+{{PLATFORM_TRENDS}}
 
 ## Previous Draft of This Window's Beats (present only if this is a revision — otherwise blank, meaning this is the first attempt)
 {{PREVIOUS_ARTIFACT}}
@@ -213,6 +233,8 @@ This is a structural/quantitative lens, not a craft one — a separate critic al
 4. Retention-curve awareness — early chapters need a faster hook density than later ones, once a reader is already invested; flag a slow-burn opening stretch that risks losing a webnovel reader before the story has earned their patience.
 5. Time-skip and arc-transition handling — abrupt or unclear time jumps, or a transition between acts/parts that loses momentum rather than carrying it forward.
 
+Use the Platform Trends notes below, if present, as real current grounding for what chapter-length/hook-cadence norms these platforms actually expect right now — treat them as specific evidence, not generic pacing advice.
+
 If a Previous Critique is included below, this is a revision, not a first look: go through each issue you raised last time first and mark it "resolved" or "unresolved" (restate it if still present) before looking for anything new (mark those "new"). If there's no Previous Critique, this is a first review — mark every issue "new".
 
 Score honestly. A logically sound, emotionally well-crafted outline that drags for several chapters before anything happens should score low here even if it scores well elsewhere — pacing is a distinct failure mode from logic or craft, and for a webnovel specifically it's usually the one that actually loses readers.`,
@@ -224,6 +246,9 @@ Score honestly. A logically sound, emotionally well-crafted outline that drags f
 
 ## Continuity Ledger (hard facts already true of this book)
 {{CONTINUITY_LEDGER}}
+
+## Platform Trends (current research on what's converting on these platforms right now — weight this as real, current evidence if present)
+{{PLATFORM_TRENDS}}
 
 ## Your Previous Critique of This Unit (present only if this is a revision — otherwise blank, meaning this is the first review)
 {{PREVIOUS_CRITIQUE}}
@@ -248,6 +273,8 @@ A separate critic already judges chapter economy and hook FREQUENCY/cadence — 
 3. Anti-cliché — flag any beat, phrase-level pattern, or trope execution that reads as generic AI-fiction filler rather than something specific to THIS story's voice and characters. Genre tropes themselves are fine and expected; what's not fine is executing a trope in the laziest possible way with no specificity.
 4. Foreshadowing and payoff balance — is a twist earned by real seeding, or does it come out of nowhere? Conversely, is anything foreshadowed so heavily it kills the surprise? Check the Continuity Ledger below for facts already planted earlier in the book that this unit should be paying off, not re-seeding.
 
+Use the Platform Trends notes below, if present, as real current grounding for anti-cliché judgment — knowing which trope executions genuinely feel fresh to a current reader on these platforms versus which are already overdone, rather than guessing from general craft instinct alone.
+
 If a Previous Critique is included below, this is a revision, not a first look: go through each issue you raised last time first and mark it "resolved" or "unresolved" (restate it if still present) before looking for anything new (mark those "new"). If there's no Previous Critique, this is a first review — mark every issue "new".
 
 Score honestly. A technically logical, well-paced outline that's emotionally flat or leans on generic execution should score low here even if it scores well elsewhere — that's exactly the gap this critic exists to catch.`,
@@ -259,6 +286,9 @@ Score honestly. A technically logical, well-paced outline that's emotionally fla
 
 ## Continuity Ledger (hard facts already true of this book, including things already planted that may need paying off)
 {{CONTINUITY_LEDGER}}
+
+## Platform Trends (current research on what's converting on these platforms right now — weight this as real, current evidence if present)
+{{PLATFORM_TRENDS}}
 
 ## Your Previous Critique of This Unit (present only if this is a revision — otherwise blank, meaning this is the first review)
 {{PREVIOUS_CRITIQUE}}
