@@ -22,6 +22,14 @@ import { listWorldCategories, slugify } from "../routes/worldCategories.js";
 import { listNotesForBook } from "../routes/notes.js";
 import { listAgentPrompts, getAgentPromptById, createAgentPrompt, updateAgentPrompt, getActivePrompt } from "../services/agentPrompts.js";
 import { getPlatformCraftNotes, savePlatformCraftNotes } from "../services/platformCraftNotes.js";
+import {
+  listPlanningRuns,
+  getPlanningRun,
+  generateStage,
+  runCritique,
+  approveStage,
+  setPlanningDirective,
+} from "../services/planningEngine.js";
 import { VALID_AGENT_ROLES, VALID_PLANNING_STAGES } from "../types/domain.js";
 import type { AgentRole, PlanningStage } from "../types/domain.js";
 
@@ -810,6 +818,141 @@ export function registerWordArchitectTools(server: McpServer): void {
         return textResult(
           `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content.`
         );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  // Planning Engine supervision — lets an MCP-connected Claude session act
+  // as the Arbitrator directly, in live conversation with the writer,
+  // instead of relying only on the automated arbitrator_panel Sonnet call
+  // or the app's own chat-interview flow. The critics stay automated (see
+  // critique_planning_unit below) — what moves here is synthesis and
+  // enforcement: reading the critics' findings and the current draft,
+  // deciding what genuinely needs to change, writing the directive, and
+  // verifying after regeneration that it actually landed, the same
+  // generate-critique-redirect discipline already proven for Hanami via
+  // the scene-draft-session tools above. See CLAUDE.md's Planning Engine
+  // section for the full generate/critique/arbitrate/approve cycle these
+  // tools drive the same steps of.
+  //
+  // Cost note, stated plainly in each write tool's description below:
+  // generate_planning_unit and critique_planning_unit still bill this
+  // backend's own Anthropic API key exactly like clicking the equivalent
+  // button in the app — only the Arbitrator's reasoning moves off that
+  // bill, since it happens in this live session instead of as an
+  // automated call.
+
+  server.registerTool(
+    "list_planning_runs",
+    {
+      title: "List Planning Runs",
+      description:
+        "Lists a book's Planning Engine runs (both pipeline_type: 'full' and 'contract'), most recently updated first. Use this to find the run to supervise — a book can have more than one run (e.g. a completed contract-pipeline run and an in-progress full-pipeline run).",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        status: z.string().optional().describe("Optional filter, e.g. 'awaiting_user_review'"),
+      },
+    },
+    async ({ bookId, status }) => {
+      try {
+        const runs = await listPlanningRuns(bookId);
+        const filtered = status ? runs.filter((r) => r.status === status) : runs;
+        return textResult(JSON.stringify(filtered, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_planning_run",
+    {
+      title: "Get Planning Run",
+      description:
+        "Fetches a Planning Engine run's full current state: which unit it's on (current_stage/current_act/current_part/current_beat_chunk), that unit's current draft (stage_artifacts), the critics' findings (panel_reviews) and any automated arbitrator_synthesis if arbitrate has already run for it, the continuity ledger, and status. Read this before deciding what the Generator's current draft still needs — this is the same information the app's own review screen shows.",
+      inputSchema: { runId: z.string().describe("The planning_runs row ID") },
+    },
+    async ({ runId }) => {
+      try {
+        const run = await getPlanningRun(runId);
+        return textResult(JSON.stringify(run, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "generate_planning_unit",
+    {
+      title: "Generate Planning Unit",
+      description:
+        "Runs one Generator call for the run's current unit — a real, billed call against this backend's Anthropic API key, the same cost as pressing 'Generate' in the app. If final_delta_directive is set on the run (e.g. via set_planning_directive below), the Generator treats it as a revision of the previous draft and is instructed to verify every numbered item in it is genuinely resolved. Call get_planning_run afterward to read the new draft.",
+      inputSchema: { runId: z.string().describe("The planning_runs row ID") },
+    },
+    async ({ runId }) => {
+      try {
+        const run = await generateStage(runId);
+        return textResult(JSON.stringify(run, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "critique_planning_unit",
+    {
+      title: "Critique Planning Unit",
+      description:
+        "Runs the automated 3-critic pass (Continuity, Pacing & Chapter-Economy, Craft & Suspense) against the run's current draft — real, billed calls against this backend's Anthropic API key, fired in parallel, same cost as pressing 'Critique' in the app. This stays automated deliberately; it's the input your own arbitration reasoning works from, not something to replace. Call get_planning_run afterward to read panel_reviews.",
+      inputSchema: { runId: z.string().describe("The planning_runs row ID") },
+    },
+    async ({ runId }) => {
+      try {
+        const run = await runCritique(runId);
+        return textResult(JSON.stringify(run, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "set_planning_directive",
+    {
+      title: "Set Planning Directive (Act as Arbitrator)",
+      description:
+        "The actual 'be the Arbitrator' action: after reading the critics' findings (critique_planning_unit) and the current draft (get_planning_run), write your own synthesis of what genuinely needs to change — not a rubber stamp, and not everything every critic said if some of it is wrong or contradictory, the same judgment call the automated Arbitrator makes. Write `directive` as a NUMBERED CHECKLIST of discrete, individually-verifiable items (e.g. '1. ...', '2. ...') — every Generator prompt in this pipeline is specifically hardened to treat a directive in this shape as binding and to verify each item before returning, so a vague or prose-shaped directive will be followed less reliably. This sets the run's final_delta_directive and status to 'generating' directly — no LLM call happens on this side, since the reasoning already happened in this conversation. Call generate_planning_unit next to actually regenerate, then diff_drafts (or your own read of the new draft) to verify each item actually landed before deciding whether to iterate again or call approve_planning_unit.",
+      inputSchema: {
+        runId: z.string().describe("The planning_runs row ID"),
+        directive: z.string().describe("The correction directive, as a numbered checklist"),
+      },
+    },
+    async ({ runId, directive }) => {
+      try {
+        const run = await setPlanningDirective(runId, directive);
+        return textResult(JSON.stringify(run, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "approve_planning_unit",
+    {
+      title: "Approve Planning Unit",
+      description:
+        "The human review gate's approve action — call this once you and the writer are genuinely satisfied the current unit's draft resolved everything, not before. On a part_outline, records the Part's committed chapter range; on a part_beats/hook_chapters_outline chunk, also materializes it into the Outliner and reconciles the continuity ledger. Advances the run to the next unit in the fixed Act→Part→Beats sequence (or marks it done once complete) — call get_planning_run afterward to see the new current unit and continue supervising it, checking in with the writer periodically rather than working through the whole remaining book unsupervised in one pass.",
+      inputSchema: { runId: z.string().describe("The planning_runs row ID") },
+    },
+    async ({ runId }) => {
+      try {
+        const run = await approveStage(runId);
+        return textResult(JSON.stringify(run, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

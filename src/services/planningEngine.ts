@@ -1264,6 +1264,26 @@ export async function applyCritiqueDirectly(runId: string): Promise<PlanningRun>
   return saveRun(runId, { status: "generating", final_delta_directive: lines.join("\n") });
 }
 
+// A third path to the same place applyCritiqueDirectly/finalizeDirective
+// reach, for the MCP surface: an MCP-connected Claude session acting as
+// the Arbitrator directly, in live conversation with the writer, instead
+// of either the automated arbitrator_panel Sonnet call or a chat-compiled
+// directive. Claude reads the critics' findings (still the automated,
+// cheap 3-critic pass — this doesn't replace that) and the current draft,
+// reasons about what genuinely needs to change the same way the human
+// Arbitrator role does, and writes the directive itself — expected to
+// already be in the same numbered-checklist shape every Generator prompt
+// is now hardened to treat as binding (see "Generator instruction-
+// following" in CLAUDE.md), since nothing here reformats or validates it.
+// Deliberately not an LLM call on this side either: the reasoning already
+// happened in the live session that's calling this.
+export async function setPlanningDirective(runId: string, directive: string): Promise<PlanningRun> {
+  if (!directive || !directive.trim()) {
+    throw new Error("directive must be a non-empty string.");
+  }
+  return saveRun(runId, { status: "generating", final_delta_directive: directive.trim() });
+}
+
 // Compiles the chat interview into one crisp technical directive, then
 // loops back to the Generator for this same unit (reject -> chat ->
 // directive -> regenerate). {{CHAT_HISTORY}} is the full intake +

@@ -1239,6 +1239,12 @@ Read (safe to call freely):
   Platform Craft Notes above), plus the app's own research-job draft
   state. Read this before proposing an update so a save extends the
   existing notes rather than silently discarding them
+- `list_planning_runs` — `{ bookId, status? }` — a book's Planning Engine
+  runs (both pipeline types), most recently updated first
+- `get_planning_run` — `{ runId }` — a run's full current state: which
+  unit it's on, that unit's current draft, the critics' findings, any
+  automated arbitrator_synthesis, the continuity ledger, and status — see
+  "MCP as Arbitrator" under Planning Engine below
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
@@ -1293,6 +1299,20 @@ unsupervised):
   action, so the tool's description tells Claude to read the existing
   notes via `get_platform_craft_notes` first and send back the complete
   merged document, not just new findings alone
+- `generate_planning_unit` — `{ runId }` — runs one Generator call for
+  the run's current unit; a real, billed call against this backend's own
+  Anthropic API key, same cost as pressing Generate in the app
+- `critique_planning_unit` — `{ runId }` — runs the automated 3-critic
+  pass; also a real, billed call, fired in parallel same as the app's
+  Critique action
+- `set_planning_directive` — `{ runId, directive }` — see "MCP as
+  Arbitrator" under Planning Engine below. Sets the run's
+  `final_delta_directive` directly from Claude's own reasoning (no LLM
+  call on this side) — `directive` must be a numbered checklist, the same
+  shape every Generator prompt is hardened to verify against
+- `approve_planning_unit` — `{ runId }` — the human review gate's approve
+  action; only call once genuinely satisfied the current draft resolved
+  everything, since it materializes the unit and advances the run
 
 Generation:
 - `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the
@@ -1749,6 +1769,72 @@ after a revision, consistent with the Generator treating "worth
 considering" as optional. Once severity stops gating urgency, every issue
 that survives the checkboxes gets the same binding, individually-verified
 treatment described in "Generator instruction-following" above.
+
+### MCP as Arbitrator — an MCP-connected Claude session supervising the Generator directly
+
+A second way to drive the generate → critique → arbitrate → approve
+cycle, alongside the app's own UI: `list_planning_runs`, `get_planning_run`,
+`generate_planning_unit`, `critique_planning_unit`, `set_planning_directive`,
+and `approve_planning_unit` (see MCP Server's Tools list) let an
+MCP-connected Claude session (Desktop/claude.ai) act as the Arbitrator
+directly, in live conversation with the writer, instead of relying only
+on the automated `arbitrator_panel` Sonnet call or the app's own chat
+interview. Motivated by the same insight that already justifies the MCP
+server's Hanami-side supervised drafting (`*_scene_draft_session` tools,
+`generate_prose_direct`) — a human plus Claude reasoning together in real
+time catches things a single automated pass doesn't, and holds a
+downstream generator to actually resolving what it's told, the same
+"scope discipline degrades without active supervision" lesson already
+proven true of Hanami, now applied one level up to the Planning Engine's
+Generator.
+
+**The critics stay automated, deliberately** — `critique_planning_unit`
+still runs the same 3-critic Sonnet pass the app uses. There's no benefit
+to replacing a cheap, already-role-tuned evaluative pass with live
+judgment; what genuinely benefits from a human+Claude session is
+*synthesis and enforcement*: reading the critics' findings, deciding what
+actually needs to change (critics can be wrong or can contradict each
+other — that judgment call is exactly what the Arbitrator role already
+does), writing the directive, and — after regeneration — actually
+verifying each item landed rather than trusting a scoped instruction was
+followed, using `diff_drafts` the same way a scene-draft session already
+does for Hanami.
+
+**`set_planning_directive` replaces the automated `/arbitrate` call for
+that unit**, it doesn't sit alongside it — Claude's own directive goes
+straight into `final_delta_directive` via `setPlanningDirective`
+(`planningEngine.ts`), no LLM call on this side, since the reasoning
+already happened in the live conversation. This is a genuine, not just
+notional, cost reduction: one fewer automated Sonnet call per revision
+cycle. What does **not** change cost-wise: `generate_planning_unit` and
+`critique_planning_unit` still bill this backend's own Anthropic API key
+exactly like pressing the equivalent button in the app — only the
+Arbitrator's own reasoning moves off that bill onto the live session.
+Both tools' descriptions state this plainly so it isn't mistaken for the
+whole loop being free.
+
+**Directive format is not optional** — `set_planning_directive`'s
+description requires a numbered checklist, the same shape
+`applyCritiqueDirectly`/the hardened `arbitrator_directive` prompt already
+produce (see "Generator instruction-following" above), since every
+Generator prompt in this pipeline is specifically written to treat that
+shape as binding and verify against it. A vague or prose-shaped directive
+from Claude would get followed less reliably, the exact failure mode the
+checklist format was built to close.
+
+**Granularity is the existing unit boundaries, not a new sub-chunking
+mechanic** — the hierarchy already chunks this work (Act summary → each
+Part's outline → each Part's beats in `PART_BEATS_CHAPTER_WINDOW`-sized
+windows), a boundary deliberately chosen to keep one Generator call
+coherent (see "Why a hierarchy, not one call per stage" above). Rather
+than inventing a finer sub-chunk-within-a-chunk mechanic — real
+`current_beat_chunk`/`unitKey()`/`nextPosition()` state-machine risk for
+uncertain benefit — supervising via MCP works within each existing unit
+and moves to the next one via `approve_planning_unit` once it's genuinely
+resolved, continuing across multiple units in one session while still
+checking in with the writer periodically rather than working through an
+entire remaining book unsupervised in one pass — the same pacing
+discipline already established for scene-draft sessions.
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 
