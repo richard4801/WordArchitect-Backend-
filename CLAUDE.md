@@ -1310,6 +1310,12 @@ unsupervised):
   `final_delta_directive` directly from Claude's own reasoning (no LLM
   call on this side) — `directive` must be a numbered checklist, the same
   shape every Generator prompt is hardened to verify against
+- `edit_planning_artifact` — `{ runId, content }` — overwrites the CURRENT
+  unit's `stage_artifacts` entry directly, bypassing the Generator entirely
+  (no LLM call, no cost) — see "Direct artifact edits" under Planning
+  Engine below. A scalpel for a small/mechanical fix, not a substitute for
+  `set_planning_directive` + `generate_planning_unit` when the draft has a
+  real substantive problem
 - `approve_planning_unit` — `{ runId }` — the human review gate's approve
   action; only call once genuinely satisfied the current draft resolved
   everything, since it materializes the unit and advances the run
@@ -1865,6 +1871,56 @@ own UI. Cost-wise nothing new here beyond what's already true of
 backend's own Anthropic API key per call; the intake conversation itself
 costs nothing extra specifically because it never touches the backend at
 all.
+
+### Direct artifact edits — fixing a draft without paying for a regeneration
+
+`edit_planning_artifact` (`{ runId, content }`, `editPlanningArtifact` in
+`planningEngine.ts`) lets an MCP-connected Arbitrator session overwrite
+the run's CURRENT unit's `stage_artifacts` entry directly — no LLM call
+on this side, so no cost, unlike `generate_planning_unit`. Motivated by
+the same real-usage pattern that already justifies Ghost Editor's
+paragraph-scoped regeneration and the scene-draft session's narrow-scope
+discipline: a full regeneration is the right tool for a real substantive
+problem, but a live session holding the Generator "by the neck" (see
+above) regularly spots something small and purely mechanical — a typo, a
+dropped clause, a wrong character name, a beat's numbers not adding up —
+that it can simply fix itself faster and more reliably than describing it
+as a directive and hoping a fresh Generator pass reproduces everything
+else in the draft unchanged. The same logic that makes single-paragraph
+Hanami edits safer than whole-scene ones applies here: the smaller and
+more mechanical the fix, the less reason to risk a full unit's worth of
+regeneration drift over it.
+
+Writes the exact same value shape `generateStage` itself writes into
+`stage_artifacts[unit]` — a JSON-stringified object for a JSON-contract
+unit (`part_outline`, `part_beats`/`hook_chapters_outline`,
+`codex_documentation`), a plain string otherwise — so `approveStage`'s
+stage-specific parsers (`parsePartOutlineArtifact`, `materializeBeats`,
+`materializeCodexDocumentation`) can't distinguish a manual edit from a
+real Generator draft; nothing downstream needed to change. Deliberately
+does **not** touch `status`, `panel_reviews`, or `final_delta_directive` —
+this is a pure content overwrite, not a state transition, so whatever
+step the run was on before the edit (`critiquing`, `awaiting_arbitration`,
+etc.) is exactly where it still is afterward; the tool's description
+tells Claude to re-run `critique_planning_unit` first if the edit was
+substantial enough to want a fresh critic read, or to go straight to
+`approve_planning_unit` if it was small enough not to.
+
+No server-side JSON-shape validation for JSON-contract units — the same
+"read current, compile the complete new value yourself, write it back
+wholesale" trust already extended to `update_agent_prompt`,
+`update_platform_craft_notes`, and `set_planning_directive`. A malformed
+edit doesn't corrupt anything silently: it just surfaces later as a clear
+parse error the next time `approve_planning_unit` runs, the same
+try/parse/throw path a malformed Generator response already goes through
+(`markFailed`) — not a new failure mode, the existing one.
+
+Scoped to the run's current unit only, same as every other Planning
+Engine MCP tool — there is no way to reach back and edit an
+already-approved/materialized past unit through this tool. Editing
+history that's already been written into `chapter_beats`/`codex_entries`
+(or folded into the continuity ledger) is a materially bigger, riskier
+change than this request asked for, and isn't what this tool does.
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 

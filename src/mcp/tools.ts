@@ -30,6 +30,7 @@ import {
   runCritique,
   approveStage,
   setPlanningDirective,
+  editPlanningArtifact,
 } from "../services/planningEngine.js";
 import { VALID_PIPELINE_TYPES } from "../types/domain.js";
 import type { PipelineType } from "../types/domain.js";
@@ -962,6 +963,31 @@ export function registerWordArchitectTools(server: McpServer): void {
     async ({ runId, directive }) => {
       try {
         const run = await setPlanningDirective(runId, directive);
+        return textResult(JSON.stringify(run, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "edit_planning_artifact",
+    {
+      title: "Edit Planning Artifact (Direct Fix)",
+      description:
+        "Directly overwrites the CURRENT unit's draft content — no LLM call, no cost, bypasses the Generator entirely. Use this for a small, trivial, or purely mechanical fix you can just make yourself (a typo, a dropped clause, a wrong name, a numbers-don't-add-up error, one weak beat in an otherwise solid chunk) instead of spending a generate_planning_unit call and hoping a full regeneration doesn't drift elsewhere. This is a scalpel, not the default path — if the draft has a real structural or substantive problem, that's still what set_planning_directive + generate_planning_unit is for.\n\nRead the current draft first via get_planning_run (it's at stage_artifacts for the run's current unit). For a plain-text unit (stage_1_summary, act_summary) `content` is just the corrected prose. For a JSON-contract unit — part_outline (`{startChapter, endChapter, outline}`), part_beats/hook_chapters_outline (`{chapters: [{chapterNumber, title?, beats: [{title, outlineText}]}]}`), or codex_documentation (`{entries: [{name, entryType, description, aliases?, tier?, personalityTraits?, motivations?}]}`) — `content` must be that exact JSON shape, serialized as a string: read the current artifact, parse it, make your targeted change, and send back the complete corrected JSON, not a diff or partial patch. Getting the shape wrong won't corrupt anything silently — it just surfaces as a clear error the next time approve_planning_unit tries to parse it.\n\nDoes not touch the run's status, panel_reviews, or final_delta_directive — it's a pure content overwrite. If the unit already has critic reviews on file, they now describe the pre-edit draft; call critique_planning_unit again first if you want a fresh read against your edit before approving, or just approve_planning_unit directly if the fix was small enough that you're confident it didn't invalidate the critique.",
+      inputSchema: {
+        runId: z.string().describe("The planning_runs row ID"),
+        content: z
+          .string()
+          .describe(
+            "The complete corrected artifact content for the run's current unit — plain text for stage_1_summary/act_summary, or the full JSON contract serialized as a string for part_outline/part_beats/hook_chapters_outline/codex_documentation."
+          ),
+      },
+    },
+    async ({ runId, content }) => {
+      try {
+        const run = await editPlanningArtifact(runId, content);
         return textResult(JSON.stringify(run, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));

@@ -1284,6 +1284,32 @@ export async function setPlanningDirective(runId: string, directive: string): Pr
   return saveRun(runId, { status: "generating", final_delta_directive: directive.trim() });
 }
 
+// Directly overwrites the CURRENT unit's stage_artifacts entry with
+// caller-supplied content, bypassing the Generator entirely — no LLM call,
+// no cost. For an MCP-connected Arbitrator session: a small, trivial fix
+// (a typo, a dropped clause, a wrong name, one bad beat in an otherwise
+// solid chunk) doesn't need a full generate_planning_unit regeneration and
+// the risk of drift that comes with it — the session can just fix it
+// directly and move on. Writes exactly the same value shape generateStage
+// itself would have written — a JSON-stringified object for a JSON-
+// contract unit (part_outline/part_beats/hook_chapters_outline/
+// codex_documentation), a plain string otherwise — so approveStage's
+// stage-specific parsers can't tell a manual edit from a real Generator
+// draft. Deliberately does not touch status/panel_reviews/
+// final_delta_directive: a pure content overwrite, not a state transition.
+// No JSON-shape validation here either — a malformed edit to a JSON unit
+// surfaces the same way a malformed Generator response would, caught by
+// approveStage's own try/catch around its parsers (markFailed), not
+// silently accepted.
+export async function editPlanningArtifact(runId: string, content: string): Promise<PlanningRun> {
+  if (!content || !content.trim()) {
+    throw new Error("content must be a non-empty string.");
+  }
+  const run = await loadRun(runId);
+  const unit = currentUnitKey(run);
+  return saveRun(runId, { stage_artifacts: { ...run.stage_artifacts, [unit]: content } });
+}
+
 // Compiles the chat interview into one crisp technical directive, then
 // loops back to the Generator for this same unit (reject -> chat ->
 // directive -> regenerate). {{CHAT_HISTORY}} is the full intake +
