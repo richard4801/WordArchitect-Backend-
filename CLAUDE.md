@@ -1313,6 +1313,12 @@ unsupervised):
 - `approve_planning_unit` — `{ runId }` — the human review gate's approve
   action; only call once genuinely satisfied the current draft resolved
   everything, since it materializes the unit and advances the run
+- `create_planning_run` — `{ bookId, userId, pipelineType? }` — starts a
+  new run in the intake conversation, no LLM call. There is deliberately
+  no separate intake-chat MCP tool: conduct the intake conversation
+  directly with the writer in the live session instead (free, since it's
+  just conversation), then hand off with `set_planning_directive` — see
+  "MCP as Arbitrator" below
 
 Generation:
 - `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the
@@ -1835,6 +1841,30 @@ resolved, continuing across multiple units in one session while still
 checking in with the writer periodically rather than working through an
 entire remaining book unsupervised in one pass — the same pacing
 discipline already established for scene-draft sessions.
+
+**Starting a run from scratch, end to end, without leaving the MCP
+session**: `create_planning_run` (`{ bookId, userId, pipelineType? }`)
+creates the run in the intake conversation with no LLM call — just a row
+insert, identical to what `POST /planning/runs` does. There is
+deliberately no separate intake-chat MCP tool mirroring `POST
+/planning/runs/:id/intake-chat`: conduct the intake conversation directly
+with the writer in the live session instead (premise, POV/conflict,
+romantic dynamic, tone, hard limits — whatever a Core Summary needs) —
+that's free, since it's just conversation, with no backend call at all.
+Once ready, hand off with the SAME `set_planning_directive` tool used for
+revisions: `finalizeIntake` (the app's own intake→Stage-1 handoff) does
+nothing more than `saveRun(runId, { status: "generating",
+final_delta_directive: directive })` — mechanically identical to what
+`setPlanningDirective` already does — so compiling the brief yourself and
+calling `set_planning_directive` with it opens Stage 1 exactly the same
+way, no second tool needed. This means the entire lifecycle — create,
+intake, every unit's generate/critique/arbitrate/approve cycle — is
+drivable from one MCP session without the writer ever touching the app's
+own UI. Cost-wise nothing new here beyond what's already true of
+`generate_planning_unit`/`critique_planning_unit`: those still bill the
+backend's own Anthropic API key per call; the intake conversation itself
+costs nothing extra specifically because it never touches the backend at
+all.
 
 ### Why Codex/World Category extraction is a batch review, not silent auto-write
 

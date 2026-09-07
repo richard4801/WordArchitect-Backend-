@@ -23,6 +23,7 @@ import { listNotesForBook } from "../routes/notes.js";
 import { listAgentPrompts, getAgentPromptById, createAgentPrompt, updateAgentPrompt, getActivePrompt } from "../services/agentPrompts.js";
 import { getPlatformCraftNotes, savePlatformCraftNotes } from "../services/platformCraftNotes.js";
 import {
+  createPlanningRun,
   listPlanningRuns,
   getPlanningRun,
   generateStage,
@@ -30,6 +31,8 @@ import {
   approveStage,
   setPlanningDirective,
 } from "../services/planningEngine.js";
+import { VALID_PIPELINE_TYPES } from "../types/domain.js";
+import type { PipelineType } from "../types/domain.js";
 import { VALID_AGENT_ROLES, VALID_PLANNING_STAGES } from "../types/domain.js";
 import type { AgentRole, PlanningStage } from "../types/domain.js";
 
@@ -845,6 +848,31 @@ export function registerWordArchitectTools(server: McpServer): void {
   // automated call.
 
   server.registerTool(
+    "create_planning_run",
+    {
+      title: "Create Planning Run",
+      description:
+        "Starts a brand-new Planning Engine run for a book, in the intake conversation (status: intake_active) — NOT Stage 1 generation yet, and no LLM call happens here. Once created, DON'T reach for a separate intake-chat tool — there isn't one, and you don't need it: just have the intake conversation directly with the writer in THIS session (premise, POV/conflict, romantic dynamic, tone, hard limits — whatever a Core Summary needs), for free, since that's just live conversation. Once you have enough to write a strong creative brief, compile it yourself and call set_planning_directive with it — that flips the run to 'generating' and opens Stage 1 exactly the same way the app's own intake-finalize does, no separate tool needed for that either.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        userId: z.string().describe("The user's ID"),
+        pipelineType: z
+          .enum(VALID_PIPELINE_TYPES as [PipelineType, ...PipelineType[]])
+          .optional()
+          .describe("'full' (default) for the whole-book Act/Part/Beats hierarchy, or 'contract' for the 5-chapter contract-qualification track"),
+      },
+    },
+    async ({ bookId, userId, pipelineType }) => {
+      try {
+        const run = await createPlanningRun(pipelineType ? { bookId, userId, pipelineType } : { bookId, userId });
+        return textResult(JSON.stringify(run, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
     "list_planning_runs",
     {
       title: "List Planning Runs",
@@ -925,10 +953,10 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Set Planning Directive (Act as Arbitrator)",
       description:
-        "The actual 'be the Arbitrator' action: after reading the critics' findings (critique_planning_unit) and the current draft (get_planning_run), write your own synthesis of what genuinely needs to change — not a rubber stamp, and not everything every critic said if some of it is wrong or contradictory, the same judgment call the automated Arbitrator makes. Write `directive` as a NUMBERED CHECKLIST of discrete, individually-verifiable items (e.g. '1. ...', '2. ...') — every Generator prompt in this pipeline is specifically hardened to treat a directive in this shape as binding and to verify each item before returning, so a vague or prose-shaped directive will be followed less reliably. This sets the run's final_delta_directive and status to 'generating' directly — no LLM call happens on this side, since the reasoning already happened in this conversation. Call generate_planning_unit next to actually regenerate, then diff_drafts (or your own read of the new draft) to verify each item actually landed before deciding whether to iterate again or call approve_planning_unit.",
+        "Two uses, same underlying action (set the run's final_delta_directive and flip status to 'generating' directly, no LLM call on this side since the reasoning already happened in this conversation):\n\n(1) REVISION, the usual case: after reading the critics' findings (critique_planning_unit) and the current draft (get_planning_run), write your own synthesis of what genuinely needs to change — not a rubber stamp, and not everything every critic said if some of it is wrong or contradictory, the same judgment call the automated Arbitrator makes. Call generate_planning_unit next to regenerate, then diff_drafts (or your own read) to verify each item actually landed before deciding whether to iterate again or call approve_planning_unit.\n\n(2) INTAKE HANDOFF, right after create_planning_run: once you've had the intake conversation directly with the writer in this session (no separate tool for that — it's just conversation) and have enough for a strong creative brief, call this with the compiled brief as `directive`. This does exactly what the app's own intake-finalize does (same final_delta_directive + status: 'generating' write) and opens Stage 1 — then generate_planning_unit produces the actual Core Summary.\n\nIn both cases, write `directive` as a NUMBERED CHECKLIST of discrete, individually-verifiable items for a revision (a first-time creative brief can read as normal prose instead, since there's no prior draft to verify against yet) — every Generator prompt in this pipeline is specifically hardened to treat a checklist-shaped revision directive as binding and to verify each item before returning, so a vague or prose-shaped revision directive gets followed less reliably.",
       inputSchema: {
         runId: z.string().describe("The planning_runs row ID"),
-        directive: z.string().describe("The correction directive, as a numbered checklist"),
+        directive: z.string().describe("For a revision: a numbered checklist. For an intake handoff: the compiled creative brief."),
       },
     },
     async ({ runId, directive }) => {
