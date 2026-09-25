@@ -83,6 +83,11 @@ export async function signup(params: {
   if (params.claimUserId !== undefined && !UUID_RE.test(params.claimUserId)) {
     throw new ValidationError("claimUserId must be a valid UUID.");
   }
+  // Fail before the insert, not after it -- signToken() also needs this,
+  // and checking it only there meant a missing secret let the insert
+  // commit and then threw while signing, leaving a real row behind with
+  // no token ever handed back to the caller.
+  getEnvVar("JWT_SECRET");
 
   const passwordHash = await bcrypt.hash(params.password, BCRYPT_ROUNDS);
   const insertRow: Record<string, unknown> = {
@@ -112,6 +117,7 @@ export async function signup(params: {
 }
 
 export async function login(params: { email: string; password: string }): Promise<{ user: AuthUser; token: string }> {
+  getEnvVar("JWT_SECRET");
   const email = params.email.trim().toLowerCase();
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.from("users").select("*").eq("email", email).maybeSingle();
