@@ -49,14 +49,101 @@ not the frontend's mock project IDs), and most writes also take `userId`.
 | Outliner (Act/Chapter/Beat) | Outliner (`/outline/beats` for the whole-book board, `/manuscript/chapters/:id/beats` for a single chapter) | Acts are `manuscript_parts`, Chapters are `manuscript_chapters` — both already existed; Beats (`chapter_beats`) are the new piece — see Outliner section below |
 | Dashboard-only stats (today's progress, AI insights, activity feed) | *not built* | frontend's own decision to keep these mock for now |
 
-**Known gap, deliberately accepted for now — revisit once real user
-accounts exist:** no authentication on `/api/v1/*`. Every route trusts
-whatever `userId`/`bookId` the caller sends — there's no session/token
-tying a request to a real logged-in account, so anyone who knows or
-guesses a `bookId` can read or write that book's data. Acceptable at this
-MVP/single-user stage; only the separate `/mcp` surface requires a bearer
-token (`MCP_API_KEY`). Add real auth in a follow-up pass, not silently —
-this is a conscious tradeoff, not an oversight.
+**Partial close of a known gap** — real accounts now exist (see Accounts
+& Authentication below), giving the frontend a `userId` that survives a
+new device/browser instead of one that only ever lived in local storage.
+**Still true, deliberately, for this pass**: every `/api/v1/*` route
+other than `/auth/*` still trusts whatever `userId`/`bookId` the caller
+sends — there's no per-request enforcement that the bearer token actually
+belongs to the `userId` in the request body/query, so anyone who knows or
+guesses a `bookId` can still read or write that book's data. Login solves
+*identity* (which `userId` should this browser use, and does it survive a
+new device); it does not yet solve *authorization* (does this request's
+token actually own this `userId`/`bookId`). Sequencing it this way was
+deliberate: the frontend's actual, immediate breakage was "my book
+disappears on a new device," which is exactly what an identity fix
+solves, and adding full per-request enforcement across every existing
+route is separable, larger, and doesn't block that fix — a real
+follow-up, not something silently skipped. Only the separate `/mcp`
+surface requires a bearer token today (`MCP_API_KEY`, unrelated to
+`/auth/*`'s per-user tokens).
+
+## Accounts & Authentication
+
+Real accounts (`users` table, migration `029_users_auth.sql`,
+`src/services/auth.ts` / `src/routes/auth.ts`), added specifically to fix
+a real failure mode: with no login, the frontend's only option was to
+generate a `userId` once and keep it in that one browser's local storage
+— so opening the app in a new browser, a new device, or even an
+incognito window had no way to "be" the same person, and came up with a
+completely empty Projects list despite the account's actual books being
+untouched server-side. Confirmed live: hard-refreshing the working
+browser still worked (local storage survives a hard refresh), but an
+incognito tab on that exact same machine came up empty — proving it was
+never a device problem, it was that identity lived only in one browser's
+local storage with nothing behind it server-side.
+
+**Schema**: `users(id UUID PK default gen_random_uuid(), email VARCHAR
+UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name VARCHAR,
+created_at, updated_at)`. No FK from `books.user_id` (or
+`codex_entries`/`manuscript_chunks`/`notes`/etc.'s `user_id` columns) to
+this table — the same reasoning already established for `books.id` itself
+(migration `013_books.sql`): those columns already hold real production
+values that predate this table, and a FK now would block legitimate
+existing rows instead of protecting anything.
+
+**Endpoints** (`src/routes/auth.ts`):
+- `POST /api/v1/auth/signup` — `{ email, password, displayName?,
+  claimUserId? }` → `201 { user, token }`. Password hashed with bcrypt
+  (`bcryptjs`, 10 rounds); `email` is case-insensitively unique (lower-
+  cased before storage/lookup); `password` must be at least 8 characters.
+  `token` is a JWT (`jsonwebtoken`, HS256, 90-day expiry, signed with
+  `JWT_SECRET`) carrying `{ sub: user.id, email }`.
+- `POST /api/v1/auth/login` — `{ email, password }` → `200 { user,
+  token }`. Wrong email and wrong password return the identical "Invalid
+  email or password" message — distinguishing them would let a caller
+  enumerate which emails are registered.
+- `GET /api/v1/auth/me` — `Authorization: Bearer <token>` → `200 { user }`.
+  Verifies the JWT *and* re-fetches the account from `users` rather than
+  trusting the token payload alone, so a deleted account can't keep
+  authenticating off an old, still-unexpired token. This is what the
+  frontend should call once on load with whatever token it has stored to
+  resolve the real, cross-device `userId` to use for every other backend
+  call — the actual fix for the cross-device gap above.
+
+**`claimUserId`** (`signup` only) — lets a new account adopt a *specific*
+existing `user_id` as its primary key, instead of a fresh random one,
+for exactly the bootstrap problem above: a `user_id` that already owns
+real `books`/`codex_entries`/`manuscript_chunks` rows from before this
+backend had any login system at all. Passing it means "this new
+password-protected account IS this pre-existing identity" — zero data
+migration required, since nothing about the existing rows' `user_id`
+values needs to change. Only succeeds the *first* time anyone signs up
+with that id — `users.id` is a primary key, so a second attempt hits the
+same `23505` unique-violation path email conflicts already use and comes
+back `409` ("already claimed by an existing account — log in instead").
+Safe under this project's existing security model, not a hole snuck in:
+every one of those legacy ids was already completely unauthenticated
+(anyone who knew or guessed it could read/write it, per the gap noted
+above), so a first-come-first-served claim doesn't remove any protection
+that existed before — it only adds protection that wasn't there. Once
+claimed, that id is a normal password-protected account like any other;
+`claimUserId` has no further effect on it.
+
+**What this deliberately does NOT do yet** (see the "Partial close of a
+known gap" note above): no route besides `/auth/*` checks the bearer
+token against the `userId`/`bookId` in the request. `GET /auth/me` gives
+the frontend a real, stable identity to *send* as `userId` on every other
+call, but nothing server-side yet stops a request from sending a
+different `userId` than the one its token actually authenticates. Closing
+that — real per-request authorization middleware across the rest of
+`/api/v1/*` — is the natural next step, not implemented in this pass.
+
+**Env**: requires `JWT_SECRET` (new — a long random string, distinct from
+`MCP_API_KEY`) in addition to everything already required. `GET
+/api/v1/auth/me` and any route needing the secret throws the same
+`Missing required environment variable` error every other `getEnvVar`
+call in this codebase does if it's unset, rather than silently.
 
 ## Dual-Layer Context Engine
 
