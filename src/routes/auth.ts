@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { signup, login, getUserFromToken, ValidationError, ConflictError, AuthError } from "../services/auth.js";
+import { signup, login, getUserFromToken, changePassword, ValidationError, ConflictError, AuthError } from "../services/auth.js";
 
 export const authRouter = Router();
 
@@ -83,6 +83,33 @@ authRouter.get("/auth/me", async (req: Request, res: Response) => {
 
   try {
     const user = await getUserFromToken(token);
+    res.json({ user });
+  } catch (err) {
+    handleAuthError(err, res);
+  }
+});
+
+// PATCH /api/v1/auth/me
+// Authorization: Bearer <token>, { password } -> { user }. Possession of a
+// valid token is treated as sufficient to set a new password -- no
+// current-password confirmation, the normal "change password while
+// logged in" pattern. There's no email/reset flow yet, so this is also
+// the only way to correct a password entered by mistake.
+authRouter.patch("/auth/me", async (req: Request, res: Response) => {
+  const header = req.headers.authorization ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+  if (!token) {
+    res.status(401).json({ error: "Missing Authorization: Bearer <token> header." });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.password !== "string") {
+    res.status(400).json({ error: "password is required." });
+    return;
+  }
+
+  try {
+    const user = await changePassword(token, body.password);
     res.json({ user });
   } catch (err) {
     handleAuthError(err, res);

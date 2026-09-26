@@ -154,3 +154,27 @@ export async function getUserFromToken(token: string): Promise<AuthUser> {
   if (!data) throw new AuthError("Account no longer exists.");
   return toAuthUser(data as UserRow);
 }
+
+// Possession of a valid bearer token is treated as sufficient proof of
+// identity to set a new password -- no current-password confirmation
+// required, the same way "change password while logged in" normally
+// works. Exists specifically so a password entered by mistake (a
+// placeholder left in verbatim, a typo) can be corrected immediately
+// without any other recovery path, since there's no email/reset flow yet.
+export async function changePassword(token: string, newPassword: string): Promise<AuthUser> {
+  const user = await getUserFromToken(token);
+  if (!newPassword || newPassword.length < 8) {
+    throw new ValidationError("Password must be at least 8 characters.");
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("users")
+    .update({ password_hash: passwordHash, updated_at: new Date().toISOString() })
+    .eq("id", user.id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Failed to update password: ${error.message}`);
+  return toAuthUser(data as UserRow);
+}

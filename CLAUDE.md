@@ -110,6 +110,16 @@ existing rows instead of protecting anything.
   frontend should call once on load with whatever token it has stored to
   resolve the real, cross-device `userId` to use for every other backend
   call — the actual fix for the cross-device gap above.
+- `PATCH /api/v1/auth/me` — `Authorization: Bearer <token>`, `{ password }`
+  → `200 { user }`. Possession of a valid token is treated as sufficient
+  proof of identity to set a new password — no current-password
+  confirmation required, the normal "change password while already logged
+  in" pattern. Added specifically because there's no email/reset flow yet,
+  so this is also the only way to correct a password entered by mistake
+  (e.g. a placeholder left in verbatim during the `claimUserId` bootstrap
+  above) — caught live during the first real claim, where the literal
+  example password text in this doc's own instructions got submitted
+  as-is instead of being replaced.
 
 **`claimUserId`** (`signup` only) — lets a new account adopt a *specific*
 existing `user_id` as its primary key, instead of a fresh random one,
