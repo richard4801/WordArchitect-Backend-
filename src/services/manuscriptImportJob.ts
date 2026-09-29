@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { splitIntoChapters, ingestManuscriptText } from "./manuscriptIngest.js";
+import { upsertChapterEditorContent } from "./manuscriptChapterContent.js";
 
 export type ImportJobStatus = "pending" | "processing" | "done" | "failed";
 
@@ -150,6 +151,17 @@ export async function stepImportJob(jobId: string): Promise<ImportJobRow> {
       bookId: job.book_id,
       chapterNumber: chapter.chapter_number,
       rawText: chapter.raw_text,
+    });
+    // Also lands this chapter in the rich editor (manuscript_chapters), not
+    // just Deep Past retrieval memory — see manuscriptChapterContent.ts.
+    // Without this, an imported chapter was searchable for generation but
+    // had nothing to open in the Chapters list/Outliner.
+    await upsertChapterEditorContent({
+      userId: job.user_id,
+      bookId: job.book_id,
+      chapterNumber: chapter.chapter_number,
+      rawText: chapter.raw_text,
+      title: chapter.title,
     });
 
     const nextIndex = job.next_chapter_index + 1;

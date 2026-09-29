@@ -897,11 +897,23 @@ Imports a whole manuscript in one call. `splitIntoChapters` detects
 "Chapter N" header lines (digits, spelled-out up to twenty, optional title
 after a colon/dash) and splits `rawText` into per-chapter blocks; content
 before the first detected header is dropped. Each detected chapter is then
-run through the same chunk/embed/store pipeline as `/manuscript/chunks`.
-If no headers are found, the whole input is imported as a single chapter.
-Chapters are processed sequentially in one request, which is fine for
-testing and small manuscripts, but risks a request timeout on anything
-long — for that, use the resumable job-based import below instead.
+run through the same chunk/embed/store pipeline as `/manuscript/chunks`
+**and** upserted into that chapter's rich-editor content
+(`manuscript_chapters`, creating the row if it doesn't exist) via
+`upsertChapterEditorContent` (`src/services/manuscriptChapterContent.ts`)
+— the same treatment `save-scene` already gives a single accepted scene.
+Response: `{ chaptersImported, totalChunksStored, chapters: [{
+chapterNumber, title, wordCount, chunksStored, chapterAction: "created" |
+"appended" }] }`. Without this, a bulk-imported manuscript landed only in
+Deep Past retrieval memory — searchable for Hanami generation, but with
+nothing created in the Chapters list/Outliner for the writer to actually
+open and read; extracting the upsert into a shared helper closed that gap
+for both bulk-import paths at once (see the resumable job below) instead
+of writing it twice. If no headers are found, the whole input is imported
+as a single chapter. Chapters are processed sequentially in one request,
+which is fine for testing and small manuscripts, but risks a request
+timeout on anything long — for that, use the resumable job-based import
+below instead.
 
 #### Resumable bulk import (background job)
 
@@ -928,13 +940,27 @@ import.
   failures partway through long imports. Splitting it into a child table
   means each step only ever touches the one chapter row it's processing.
 - `POST /api/v1/manuscript/bulk-import/jobs/:jobId/step` — chunks, embeds,
-  and stores exactly one chapter (the row at `next_chapter_index`), then
-  advances the index and returns updated progress. Call this repeatedly —
-  once per HTTP request — until `status` is `'done'`. A `'failed'` job is
-  not terminal: `next_chapter_index` was never advanced past the chapter
-  that failed, so stepping a failed job retries that same chapter, which
-  is what makes retrying safe after a transient error (rate limit, network
-  blip) instead of losing the whole import.
+  and stores exactly one chapter (the row at `next_chapter_index`) into
+  `manuscript_chunks`, **and** upserts that same chapter into
+  `manuscript_chapters` via the same `upsertChapterEditorContent` helper
+  `/manuscript/bulk-import` uses — so a job-driven import lands its
+  chapters in the editor too, not just retrieval memory. Then advances the
+  index and returns updated progress. Call this repeatedly — once per HTTP
+  request — until `status` is `'done'`. A `'failed'` job is not terminal:
+  `next_chapter_index` was never advanced past the chapter that failed, so
+  stepping a failed job retries that same chapter, which is what makes
+  retrying safe after a transient error (rate limit, network blip) instead
+  of losing the whole import. One accepted rough edge from this retry
+  design, not fully engineered around: if a chapter's chunk/embed work
+  partially succeeds before failing (e.g. chunk 4 of 10 throws), those
+  already-inserted chunks aren't rolled back, and retrying re-runs the
+  whole chapter — so a retry after a partial failure can leave a few
+  duplicate `manuscript_chunks` rows and duplicate paragraphs in that
+  chapter's editor content. Same category of tradeoff already accepted
+  elsewhere in this project (e.g. no row-level claim/lock against
+  concurrent steppers, below) — real but rare (only matters on a failure
+  that isn't the very first chunk), and not worth a rewrite into fully
+  idempotent per-chunk writes for how infrequently it'd actually bite.
 - `GET /api/v1/manuscript/bulk-import/jobs/:jobId` — read-only status
   check, does not advance the job.
 

@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { generateEmbedding } from "./embedding.js";
+import { upsertChapterEditorContent, type ChapterEditorAction } from "./manuscriptChapterContent.js";
 
 const DEFAULT_TARGET_WORDS_PER_CHUNK = 180;
 // How many chunks to embed + insert concurrently at once. High enough to
@@ -293,10 +294,17 @@ export interface BulkIngestedChapter {
   title: string | null;
   wordCount: number;
   chunksStored: number;
+  chapterAction: ChapterEditorAction;
 }
 
 // Splits one big pasted manuscript into chapters (via splitIntoChapters)
-// and runs each through the normal single-chapter ingest pipeline in turn.
+// and runs each through the normal single-chapter ingest pipeline in turn,
+// AND upserts each chapter's rich-editor content (manuscript_chapters) via
+// upsertChapterEditorContent — the same treatment saveManuscriptScene gives
+// a single accepted scene. Without this, a bulk-imported manuscript landed
+// only in Deep Past retrieval memory (manuscript_chunks) with nothing
+// created in the Chapters list/Outliner to open or read — searchable for
+// generation, but invisible everywhere a writer would actually look for it.
 // Chapters are processed sequentially, same as their individual chunk
 // embeddings — for a full-length novel this is a lot of sequential OpenAI
 // calls in one request (see the comment on ingestManuscriptText), so this
@@ -321,12 +329,20 @@ export async function bulkIngestManuscript(
       chapterNumber: chapter.chapterNumber,
       rawText: chapter.text,
     });
+    const chapterAction = await upsertChapterEditorContent({
+      userId,
+      bookId,
+      chapterNumber: chapter.chapterNumber,
+      rawText: chapter.text,
+      title: chapter.title,
+    });
 
     results.push({
       chapterNumber: chapter.chapterNumber,
       title: chapter.title,
       wordCount: wordCountOf(chapter.text),
       chunksStored: chunks.length,
+      chapterAction,
     });
   }
 
