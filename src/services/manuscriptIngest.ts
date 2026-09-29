@@ -247,37 +247,61 @@ export async function ingestManuscriptText(
   // Batched instead of fully unbounded so a very long chapter (50+ chunks)
   // doesn't fire an enormous burst at OpenAI's rate limits in one go.
   const ingested: IngestedManuscriptChunk[] = [];
-  for (let i = 0; i < plannedChunks.length; i += INGEST_BATCH_SIZE) {
-    const batch = plannedChunks.slice(i, i + INGEST_BATCH_SIZE);
-    const batchResults = await Promise.all(
-      batch.map(async ({ chunkText, sceneOrder }) => {
-        const embedding = await generateEmbedding(chunkText);
-        const { data, error } = await supabase
-          .from("manuscript_chunks")
-          .insert({
-            user_id: userId,
-            book_id: bookId,
-            chapter_number: chapterNumber,
-            scene_order: sceneOrder,
-            raw_text: chunkText,
-            embedding,
-          })
-          .select("id, chapter_number, scene_order")
-          .single();
+  const insertedIds: string[] = [];
 
-        if (error) {
-          throw new Error(`Failed to store manuscript chunk (scene_order ${sceneOrder}): ${error.message}`);
-        }
+  try {
+    for (let i = 0; i < plannedChunks.length; i += INGEST_BATCH_SIZE) {
+      const batch = plannedChunks.slice(i, i + INGEST_BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async ({ chunkText, sceneOrder }) => {
+          const embedding = await generateEmbedding(chunkText);
+          const { data, error } = await supabase
+            .from("manuscript_chunks")
+            .insert({
+              user_id: userId,
+              book_id: bookId,
+              chapter_number: chapterNumber,
+              scene_order: sceneOrder,
+              raw_text: chunkText,
+              embedding,
+            })
+            .select("id, chapter_number, scene_order")
+            .single();
 
-        return {
-          id: data.id,
-          chapter_number: data.chapter_number,
-          scene_order: data.scene_order,
-          word_count: chunkText.split(/\s+/).filter(Boolean).length,
-        };
-      })
-    );
-    ingested.push(...batchResults);
+          if (error) {
+            throw new Error(`Failed to store manuscript chunk (scene_order ${sceneOrder}): ${error.message}`);
+          }
+
+          insertedIds.push(data.id);
+
+          return {
+            id: data.id,
+            chapter_number: data.chapter_number,
+            scene_order: data.scene_order,
+            word_count: chunkText.split(/\s+/).filter(Boolean).length,
+          };
+        })
+      );
+      ingested.push(...batchResults);
+    }
+  } catch (err) {
+    // Roll back this call's own partial work so a failure never leaves
+    // orphaned chunks for a retry to pile on top of -- without this, a
+    // caller retrying after a transient error (e.g. a bulk-import job
+    // step after a rate limit) would re-chunk the same text and insert a
+    // second, duplicate copy alongside whatever this attempt already got
+    // in before failing. Only ever deletes rows THIS call itself inserted
+    // (by id), never anything that existed before it started, so a
+    // legitimate earlier ingest for the same chapter is untouched.
+    // Best-effort: if the cleanup delete itself fails, the original error
+    // is still what surfaces -- that's the actionable one for the caller.
+    if (insertedIds.length > 0) {
+      const { error: cleanupError } = await supabase.from("manuscript_chunks").delete().in("id", insertedIds);
+      if (cleanupError) {
+        console.error(`Failed to roll back ${insertedIds.length} partially-inserted chunk(s):`, cleanupError);
+      }
+    }
+    throw err;
   }
 
   return ingested;

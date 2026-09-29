@@ -950,17 +950,21 @@ import.
   `next_chapter_index` was never advanced past the chapter that failed, so
   stepping a failed job retries that same chapter, which is what makes
   retrying safe after a transient error (rate limit, network blip) instead
-  of losing the whole import. One accepted rough edge from this retry
-  design, not fully engineered around: if a chapter's chunk/embed work
-  partially succeeds before failing (e.g. chunk 4 of 10 throws), those
-  already-inserted chunks aren't rolled back, and retrying re-runs the
-  whole chapter — so a retry after a partial failure can leave a few
-  duplicate `manuscript_chunks` rows and duplicate paragraphs in that
-  chapter's editor content. Same category of tradeoff already accepted
-  elsewhere in this project (e.g. no row-level claim/lock against
-  concurrent steppers, below) — real but rare (only matters on a failure
-  that isn't the very first chunk), and not worth a rewrite into fully
-  idempotent per-chunk writes for how infrequently it'd actually bite.
+  of losing the whole import. A retried chapter is genuinely safe to
+  re-run, not just "safe enough": `ingestManuscriptText`
+  (`manuscriptIngest.ts`) wraps its whole embed/insert loop in a
+  try/catch that deletes (by id) any chunks that specific call itself
+  already inserted before re-throwing on failure, so a chapter that fails
+  partway through (e.g. chunk 4 of 10) always leaves the database exactly
+  as it found it — never a few orphaned chunks for a retry to pile a
+  duplicate copy on top of. This was a real, initially-shipped gap
+  (a partial failure could leave duplicate `manuscript_chunks` rows and,
+  since `upsertChapterEditorContent` only ever runs after a fully
+  successful ingest, would have compounded into duplicate editor
+  paragraphs too on the next successful retry) — closed by making the
+  rollback scoped precisely to each call's own inserted ids, so a
+  legitimate *earlier, separate* ingest for that same chapter (e.g. a
+  writer's own prior `/manuscript/chunks` call) is never touched.
 - `GET /api/v1/manuscript/bulk-import/jobs/:jobId` — read-only status
   check, does not advance the job.
 
