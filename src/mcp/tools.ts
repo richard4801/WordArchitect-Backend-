@@ -19,6 +19,7 @@ import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapter
 import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
 import type { NoteCategory } from "../types/domain.js";
 import { listWorldCategories, slugify } from "../routes/worldCategories.js";
+import { listBookLinksForBook, createBookLink, getPendingChaptersForLink } from "../routes/bookLinks.js";
 import { listNotesForBook } from "../routes/notes.js";
 import { listAgentPrompts, getAgentPromptById, createAgentPrompt, updateAgentPrompt, getActivePrompt } from "../services/agentPrompts.js";
 import { getPlatformCraftNotes, savePlatformCraftNotes } from "../services/platformCraftNotes.js";
@@ -166,6 +167,65 @@ export function registerWordArchitectTools(server: McpServer): void {
         return errorResult(`Failed to create world category: ${error.message}`);
       }
       return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  server.registerTool(
+    "list_book_links",
+    {
+      title: "List Book Links",
+      description:
+        "Every relationship this book participates in, either direction — 'outgoing' means this book IS the link's fromBookId (e.g. it's a sequel or translation OF something else); 'incoming' means this book IS the link's toBookId (e.g. something else is a sequel or translation of it). Call this before create_book_link to check whether a relationship already exists, and to find the link id needed for get_pending_chapters.",
+      inputSchema: { bookId: z.string().describe("The book's ID") },
+    },
+    async ({ bookId }) => {
+      try {
+        const links = await listBookLinksForBook(bookId);
+        return textResult(JSON.stringify(links, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "create_book_link",
+    {
+      title: "Create Book Link",
+      description:
+        "Creates a directed relationship between two books — only call once the writer has confirmed the connection, not speculatively. Direction: fromBookId is the DERIVED book (the sequel, or the translation); toBookId is what it relates to (the original). Example — a Spanish translation: { fromBookId: <the translated book's id>, toBookId: <the original book's id>, linkType: 'translation_of', language: 'es' }. Example — a sequel: { fromBookId: <the sequel's id>, toBookId: <the original's id>, linkType: 'sequel_of' }. linkType is open-ended, not a fixed list — use 'sequel_of' or 'translation_of' for these two known cases, or invent a new descriptive value for a relationship neither covers. A book can only have ONE link of a given linkType — creating a second of the same type for the same fromBookId returns an error instead of replacing it; delete the existing one first if it needs to change.",
+      inputSchema: {
+        fromBookId: z.string().describe("The derived book's id (the sequel, or the translation)"),
+        toBookId: z.string().describe("The original book's id that fromBookId relates to"),
+        linkType: z.string().describe("e.g. 'sequel_of' or 'translation_of' — open-ended, not a fixed enum"),
+        language: z.string().optional().describe("Only meaningful for translation_of, e.g. 'es' or 'Spanish'"),
+      },
+    },
+    async ({ fromBookId, toBookId, linkType, language }) => {
+      try {
+        const link = await createBookLink({ fromBookId, toBookId, linkType, language: language ?? null });
+        return textResult(JSON.stringify(link, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_pending_chapters",
+    {
+      title: "Get Pending Chapters For Book Link",
+      description:
+        "For a book link (get its id from list_book_links or the create_book_link response), returns every chapter with real drafted content in the SOURCE book (the link's toBookId) that has no corresponding chapter yet in the DERIVED book (the link's fromBookId). For a translation_of link, this is exactly 'what's new to translate since I last checked in' — the right thing to call at the start of a scheduled daily (or any periodic) translation session. Also returns sourceBookStatus, so the session knows when to stop checking entirely: once the source book's status is 'completed' and pendingChapters comes back empty, there is nothing left to ever come back for. There is no separate 'mark as translated' step or tool — once a chapter is translated, save it into the derived book with save_manuscript_scene using the SAME chapter number; that new chapter row is what removes it from this list on the next check.",
+      inputSchema: { linkId: z.string().describe("The book_links row id") },
+    },
+    async ({ linkId }) => {
+      try {
+        const result = await getPendingChaptersForLink(linkId);
+        return textResult(JSON.stringify(result, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 

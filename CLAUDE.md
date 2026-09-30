@@ -788,6 +788,89 @@ that predate this table, and adding a FK now risks breaking that data
 rather than protecting it. Both are worth revisiting once the real value
 sets and existing data are reconciled.
 
+### Book Links (`src/routes/bookLinks.ts`, `book_links` table, migration `030_book_links.sql`)
+
+A generic directed relationship between two books, added to close a real
+gap: every table that feeds retrieval (`codex_entries`, `manuscript_chunks`,
+`manuscript_chapters`, `planning_runs`) is scoped strictly by one `book_id`,
+so a sequel or a translation previously started from absolute zero, with
+no way to point back at what it continues or translates. One generic link
+table serves both cases (and whatever relationship type comes up next)
+instead of a narrow, single-purpose column on `books`.
+
+**Schema**: `book_links(id UUID PK, from_book_id UUID NOT NULL, to_book_id
+UUID NOT NULL, link_type VARCHAR(50) NOT NULL, language VARCHAR(50),
+created_at)`. No FK to `books(id)` — same reasoning as every other
+book-scoped table in this schema (see `013_books.sql`): a real `book_id`
+already in use may not yet have a `books` row, and requiring one would
+block a legitimate link. `CHECK (from_book_id <> to_book_id)` prevents a
+self-link.
+
+**Direction convention**: `from_book_id` is the *derived* book (the
+sequel, or the translation); `to_book_id` is what it relates to (the
+original). `link_type` is open-ended — "any non-empty string," not a
+fixed `CHECK` enum, same reasoning as `codex_entries.entry_type`: the
+real set of relationship types this project will ever need isn't
+settled. Two known values today: `"sequel_of"` and `"translation_of"`.
+`language` is only meaningful for `"translation_of"` (e.g. `"es"`) — null
+otherwise. `UNIQUE(from_book_id, link_type)` is a deliberate simplifying
+assumption — a book has at most one link of a given type, not several
+(e.g. one translation-of relationship). A genuine need for more than one
+(a real crossover, say) is an edge case not worth designing around up
+front; revisit if it actually comes up.
+
+**Endpoints**:
+- `GET /api/v1/book-links?bookId=` → `{ outgoing, incoming }` — every
+  link this book participates in, either direction. "Outgoing" means
+  this book IS `from_book_id` (it's a sequel/translation *of* something);
+  "incoming" means this book IS `to_book_id` (something else is a
+  sequel/translation *of it*).
+- `POST /api/v1/book-links` — `{ fromBookId, toBookId, linkType,
+  language? }` → `201 { link }`. `400` if `fromBookId === toBookId`;
+  `409` if a link of that exact type already exists for `fromBookId`
+  (delete the existing one first to change it, never silently replaced).
+- `DELETE /api/v1/book-links/:id` — removes only the link row; never
+  touches either book's actual content, the same non-cascading principle
+  used everywhere else in this schema.
+- `GET /api/v1/book-links/:id/pending-chapters` → `{ link, sourceBookId,
+  targetBookId, pendingChapters, sourceBookStatus }`. See "Pending
+  chapters" below — this is the endpoint a scheduled translation (or any
+  derived-book) session actually drives itself with.
+
+**Pending chapters — no separate "translation status" to track**:
+`getPendingChaptersForLink` (`bookLinks.ts`) answers the one question a
+periodic session needs: which chapters have real drafted content
+(non-empty `paragraphs`) in the SOURCE book (`to_book_id`) but no
+corresponding chapter row yet in the DERIVED book (`from_book_id`)? For a
+`translation_of` link, this is exactly "what's new to translate since I
+last checked in." Deliberately **not** backed by a new status column or
+table — the presence of a chapter row in the derived book (created by
+`save_manuscript_scene`, the same call that saves the translated text) IS
+what removes that chapter from this list on the next check, the same
+"derive, don't duplicate state" principle `world_categories` already
+uses for entry-type derivation and `get_book_facts` uses for chapter
+counts. Also returns `sourceBookStatus` (the plain `books.status` field)
+so a session knows when to stop checking in at all — once the source is
+`"completed"` and `pendingChapters` comes back empty, there's nothing
+left to ever come back for.
+
+**Mirrored on the MCP surface** as `list_book_links`, `create_book_link`,
+and `get_pending_chapters` (see MCP Server's Tools list below) —
+specifically to support a use case like a scheduled daily Claude session
+translating a book chapter-by-chapter as new content is written: create
+the link once, then each check-in calls `get_pending_chapters`, translates
+whatever comes back, and saves each translated chapter into the derived
+book via the *existing* `save_manuscript_scene` tool using the same
+chapter number — no new "save a translation" tool needed, since that tool
+already does exactly the right thing (chunk+embed into the derived book's
+own retrieval memory, and land it in that book's Chapters list/editor).
+Cross-language embedding quality with `text-embedding-3-small` isn't
+something this project has tuned or tested — the derived book's own Layer
+2/3 memory builds automatically as a side effect of reusing
+`save_manuscript_scene`, which is a bonus if the writer later wants
+Hanami's help continuing directly in the translated language, but isn't
+the primary reason this exists.
+
 ### Codex CRUD (`src/routes/codex.ts`)
 
 - `GET /api/v1/codex?bookId=&entryType=&tier=` — list entries for a book
@@ -1351,6 +1434,15 @@ Read (safe to call freely):
 - `list_world_categories` — `{ bookId }` — every worldbuilding category
   for a book, including derived ones (see World Categories CRUD above);
   check this before guessing an `entryType`
+- `list_book_links` — `{ bookId }` — every sequel/translation/other
+  relationship this book participates in, either direction — see Book
+  Links above. Check this before `create_book_link`, and to find the
+  link id `get_pending_chapters` needs
+- `get_pending_chapters` — `{ linkId }` — which chapters have real
+  content in the link's source book but no corresponding chapter yet in
+  the derived book — see "Pending chapters" under Book Links above; the
+  tool a scheduled translation (or any derived-book) session drives
+  itself with on each check-in
 - `list_notes` — `{ bookId, category? }` — a book's brainstorming notes,
   pinned first then most recently updated
 - `list_agent_prompts` — `{ bookId }` — every Planning Engine agent
@@ -1383,6 +1475,12 @@ unsupervised):
 - `create_codex_entry`, `update_codex_entry`
 - `create_world_category` — `{ bookId, name, key?, description?, color?,
   icon? }`, same auto-slugify behavior as `POST /api/v1/world-categories`
+- `create_book_link` — `{ fromBookId, toBookId, linkType, language? }` —
+  see Book Links above. `fromBookId` is the derived book (the sequel or
+  translation), `toBookId` is the original; `linkType` is open-ended
+  (`'sequel_of'`/`'translation_of'` are the two known values). Only one
+  link per `(fromBookId, linkType)` — a second attempt errors rather than
+  replacing the first
 - `create_note` — `{ userId, bookId, title, excerpt, category, pinned? }`
   — only call when the writer has actually asked something be jotted
   down, not as a running log of the conversation
