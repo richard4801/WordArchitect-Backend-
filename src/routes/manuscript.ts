@@ -93,6 +93,10 @@ manuscriptRouter.post("/manuscript/save-scene", async (req: Request, res: Respon
     res.status(400).json({ error: validationError });
     return;
   }
+  if (body.chapterTitle !== undefined && body.chapterTitle !== null && typeof body.chapterTitle !== "string") {
+    res.status(400).json({ error: "chapterTitle must be a string when provided." });
+    return;
+  }
 
   try {
     const result = await saveManuscriptScene({
@@ -100,6 +104,7 @@ manuscriptRouter.post("/manuscript/save-scene", async (req: Request, res: Respon
       bookId: body.bookId as string,
       chapterNumber: body.chapterNumber as number,
       rawText: body.rawText as string,
+      chapterTitle: (body.chapterTitle as string | null | undefined) ?? null,
     });
     res.status(201).json(result);
   } catch (error) {

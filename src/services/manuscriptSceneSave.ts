@@ -6,6 +6,10 @@ export interface SaveManuscriptSceneParams {
   bookId: string;
   chapterNumber: number;
   rawText: string;
+  // Only used when this call creates a brand-new chapter row (see
+  // upsertChapterEditorContent) -- an existing chapter's title is never
+  // overwritten by a later accepted scene.
+  chapterTitle?: string | null;
 }
 
 export interface SaveManuscriptSceneResult {
@@ -24,10 +28,16 @@ export interface SaveManuscriptSceneResult {
 // text the same treatment — one implementation, not two independently-
 // drifting copies.
 export async function saveManuscriptScene(params: SaveManuscriptSceneParams): Promise<SaveManuscriptSceneResult> {
-  const { userId, bookId, chapterNumber, rawText } = params;
+  const { userId, bookId, chapterNumber, rawText, chapterTitle } = params;
 
   const chunks = await ingestManuscriptText({ userId, bookId, chapterNumber, rawText });
-  const chapterAction = await upsertChapterEditorContent({ userId, bookId, chapterNumber, rawText });
+  const chapterAction = await upsertChapterEditorContent({
+    userId,
+    bookId,
+    chapterNumber,
+    rawText,
+    title: chapterTitle ?? null,
+  });
 
   return { chunksSaved: chunks.length, chapterAction };
 }

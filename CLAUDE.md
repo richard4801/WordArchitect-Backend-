@@ -953,7 +953,7 @@ live, reachable server look "unreachable" to Claude when `save_manuscript_
 scene` tried to save a real chapter. Batched rather than fully unbounded
 so a very long chapter's chunks don't all fire at OpenAI in one burst.
 
-`POST /api/v1/manuscript/save-scene` — `{ userId, bookId, chapterNumber, rawText }`
+`POST /api/v1/manuscript/save-scene` — `{ userId, bookId, chapterNumber, rawText, chapterTitle? }`
 
 The "accept this scene" endpoint: runs the same chunk/embed/store pipeline
 as `/manuscript/chunks` above, **and** appends `rawText` to that chapter's
@@ -966,6 +966,17 @@ writer was editing themselves. Shared implementation with the MCP server's
 `src/services/manuscriptSceneSave.ts` — so this is also the endpoint the
 Chat Assistant's `propose_save_manuscript_scene` confirm step calls once
 the writer approves it.
+
+`chapterTitle` is optional and only takes effect the moment this call is
+what actually creates the chapter row (no `manuscript_chapters` row for
+this `book_id` + `chapterNumber` exists yet) — on every later save to the
+same chapter, whatever title it already has is left untouched, same as
+every other "append, don't clobber" rule this endpoint already follows.
+Closes a real gap for a translation/derived-book session (see Book Links
+above): `save_manuscript_scene` is reused as the save mechanism for a
+translated chapter, and without a way to set the title on first save, a
+newly-created derived-book chapter had no title at all until the writer
+opened the editor and typed one in by hand.
 
 `chunkManuscriptText` splits on blank-line paragraph breaks first; any
 resulting block still more than 2x the target chunk size (e.g. a whole
@@ -1489,7 +1500,10 @@ unsupervised):
   `saveManuscriptScene` (`src/services/manuscriptSceneSave.ts`), so it's
   there for future generations (Claude-assisted or automatic) and visible
   in the editor too — same shared function `POST /api/v1/manuscript/save-scene`
-  and the Chat Assistant's `propose_save_manuscript_scene` confirm step call
+  and the Chat Assistant's `propose_save_manuscript_scene` confirm step call.
+  Takes an optional `chapterTitle`, used only if this call creates the
+  chapter row (ignored if the chapter already exists) — see `/manuscript/
+  save-scene` above
 - `update_agent_prompt` — `{ bookId, agentRole, stage, systemPrompt?,
   userPromptTemplate? }` — lets a writer iterate on a Planning Engine
   prompt conversationally (discuss it, land on wording, then have Claude

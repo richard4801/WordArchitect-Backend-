@@ -874,11 +874,23 @@ export function registerWordArchitectTools(server: McpServer): void {
         bookId: z.string().describe("The book's ID"),
         chapterNumber: z.number().int().describe("Chapter number this scene belongs to"),
         rawText: z.string().describe("The full scene text to save"),
+        chapterTitle: z
+          .string()
+          .optional()
+          .describe(
+            "Optional title for this chapter. Only used if this call is what creates the chapter (chapterNumber has no existing manuscript_chapters row yet) — ignored if the chapter already exists, since an existing chapter's title is never overwritten by a later saved scene."
+          ),
       },
     },
-    async ({ userId, bookId, chapterNumber, rawText }) => {
+    async ({ userId, bookId, chapterNumber, rawText, chapterTitle }) => {
       try {
-        const result = await saveManuscriptScene({ userId, bookId, chapterNumber, rawText });
+        const result = await saveManuscriptScene({
+          userId,
+          bookId,
+          chapterNumber,
+          rawText,
+          chapterTitle: chapterTitle ?? null,
+        });
         return textResult(
           `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content.`
         );

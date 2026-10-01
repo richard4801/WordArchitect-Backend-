@@ -179,6 +179,11 @@ const TOOLS: Anthropic.Tool[] = [
       properties: {
         chapterNumber: { type: "integer" },
         rawText: { type: "string", description: "The full accepted scene text" },
+        chapterTitle: {
+          type: "string",
+          description:
+            "Optional title for this chapter. Only takes effect if this scene is what creates the chapter (no chapter with this number exists yet) — ignored otherwise, since an existing chapter's title is never overwritten by a later saved scene.",
+        },
       },
       required: ["chapterNumber", "rawText"],
     },
@@ -235,6 +240,9 @@ async function executeTool(name: string, input: Record<string, unknown>, bookId:
     case "propose_save_manuscript_scene":
       if (typeof input.chapterNumber !== "number" || typeof input.rawText !== "string") {
         throw new Error("chapterNumber and rawText are required");
+      }
+      if (input.chapterTitle !== undefined && typeof input.chapterTitle !== "string") {
+        throw new Error("chapterTitle must be a string when provided");
       }
       return proposalAck("saving this scene into manuscript memory and the chapter editor");
     default:
