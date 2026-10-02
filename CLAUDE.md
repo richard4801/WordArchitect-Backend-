@@ -1437,8 +1437,12 @@ Read (safe to call freely):
   relevance threshold applied (unlike Layer 3) — Claude applies its own
   judgment, and can call this repeatedly with different phrasing rather
   than being limited to one shot the way the automatic pipeline is
-- `get_manuscript_chapter` — `{ bookId, chapterNumber }` — literal chapter
-  text, for when a similarity-matched excerpt isn't enough
+- `get_manuscript_chapter` — `{ bookId, chapterNumber }` — returns `{
+  title, text }`: literal chapter text (joined from `manuscript_chunks`,
+  for when a similarity-matched excerpt isn't enough) plus that chapter's
+  editor title from `manuscript_chapters.title` (`null` if the chapter
+  has no editor row yet) — lets a title be read back without re-parsing
+  it out of the body text
 - `preview_automatic_context` — `{ userId, bookId, sceneBeat }` — runs the
   same Layer 1/2/3 compilation `/generate-prose` would use, as a reference
   point before deciding whether Claude can do better

@@ -41,16 +41,38 @@ export async function searchManuscript(bookId: string, query: string): Promise<M
   return (data ?? []) as ManuscriptChunkMatch[];
 }
 
-export async function getManuscriptChapterText(bookId: string, chapterNumber: number): Promise<string> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("manuscript_chunks")
-    .select("scene_order, raw_text")
-    .eq("book_id", bookId)
-    .eq("chapter_number", chapterNumber)
-    .order("scene_order", { ascending: true });
+export interface ManuscriptChapterTextResult {
+  // The editor's title for this chapter (manuscript_chapters.title), not
+  // derived from the chunk text itself -- null if this chapter has no
+  // manuscript_chapters row yet (e.g. ingested via /manuscript/chunks
+  // directly, without ever going through save-scene/bulk-import).
+  title: string | null;
+  text: string;
+}
 
-  if (error) throw new Error(`Failed to fetch chapter: ${error.message}`);
-  if (!data || data.length === 0) throw new Error(`No manuscript chunks found for chapter ${chapterNumber}`);
-  return data.map((row) => row.raw_text).join("\n\n");
+export async function getManuscriptChapterText(
+  bookId: string,
+  chapterNumber: number
+): Promise<ManuscriptChapterTextResult> {
+  const supabase = getSupabaseClient();
+  const [chunksRes, chapterRes] = await Promise.all([
+    supabase
+      .from("manuscript_chunks")
+      .select("scene_order, raw_text")
+      .eq("book_id", bookId)
+      .eq("chapter_number", chapterNumber)
+      .order("scene_order", { ascending: true }),
+    supabase.from("manuscript_chapters").select("title").eq("book_id", bookId).eq("number", chapterNumber).maybeSingle(),
+  ]);
+
+  if (chunksRes.error) throw new Error(`Failed to fetch chapter: ${chunksRes.error.message}`);
+  if (!chunksRes.data || chunksRes.data.length === 0) {
+    throw new Error(`No manuscript chunks found for chapter ${chapterNumber}`);
+  }
+  if (chapterRes.error) throw new Error(`Failed to fetch chapter title: ${chapterRes.error.message}`);
+
+  return {
+    title: (chapterRes.data?.title as string | null) ?? null,
+    text: chunksRes.data.map((row) => row.raw_text).join("\n\n"),
+  };
 }

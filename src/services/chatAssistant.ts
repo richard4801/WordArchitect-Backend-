@@ -77,7 +77,8 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "get_manuscript_chapter",
-    description: "Fetch a specific chapter's full text, in order. Use when you need literal content rather than a similarity-matched excerpt.",
+    description:
+      "Fetch a specific chapter's full text, in order, plus its editor title (null if the chapter has no editor row yet). Use when you need literal content rather than a similarity-matched excerpt.",
     input_schema: {
       type: "object",
       properties: { chapterNumber: { type: "integer" } },

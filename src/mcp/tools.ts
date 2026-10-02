@@ -463,7 +463,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Get Manuscript Chapter",
       description:
-        "Fetch every stored chunk of a specific chapter, in order, concatenated into the full chapter text. Use this when you need literal chapter content rather than a similarity-matched excerpt — e.g. to verify exactly how a scene played out.",
+        "Fetch every stored chunk of a specific chapter, in order, concatenated into the full chapter text, plus that chapter's editor title (manuscript_chapters.title, null if this chapter has no editor row yet). Use this when you need literal chapter content rather than a similarity-matched excerpt — e.g. to verify exactly how a scene played out.",
       inputSchema: {
         bookId: z.string().describe("The book's ID"),
         chapterNumber: z.number().int().describe("The chapter number"),
@@ -471,8 +471,8 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ bookId, chapterNumber }) => {
       try {
-        const text = await getManuscriptChapterText(bookId, chapterNumber);
-        return textResult(text);
+        const result = await getManuscriptChapterText(bookId, chapterNumber);
+        return textResult(JSON.stringify(result, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
