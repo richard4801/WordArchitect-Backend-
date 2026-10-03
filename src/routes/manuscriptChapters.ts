@@ -1,8 +1,18 @@
 import { Router, type Request, type Response } from "express";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { ingestManuscriptText } from "../services/manuscriptIngest.js";
+import { splitIntoChapterParagraphs } from "../lib/chapterParagraphs.js";
 import { VALID_BEAT_STATUSES } from "../types/domain.js";
 import type { BeatStatus } from "../types/domain.js";
+
+export class ManuscriptChapterNotFoundError extends Error {
+  constructor(bookId: string, chapterNumber: number) {
+    super(
+      `No manuscript_chapters row exists for book ${bookId}, chapter ${chapterNumber} — nothing to edit. Use save_manuscript_scene to create it first.`
+    );
+    this.name = "ManuscriptChapterNotFoundError";
+  }
+}
 
 export const manuscriptChaptersRouter = Router();
 
@@ -338,6 +348,62 @@ manuscriptChaptersRouter.patch("/manuscript/chapters/:id", async (req: Request, 
   }
   res.json({ chapter: data });
 });
+
+// Replaces (not appends) an already-saved chapter's editor content with
+// corrected text, addressed by bookId+chapterNumber rather than the
+// manuscript_chapters row id (the MCP/Chat Assistant addressing scheme
+// every other chapter-facing tool already uses -- see get_manuscript_
+// chapter, save_manuscript_scene). This is the "fix something already
+// saved" counterpart to save_manuscript_scene's append-only behavior and
+// sync-to-memory's "replace Deep Past memory from current paragraphs"
+// behavior: this one replaces the EDITOR's own paragraphs from rawText,
+// nothing else.
+//
+// Deliberately requires the chapter to already exist -- editing content
+// that was never saved isn't this tool's job (that's save_manuscript_
+// scene, which creates the row). Deliberately does NOT touch
+// manuscript_chunks/Deep Past retrieval memory, the same restraint the
+// autosave PATCH route above already exercises for every other paragraph
+// edit -- a correction here goes stale in retrieval until the writer (or
+// a future MCP tool) explicitly resyncs via the existing sync-to-memory
+// action, exactly the same as any other editor edit today.
+//
+// Regenerates every paragraph object from scratch via
+// splitIntoChapterParagraphs, the same helper save_manuscript_scene's
+// append path and bulk-import already use -- which means any existing
+// per-paragraph metadata (inline comment threads, emphasis) on THIS
+// chapter is not preserved across the edit. Nothing elsewhere in this
+// codebase preserves that metadata across a full-paragraph rebuild either
+// (bulk-import and save-scene's append both mint fresh paragraph objects
+// too), so this doesn't introduce a new inconsistency -- it's a real,
+// known limitation of a full-text replace rather than a true diff-based
+// edit, worth knowing before using this on a chapter with real inline
+// comments.
+export async function editManuscriptChapterContent(
+  bookId: string,
+  chapterNumber: number,
+  rawText: string
+): Promise<{ paragraphCount: number }> {
+  const supabase = getSupabaseClient();
+  const { data: existing, error: fetchErr } = await supabase
+    .from("manuscript_chapters")
+    .select("id")
+    .eq("book_id", bookId)
+    .eq("number", chapterNumber)
+    .maybeSingle();
+  if (fetchErr) throw new Error(`Failed to look up chapter: ${fetchErr.message}`);
+  if (!existing) throw new ManuscriptChapterNotFoundError(bookId, chapterNumber);
+
+  const paragraphs = splitIntoChapterParagraphs(rawText);
+  const now = new Date().toISOString();
+  const { error: updateErr } = await supabase
+    .from("manuscript_chapters")
+    .update({ paragraphs, content_updated_at: now, updated_at: now })
+    .eq("id", existing.id);
+  if (updateErr) throw new Error(`Failed to update chapter content: ${updateErr.message}`);
+
+  return { paragraphCount: paragraphs.length };
+}
 
 // DELETE /api/v1/manuscript/chapters/:id — deletes this chapter's editor
 // content, its scene markers and beats (ON DELETE CASCADE via their FKs to

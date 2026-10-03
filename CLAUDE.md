@@ -1097,7 +1097,11 @@ same table).
   touches `manuscript_chunks` or makes an embedding call, so autosaving on
   every keystroke/pause costs nothing beyond a normal database write.
   Bumps `content_updated_at` only when `paragraphs` is actually part of
-  the patch — a title/heading/complete/part-only edit never moves it
+  the patch — a title/heading/complete/part-only edit never moves it.
+  This is the only way to EDIT an already-saved chapter's content today —
+  mirrored on the MCP surface as `edit_manuscript_chapter` (see below),
+  since MCP addresses chapters by `bookId`+`chapterNumber`, not this
+  route's row `id`
 - `DELETE /api/v1/manuscript/chapters/:id` — deletes this chapter's editor
   content, its scene markers and beats (`ON DELETE CASCADE` via their FKs
   to `manuscript_chapters`), **and** its `manuscript_chunks` (Deep Past
@@ -1508,6 +1512,23 @@ unsupervised):
   Takes an optional `chapterTitle`, used only if this call creates the
   chapter row (ignored if the chapter already exists) — see `/manuscript/
   save-scene` above
+- `edit_manuscript_chapter` — `{ bookId, chapterNumber, rawText }` —
+  REPLACES (not appends) an already-saved chapter's editor content with
+  corrected full text, via `editManuscriptChapterContent`
+  (`src/routes/manuscriptChapters.ts`) — the counterpart to
+  `save_manuscript_scene`'s append-only behavior, for fixing something
+  already saved (a typo, a dropped clause, a factual error) rather than
+  adding a new scene. Fetch the chapter's current text with
+  `get_manuscript_chapter` first, then send back the COMPLETE corrected
+  text, not just the changed part. Fails if no `manuscript_chapters` row
+  exists yet for that `bookId`+`chapterNumber` (`save_manuscript_scene`
+  creates one; this never does). Does NOT touch `manuscript_chunks` —
+  same restraint the editor's own autosave already exercises — so the
+  correction goes stale in Deep Past retrieval memory until the writer
+  explicitly syncs via the app's existing sync-to-memory action.
+  Regenerates every paragraph object from scratch, so any existing
+  inline comment threads on that chapter aren't preserved across the
+  edit — a known limitation of a full-text replace, not a bug
 - `update_agent_prompt` — `{ bookId, agentRole, stage, systemPrompt?,
   userPromptTemplate? }` — lets a writer iterate on a Planning Engine
   prompt conversationally (discuss it, land on wording, then have Claude

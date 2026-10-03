@@ -5,6 +5,7 @@ import { generateHanamiProse } from "../services/llm.js";
 import { buildSystemPrompt } from "../routes/generateProse.js";
 import { assembleContextPayload } from "../services/rag.js";
 import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
+import { editManuscriptChapterContent, ManuscriptChapterNotFoundError } from "../routes/manuscriptChapters.js";
 import { listBannedTerms } from "../services/bannedTerms.js";
 import { enforceBannedTerms } from "../services/ghostEditor.js";
 import {
@@ -895,6 +896,29 @@ export function registerWordArchitectTools(server: McpServer): void {
           `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content.`
         );
       } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "edit_manuscript_chapter",
+    {
+      title: "Edit Manuscript Chapter",
+      description:
+        "Replaces (not appends) an already-saved chapter's editor content (manuscript_chapters.paragraphs) with corrected full text — the counterpart to save_manuscript_scene's append-only behavior, for fixing something already saved (a typo, a dropped clause, a factual correction) rather than adding a new scene. Fetch the chapter's current text with get_manuscript_chapter first, make your correction, and send back the COMPLETE corrected chapter text here, not just the changed portion — this replaces every paragraph. Does NOT touch manuscript_chunks (Deep Past retrieval memory); the correction stays stale there until the writer syncs via the app's existing sync-to-memory action, the same as any other editor edit. Fails if no chapter row exists yet for this bookId+chapterNumber — use save_manuscript_scene to create one first. Regenerates every paragraph object from scratch, so any existing inline comment threads on this chapter are not preserved across the edit. Only call this once the writer has actively confirmed the correction, never speculatively.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        chapterNumber: z.number().int().describe("Chapter number to edit — must already have a manuscript_chapters row"),
+        rawText: z.string().describe("The COMPLETE corrected chapter text, replacing everything currently saved for this chapter"),
+      },
+    },
+    async ({ bookId, chapterNumber, rawText }) => {
+      try {
+        const result = await editManuscriptChapterContent(bookId, chapterNumber, rawText);
+        return textResult(`Replaced chapter ${chapterNumber}'s editor content with ${result.paragraphCount} paragraph(s).`);
+      } catch (err) {
+        if (err instanceof ManuscriptChapterNotFoundError) return errorResult(err.message);
         return errorResult(err instanceof Error ? err.message : String(err));
       }
     }
