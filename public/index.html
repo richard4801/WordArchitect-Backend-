@@ -314,7 +314,7 @@
 
 <fieldset>
   <legend>Banned Terms (Ghost Editor)</legend>
-  <p class="sub" style="margin-top:0;">Ban a word or phrase for this Book ID and Hanami will never produce it again — checked against every full generation, and any paragraph that contains a banned term gets silently regenerated (with verification, up to 3 attempts) before you ever see it. There's no free "erase from vocabulary" shortcut for this — confirmed against the real API that generation-time token suppression isn't honored and wouldn't safely target whole words anyway — so this only activates (and only costs the extra regeneration time) for books that actually have banned terms set.</p>
+  <p class="sub" style="margin-top:0;">Ban a word or phrase for this User ID and Hanami will never produce it again in ANY of this writer's books — checked against every full generation, and any paragraph that contains a banned term gets silently regenerated (with verification, up to 3 attempts) before you ever see it. There's no free "erase from vocabulary" shortcut for this — confirmed against the real API that generation-time token suppression isn't honored and wouldn't safely target whole words anyway — so this only activates (and only costs the extra regeneration time) for writers who actually have banned terms set.</p>
   <div class="row">
     <div><label>Ban a word or phrase</label><input id="tTerm" placeholder="a cold shiver ran down her spine" /></div>
   </div>
@@ -1174,12 +1174,14 @@ $("gBeat").addEventListener("scroll", () => {
 updateBeatHighlight();
 
 // ---- Banned Terms (Ghost Editor) ----
+// Scoped per writer (userId), not per book -- a term banned here applies
+// to every book this userId owns. See services/bannedTerms.ts.
 async function loadBannedTerms() {
-  const bookId = $("bookId").value.trim();
-  if (!bookId) { setStatus($("tStatus"), "Enter a Book ID above to load banned terms.", "error"); return; }
+  const userId = $("userId").value.trim();
+  if (!userId) { setStatus($("tStatus"), "Enter a User ID above to load banned terms.", "error"); return; }
   setStatus($("tStatus"), "Loading...");
   try {
-    const res = await fetch(apiBase() + "/api/v1/banned-terms?bookId=" + encodeURIComponent(bookId));
+    const res = await fetch(apiBase() + "/api/v1/banned-terms?userId=" + encodeURIComponent(userId));
     const data = await parseJsonResponse(res);
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
     renderBannedTermsTable(data.terms || []);
@@ -1236,7 +1238,7 @@ $("tAdd").addEventListener("click", async () => {
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
     $("tTerm").value = "";
     await loadBannedTerms();
-    setStatus($("tStatus"), "Banned. Applies to every generation for this Book ID from now on.", "ok");
+    setStatus($("tStatus"), "Banned. Applies to every generation for this writer, across every book, from now on.", "ok");
   } catch (err) {
     setStatus($("tStatus"), String(err.message || err), "error");
   } finally {
@@ -1249,8 +1251,8 @@ let activeAbort = null;
 
 // Must match GHOST_EDITOR_REPORT_MARKER in src/routes/generateProse.ts —
 // precedes a trailing JSON blob of corrections appended to the raw prose
-// stream only when the book has banned terms and at least one paragraph
-// needed regenerating. Stripped from the visible output and rendered as
+// stream only when the writer has banned terms set and at least one
+// paragraph needed regenerating. Stripped from the visible output and rendered as
 // its own report instead of shown as raw text.
 const GHOST_EDITOR_REPORT_MARKER = "\n\n<<<GHOST_EDITOR_REPORT>>>";
 

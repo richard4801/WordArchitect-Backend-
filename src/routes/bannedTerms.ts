@@ -3,15 +3,18 @@ import { listBannedTerms, addBannedTerm, removeBannedTerm } from "../services/ba
 
 export const bannedTermsRouter = Router();
 
+// Scoped by userId -- a writer's banned terms apply across every book
+// they own, not just one. See services/bannedTerms.ts and migration
+// 031_banned_terms_per_user.sql.
 bannedTermsRouter.get("/banned-terms", async (req: Request, res: Response) => {
-  const bookId = typeof req.query.bookId === "string" ? req.query.bookId.trim() : "";
-  if (!bookId) {
-    res.status(400).json({ error: "bookId query parameter is required." });
+  const userId = typeof req.query.userId === "string" ? req.query.userId.trim() : "";
+  if (!userId) {
+    res.status(400).json({ error: "userId query parameter is required." });
     return;
   }
 
   try {
-    const terms = await listBannedTerms(bookId);
+    const terms = await listBannedTerms(userId);
     res.json({ terms });
   } catch (error) {
     console.error("list banned terms failed:", error);

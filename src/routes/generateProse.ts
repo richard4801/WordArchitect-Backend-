@@ -231,10 +231,10 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
     const systemPrompt = buildSystemPrompt(payload);
     const userMessage = buildUserMessage(userSceneBeat, chapterAvoid);
 
-    const bannedTerms = await listBannedTerms(bookId);
+    const bannedTerms = await listBannedTerms(userId);
 
     if (bannedTerms.length === 0) {
-      // No banned terms configured for this book — identical to the
+      // No banned terms configured for this writer — identical to the
       // original behavior, live token-by-token streaming, zero added cost.
       await streamHanamiProse(systemPrompt, userMessage, res);
       return;
@@ -248,7 +248,8 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
     // actually works is detect-then-regenerate, which means the full
     // generation has to be buffered and checked before anything is shown
     // — this trades live streaming for a guarantee the writer never sees
-    // a banned term land on screen, only for books that opted into it.
+    // a banned term land on screen, only for writers who've opted into it
+    // (scoped per-writer, not per-book — see services/bannedTerms.ts).
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");

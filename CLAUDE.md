@@ -394,15 +394,34 @@ reporting chapter 313 as the highest instead of the real 377.
 
 ## Banned Terms (Ghost Editor)
 
-A writer can ban a word or phrase per book — via the test UI's Banned
-Terms panel, or `GET/POST /api/v1/banned-terms` and
-`DELETE /api/v1/banned-terms/:id` — and Hanami is guaranteed to never
-produce it again, checked on every `/generate-prose` call and on every
-MCP `generate_prose_direct` call that passes `bookId` (see MCP Server
-below — `bookId` is optional there since not every direct call is tied to
-a real book, but omitting it also means banned terms for that book go
-unchecked, so the MCP tool's own description tells Claude to always pass
-it when one exists, including every call inside a scene draft session).
+A writer can ban a word or phrase, globally across every book they own —
+via the test UI's Banned Terms panel, or `GET /api/v1/banned-terms?userId=`,
+`POST /api/v1/banned-terms`, and `DELETE /api/v1/banned-terms/:id` — and
+Hanami is guaranteed to never produce it again in any of that writer's
+books, checked on every `/generate-prose` call and on every MCP
+`generate_prose_direct` call that passes `userId` (see MCP Server below —
+`userId` is optional there since not every direct call knows it, but
+omitting it also means this writer's banned terms go unchecked, so the
+MCP tool's own description tells Claude to always pass it when known,
+including every call inside a scene draft session).
+
+**Scoped per writer (`user_id`), not per book** — a real behavior change
+from the original per-book design: a term banned once now applies to
+every book that writer owns, not just the one open when they banned it.
+Motivated by the realistic case per-book scoping was never built for: a
+writer who knows they overuse a word ("delve," a verbal tic, a cliché)
+wants it gone from their writing everywhere, not re-banned book by book.
+`banned_terms.book_id` is still a required column on every row — `POST
+/api/v1/banned-terms` still takes `{ userId, bookId, term }`, unchanged —
+but it's kept purely as provenance (which book was open when a term was
+first banned); it no longer gates lookup or uniqueness, `user_id` does
+(migration `031_banned_terms_per_user.sql`). The one real breaking change
+on the API surface: `GET /api/v1/banned-terms` now takes a `userId` query
+parameter instead of `bookId`. Re-banning a term the writer already
+banned from a *different* book is a no-op success (same term, same
+writer — the global-ban behavior working as intended), not a duplicate
+row or an error, the same dedup-is-success rule this endpoint already
+had for re-banning within one book.
 
 **Why there's no cheap path**: the obvious-sounding mechanism —
 suppress the word at the token level via `logit_bias` so Hanami
@@ -439,15 +458,16 @@ the MCP Server section's supervised-drafting findings), so this reuses
 the same "narrow scope, verify, retry" pattern already proven to work
 rather than inventing a new one.
 
-**The real cost, stated plainly**: for a book with banned terms
-configured, `/generate-prose` loses live token-by-token streaming —
-the writer sees the finished, already-clean text appear once generation
-and any needed corrections are done, not prose typing out in real time.
-This is the honest tradeoff for the actual guarantee ("never see a
-banned term on screen") instead of the originally-imagined free one. A
-book with zero banned terms is completely unaffected — same live
-streaming as always, zero added latency, zero extra calls; the banned-
-terms lookup is the only overhead, one cheap query per generation.
+**The real cost, stated plainly**: for a writer with banned terms
+configured, `/generate-prose` loses live token-by-token streaming on
+every one of their books — the writer sees the finished, already-clean
+text appear once generation and any needed corrections are done, not
+prose typing out in real time. This is the honest tradeoff for the
+actual guarantee ("never see a banned term on screen") instead of the
+originally-imagined free one. A writer with zero banned terms is
+completely unaffected — same live streaming as always, zero added
+latency, zero extra calls; the banned-terms lookup is the only overhead,
+one cheap query per generation.
 
 A generation's correction report (which paragraphs were rewritten, what
 was found, how many attempts, whether it was ultimately resolved) is
