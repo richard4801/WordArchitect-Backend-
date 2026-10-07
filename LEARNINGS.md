@@ -116,3 +116,26 @@ there before assuming anything was lost. If it is intact remotely, restore
 with `git checkout -B <branch> origin/<branch>` — don't reconstruct
 anything by hand, and don't touch anything destructively until the fetch
 confirms what's actually missing versus what's just a local artifact.
+
+## 2026-10-07 — "Learning record" was ambiguous and I built the wrong scope first
+
+Asked to add a mechanism so "Claude always documents a record of everything
+it learns... so a mistake isn't repeated," I built exactly that — but
+scoped to engineering/deploy knowledge (this very file), since that was
+the kind of lesson most present in the conversation at the time. The
+actual ask was about craft/collaboration knowledge: what's learned working
+with Hanami as a creative collaborator, and with the writer themselves —
+a completely different scope, audience, and (it turned out) a different
+storage mechanism entirely (a live DB table writers' real sessions can
+grow, `collaboration_learnings`, not a static repo file only a dev session
+touches). Caught only because the user corrected it after the fact, not
+because anything about the request itself should have been ambiguous in
+hindsight — "learning record" undersold how differently "engineering
+lessons" and "creative-collaboration lessons" needed to be built.
+
+**Rule:** when a request names a general capability ("a log," "a learning
+record," "a memory system") without naming its subject matter, don't
+default to the scope most recently active in the conversation — ask which
+domain it's actually for before designing the storage/data model, since
+"where does this live and who writes to it" depends entirely on the
+answer and is expensive to redo.
