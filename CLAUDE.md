@@ -1,5 +1,19 @@
 # WordArchitect Backend — Architectural Blueprint
 
+## Learnings Log — read before starting work
+
+`LEARNINGS.md` (repo root) is a standing, append-only record of mistakes,
+gotchas, and non-obvious truths discovered the hard way while working on
+this project — distinct from this file, which documents what the system
+*is*, not what went wrong building it. **Read `LEARNINGS.md` in full
+before starting real work in this repo.** When you hit something
+non-obvious the hard way — a wrong assumption, a process gotcha, a
+surprising failure mode — add a new dated entry to it before ending your
+turn, without waiting to be asked. Append only; never edit or delete a
+past entry, even a superseded one — add a new entry referencing it
+instead. The whole point is that this compounds across sessions that have
+no memory of each other, so a mistake made once is never made twice.
+
 ## System Vision
 
 WordArchitect is an **Autonomous Contextual AI Fiction Platform** backend for
