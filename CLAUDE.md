@@ -492,6 +492,59 @@ in the prose output — the same transparency principle as the diff
 tooling elsewhere in this project: show what actually happened, not just
 a claim that it worked.
 
+## Collaboration Learnings
+
+A growing, per-writer (`user_id`, not `book_id`) record of what's actually
+learned working with this writer and with Hanami — a Hanami behavior
+pattern discovered during a real supervised scene-draft session, a stated
+writing preference, a continuity miss worth remembering, any craft/
+collaboration lesson not worth re-learning from scratch next time.
+`collaboration_learnings` table (migration `032_collaboration_learnings.sql`,
+`src/routes/collaborationLearnings.ts`). Distinct from `LEARNINGS.md` (repo
+root) — that's the engineering/deploy-gotchas log for people working ON
+this codebase; this is product knowledge accumulated FROM using it, and
+it's data (a Supabase table), not a repo file, specifically so it can grow
+from live sessions (MCP, Chat Assistant) rather than only from a developer
+editing the repo.
+
+**Scoped per writer, not per book** — same reasoning this project already
+applied to Banned Terms (migration `031_banned_terms_per_user.sql`): a
+Hanami quirk or a writer's own preference is a property of (this writer,
+this platform), not one story, so it should carry into their next project
+rather than being re-learned per book. `book_id` is kept as optional
+provenance (which book, if any, surfaced this) — nullable, since a general
+Hanami behavior pattern isn't tied to any one book.
+
+`category` is open-ended (any non-empty string, no `CHECK` enum — same
+pattern as `codex_entries.entry_type`/`book_links.link_type`), with
+conventional values `hanami_behavior` \| `writer_preference` \|
+`continuity_flag` \| `craft_note` used so far. No `PATCH`/update endpoint —
+append-only in spirit, matching `LEARNINGS.md`'s own rule: if a lesson is
+stale or wrong, add a new entry that says so rather than editing the old
+one (delete is still available for genuinely bad entries, not for
+revising).
+
+**Endpoints** (`src/routes/collaborationLearnings.ts`):
+- `GET /api/v1/collaboration-learnings?userId=&category=`
+- `POST /api/v1/collaboration-learnings` — `{ userId, bookId?, category, lesson }`
+- `DELETE /api/v1/collaboration-learnings/:id`
+
+**Mirrored on both LLM-facing surfaces** — `get_collaboration_learnings`/
+`record_collaboration_learning` on the MCP server (`src/mcp/tools.ts`) and
+the same pair on the Chat Assistant (`src/services/chatAssistant.ts`).
+`record_collaboration_learning` is deliberately **exempt from the
+propose-only rule** that governs every other Chat Assistant write tool
+(see Chat Assistant below) — the same exemption already established for
+the Planning Engine's continuity ledger (see "The continuity ledger"
+under Planning Engine below): this is Claude's own operational memory,
+not new writer-facing canon requiring review, so it writes immediately on
+both surfaces with no confirmation step. `generate_prose_direct` and
+`finish_scene_draft_session`'s tool descriptions both nudge Claude to
+check/record learnings at the natural moments (before a real drafting
+session; after a multi-pass session that surfaced something) — not
+mandatory, but the two points real usage is most likely to produce
+something worth keeping.
+
 ## Database Schema
 
 Defined in `supabase/migrations/001_init_schema.sql`. Every table is scoped
@@ -1259,9 +1312,10 @@ talk to an MCP server in the same process, for no real benefit. Instead,
 tool-calling, running its own request/response loop.
 
 **Read tools**: `list_codex_entries`, `get_codex_entry`, `search_manuscript`,
-`get_manuscript_chapter`, `list_world_categories`, `list_notes`.
+`get_manuscript_chapter`, `list_world_categories`, `list_notes`,
+`get_collaboration_learnings` — see Collaboration Learnings above.
 
-**Write tools are propose-only, deliberately** —
+**Write tools are propose-only, deliberately, with one exception** —
 `propose_create_codex_entry`, `propose_update_codex_entry`,
 `propose_create_world_category`, `propose_create_note`,
 `propose_save_manuscript_scene` (mirrors the MCP server's write-tool set).
@@ -1270,7 +1324,13 @@ directing each write in real time via conversation; this loop instead
 runs several tool calls autonomously within a single turn with no
 confirmation in between, so a tool that directly wrote to the Codex here
 would mean unsupervised writes — exactly what every write tool elsewhere
-in this project has been built to avoid. Calling a `propose_*` tool does
+in this project has been built to avoid. The one exception is
+`record_collaboration_learning` (see Collaboration Learnings above),
+which writes immediately with no proposal step — it's Claude's own
+operational memory, not writer-facing canon, the same exemption the
+Planning Engine's continuity ledger already has, so the "unsupervised
+write" concern this section exists to prevent doesn't apply to it.
+Calling a `propose_*` tool does
 **not** touch Supabase at all (`proposalAck` in `chatAssistant.ts`) — it
 just validates the shape Claude sent and returns an acknowledgment;
 the actual proposed payload is only ever recorded in
@@ -1517,6 +1577,10 @@ Read (safe to call freely):
   unit it's on, that unit's current draft, the critics' findings, any
   automated arbitrator_synthesis, the continuity ledger, and status — see
   "MCP as Arbitrator" under Planning Engine below
+- `get_collaboration_learnings` — `{ userId, category? }` — this writer's
+  growing, cross-book record of Hanami behavior patterns, stated
+  preferences, continuity misses, and craft notes — see Collaboration
+  Learnings above. Check this before a real drafting session
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept
@@ -1524,7 +1588,14 @@ in sync via a shared field list in `tools.ts` so a field present on one
 path and missing from the other can't silently fail to save again; only
 meant to be called when the writer has actively confirmed the change in
 the conversation, never speculatively — nothing here should ever write
-unsupervised):
+unsupervised — **except `record_collaboration_learning` below**, which is
+deliberately exempt since it's operational memory, not writer-facing
+canon, see Collaboration Learnings above):
+- `record_collaboration_learning` — `{ userId, bookId?, category, lesson }`
+  — appends a new collaboration learning, writing immediately with no
+  writer confirmation — see Collaboration Learnings above for why this
+  one tool is exempt from the "nothing writes unsupervised" rule every
+  other tool in this list follows
 - `create_codex_entry`, `update_codex_entry`
 - `create_world_category` — `{ bookId, name, key?, description?, color?,
   icon? }`, same auto-slugify behavior as `POST /api/v1/world-categories`

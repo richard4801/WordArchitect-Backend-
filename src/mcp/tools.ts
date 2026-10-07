@@ -6,6 +6,7 @@ import { buildSystemPrompt } from "../routes/generateProse.js";
 import { assembleContextPayload } from "../services/rag.js";
 import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
 import { editManuscriptChapterContent, ManuscriptChapterNotFoundError } from "../routes/manuscriptChapters.js";
+import { listCollaborationLearnings, addCollaborationLearning } from "../routes/collaborationLearnings.js";
 import { listBannedTerms } from "../services/bannedTerms.js";
 import { enforceBannedTerms } from "../services/ghostEditor.js";
 import {
@@ -283,6 +284,52 @@ export function registerWordArchitectTools(server: McpServer): void {
 
       if (error) return errorResult(`Failed to create note: ${error.message}`);
       return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  server.registerTool(
+    "get_collaboration_learnings",
+    {
+      title: "Get Collaboration Learnings",
+      description:
+        "Read this writer's growing, cross-book record of what's been learned actually working with them and with Hanami — a Hanami behavior pattern discovered during a supervised scene-draft session, a stated writing preference, a continuity miss worth remembering, anything worth not re-learning from scratch next time. Scoped to the writer (userId), not one book — applies across every project they have. Check this before a scene-draft session, before generate_prose_direct, or at the start of a brainstorming conversation, the same way you'd check preview_automatic_context or get_platform_craft_notes first. Conventional categories so far: hanami_behavior, writer_preference, continuity_flag, craft_note — but any category string is accepted.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        category: z.string().optional().describe("Filter to one category, e.g. 'hanami_behavior'. Omit to get everything."),
+      },
+    },
+    async ({ userId, category }) => {
+      try {
+        const learnings = await listCollaborationLearnings(userId, { category });
+        return textResult(JSON.stringify(learnings, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "record_collaboration_learning",
+    {
+      title: "Record Collaboration Learning",
+      description:
+        "Append a new entry to this writer's collaboration learnings — call this whenever you notice something worth remembering for next time: a Hanami behavior pattern (e.g. it dropped a clause during a revision, it invented an unestablished detail despite being told not to), a preference the writer stated (e.g. 'don't open chapters with weather', 'I want shorter beats'), a continuity thing that got missed, or any other craft/collaboration lesson. Unlike every other MCP write tool, this does NOT require the writer to have confirmed it first — it's your own operational memory, not new writer-facing canon (the same exemption this project's Planning Engine continuity ledger already has, see CLAUDE.md). Append-only in spirit: add a new entry rather than trying to edit an old one, even if it supersedes something you recorded before. bookId is optional provenance (which book this came up on) — omit it for a general Hanami pattern that isn't book-specific.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        bookId: z.string().optional().describe("Optional — which book this was learned on, if book-specific"),
+        category: z
+          .string()
+          .describe("A short category label, e.g. 'hanami_behavior', 'writer_preference', 'continuity_flag', 'craft_note', or your own"),
+        lesson: z.string().describe("The lesson itself, stated concretely enough to be useful cold, with no assumed context"),
+      },
+    },
+    async ({ userId, bookId, category, lesson }) => {
+      try {
+        const learning = await addCollaborationLearning({ userId, bookId: bookId ?? null, category, lesson });
+        return textResult(JSON.stringify(learning, null, 2));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 
@@ -675,7 +722,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Generate Prose (Direct)",
       description:
-        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. Pass userId whenever you know it (including every call within a scene draft session) — without it, this writer's banned terms (Ghost Editor) are NOT checked or enforced, unlike POST /generate-prose which always enforces them. With userId, any paragraph containing a term this writer has banned (across ANY of their books — banned terms are scoped per-writer, not per-book) is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint.",
+        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. Pass userId whenever you know it (including every call within a scene draft session) — without it, this writer's banned terms (Ghost Editor) are NOT checked or enforced, unlike POST /generate-prose which always enforces them. With userId, any paragraph containing a term this writer has banned (across ANY of their books — banned terms are scoped per-writer, not per-book) is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint. Worth calling get_collaboration_learnings for this writer before a real drafting session — it may already have Hanami quirks or writer preferences specific to them beyond the general patterns listed above.",
       inputSchema: {
         sceneBeat: z.string().describe("The scene beat to write"),
         compiledContext: z
@@ -848,7 +895,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Finish Scene Draft Session",
       description:
-        "Marks a scene draft session done once you and the writer are satisfied with the draft. This does not save it into permanent manuscript memory — call save_manuscript_scene separately once the writer actually accepts it, since finishing a draft session and accepting prose into canon are different moments.",
+        "Marks a scene draft session done once you and the writer are satisfied with the draft. This does not save it into permanent manuscript memory — call save_manuscript_scene separately once the writer actually accepts it, since finishing a draft session and accepting prose into canon are different moments. If this session surfaced a real Hanami behavior pattern or a writer preference worth remembering for next time, call record_collaboration_learning before wrapping up — a multi-pass session is exactly where those tend to show up.",
       inputSchema: {
         sessionId: z.string().describe("The scene draft session ID"),
         finalDraft: z.string().optional().describe("The final draft text, if it differs from the last recorded iteration"),

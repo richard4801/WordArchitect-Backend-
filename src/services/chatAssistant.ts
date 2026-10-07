@@ -3,6 +3,7 @@ import { getAnthropicClient } from "../lib/anthropicClient.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "./bookContextTools.js";
 import { listWorldCategories } from "../routes/worldCategories.js";
 import { listNotesForBook } from "../routes/notes.js";
+import { listCollaborationLearnings, addCollaborationLearning } from "../routes/collaborationLearnings.js";
 import { VALID_NOTE_CATEGORIES } from "../types/domain.js";
 import type { ChatMessage, ChatPersona, ChatToolCallLogEntry } from "../types/domain.js";
 
@@ -34,6 +35,7 @@ function buildChatSystemPrompt(persona: ChatPersona): string {
     personaInstruction,
     "You have read-only tools to look up this book's real Characters, Worldbuilding entries, Notes, and manuscript text. Use them whenever a question depends on details you don't already have from earlier in this conversation — don't invent or guess at established facts, and don't re-call a tool for something already established earlier in this same conversation.",
     "You also have propose_* tools (propose_create_codex_entry, propose_update_codex_entry, propose_create_world_category, propose_create_note, propose_save_manuscript_scene). Calling one does NOT save anything — it drafts a change and shows it to the writer in the app for them to explicitly confirm or reject before it's ever written. Only call a propose_* tool after the writer has actually asked for or clearly agreed to that specific change in this conversation — never speculatively, and never as a way to 'try something out.' Immediately after calling one, briefly restate in your reply exactly what you proposed (the key fields, not the full JSON) so the writer knows precisely what they're being asked to confirm.",
+    "You also have get_collaboration_learnings and record_collaboration_learning — this writer's own growing, cross-book record of collaboration lessons (Hanami behavior patterns, stated preferences, continuity misses, craft notes), separate from Codex/manuscript canon. Check it near the start of a conversation if it might help. Unlike the propose_* tools, record_collaboration_learning writes immediately with no confirmation step — it's your own operational memory, not writer-facing canon — so call it whenever you notice something genuinely worth remembering for next time, including things the writer tells you about their own preferences in this very conversation.",
     "This chat is for discussion, brainstorming, and advice — not for writing manuscript prose into the book. If the writer wants actual prose generated or written into a chapter, tell them to use the book's normal prose generation flow instead of trying to do that here. propose_save_manuscript_scene is only for saving prose the writer has already accepted as final, not for drafting new prose.",
     "Ground every factual claim about the book in what the tools actually return. If you don't know something and the tools don't surface it, say so plainly rather than inventing details.",
   ].join("\n\n");
@@ -96,6 +98,28 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: { category: { type: "string", description: "Optional filter, e.g. 'Plot', 'Character', 'World Building'" } },
+    },
+  },
+  {
+    name: "get_collaboration_learnings",
+    description:
+      "Read this writer's growing, cross-book collaboration learnings — Hanami behavior patterns, stated preferences, continuity misses, craft notes. Scoped to the writer, applies across every book they have, not just this one.",
+    input_schema: {
+      type: "object",
+      properties: { category: { type: "string", description: "Optional filter, e.g. 'hanami_behavior', 'writer_preference', 'continuity_flag', 'craft_note'" } },
+    },
+  },
+  {
+    name: "record_collaboration_learning",
+    description:
+      "Append a new collaboration learning — a Hanami behavior pattern, a preference the writer just stated, a continuity miss, or any other craft/collaboration lesson worth remembering next time. Writes immediately, no writer confirmation needed (this is operational memory, not Codex/manuscript canon). Add a new entry rather than editing an old one, even if it supersedes something recorded before.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category: { type: "string", description: "Short label, e.g. 'hanami_behavior', 'writer_preference', 'continuity_flag', 'craft_note', or your own" },
+        lesson: { type: "string", description: "The lesson, stated concretely enough to be useful cold" },
+      },
+      required: ["category", "lesson"],
     },
   },
   // --- propose_* tools: none of these write to the database. Each one
@@ -205,7 +229,7 @@ function proposalAck(action: string): { status: string; note: string } {
   };
 }
 
-async function executeTool(name: string, input: Record<string, unknown>, bookId: string): Promise<unknown> {
+async function executeTool(name: string, input: Record<string, unknown>, bookId: string, userId: string): Promise<unknown> {
   switch (name) {
     case "list_codex_entries":
       return listCodexEntries(bookId, typeof input.entryType === "string" ? input.entryType : undefined);
@@ -222,6 +246,13 @@ async function executeTool(name: string, input: Record<string, unknown>, bookId:
       return listWorldCategories(bookId);
     case "list_notes":
       return listNotesForBook(bookId, { category: typeof input.category === "string" ? input.category : undefined });
+    case "get_collaboration_learnings":
+      return listCollaborationLearnings(userId, { category: typeof input.category === "string" ? input.category : undefined });
+    case "record_collaboration_learning":
+      if (typeof input.category !== "string" || typeof input.lesson !== "string") {
+        throw new Error("category and lesson are required");
+      }
+      return addCollaborationLearning({ userId, bookId, category: input.category, lesson: input.lesson });
     case "propose_create_codex_entry":
       if (typeof input.name !== "string" || typeof input.entryType !== "string" || typeof input.description !== "string") {
         throw new Error("name, entryType, and description are required");
@@ -272,10 +303,11 @@ export interface RunChatTurnResult {
 export async function runChatTurn(params: {
   persona: ChatPersona;
   bookId: string;
+  userId: string;
   history: ChatMessage[];
   userMessage: string;
 }): Promise<RunChatTurnResult> {
-  const { persona, bookId, history, userMessage } = params;
+  const { persona, bookId, userId, history, userMessage } = params;
   const anthropic = getAnthropicClient();
   const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
 
@@ -314,7 +346,7 @@ export async function runChatTurn(params: {
       const input = (block.input ?? {}) as Record<string, unknown>;
       toolCallLog.push({ tool: block.name, input });
       try {
-        const result = await executeTool(block.name, input, bookId);
+        const result = await executeTool(block.name, input, bookId, userId);
         toolResultBlocks.push({
           type: "tool_result",
           tool_use_id: block.id,

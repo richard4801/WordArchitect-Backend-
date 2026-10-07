@@ -88,6 +88,7 @@ chatRouter.post("/chat", async (req: Request, res: Response) => {
     const result = await runChatTurn({
       persona: session.persona,
       bookId,
+      userId,
       history: (historyRows ?? []) as ChatMessage[],
       userMessage: message,
     });
