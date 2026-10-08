@@ -256,6 +256,84 @@ used the syntax itself. An unterminated open tag (no closing `>>` ever
 arrives) is flushed as plain text at the end of the stream rather than
 held forever, so it fails safe rather than silently swallowing content.
 
+### Writing Voice — This Writer's Own Prose Style
+
+A writer pastes a sample of their own writing once, and Hanami tries to
+write in that voice on every generation from then on, across every book
+they have — "write exactly like me." `writing_voice_profiles` table
+(migration `033_writing_voice_profile.sql`, `src/services/writingVoice.ts`,
+`src/routes/writingVoice.ts`). Ranked second-highest in the compiled
+prompt, below this chapter's own fresh Layer 0 instructions (which should
+win if they ever genuinely conflict) but above Layer 1/2/3 — a writer's
+baseline voice is foundational to every generation, not something that
+should get crowded out by Codex/History/RAG when the token budget is
+tight.
+
+**Scoped per writer (`user_id`), not per book** — same reasoning already
+established for Banned Terms and Collaboration Learnings: a writer's own
+voice is a property of them, not one story. Unlike those two tables,
+though, this is **not** an append-only list — it's one evolving profile
+per writer (`user_id UNIQUE`), the same "whole-document replace" pattern
+`platform_craft_notes` uses: pasting a new sample replaces the active
+profile wholesale, it doesn't accumulate alongside old ones.
+
+**The raw sample is never what gets injected.** `saveWritingVoiceSample`
+(`writingVoice.ts`) stores the pasted `sample_text` verbatim as the source
+of truth, then makes one synchronous Claude call (`claude-sonnet-5`, no
+tools, no thinking budget — this is a straightforward analysis task, not
+agentic) that distills it into `style_profile`: concrete, actionable
+instructions ("short declarative sentences, rarely more than 15 words;
+dialogue carries most scenes; present tense, close third person"), not
+literary-critic adjectives ("evocative," "lyrical") that a generation
+model with no judgment of its own can't actually execute. `style_profile`,
+capped at ~300 words by the extraction prompt itself and defensively
+truncated to `VOICE_TOKEN_BUDGET` (500 tokens, same cap Layer 0 uses) when
+injected, is what actually reaches Hanami — a bounded, predictable token
+cost regardless of how long the writer's pasted sample was, the same
+"Claude understands, Hanami executes" division of labor the MCP Server's
+whole design already rests on.
+
+**Extraction failure never loses the sample.** `sample_text` is always
+saved first; if the Claude call then fails, `style_profile` is left at
+whatever it already was (a previously-good profile keeps being used on
+the next generation rather than silently going blank) and
+`extraction_error` records why. `POST /api/v1/writing-voice/extract`
+re-runs extraction against the already-saved sample with no re-paste
+required — the retry path for a failed attempt, or just to refresh.
+
+**Endpoints** (`src/routes/writingVoice.ts`):
+- `GET /api/v1/writing-voice?userId=` → `{ profile }` (`null` if the
+  writer hasn't pasted a sample yet)
+- `POST /api/v1/writing-voice` — `{ userId, sampleText }` → `201 { profile,
+  extractionFailed }`. Saves and (re)analyzes in one call
+- `POST /api/v1/writing-voice/extract` — `{ userId }` → `{ profile }`.
+  Re-analyzes the already-saved sample, no re-paste
+- `DELETE /api/v1/writing-voice?userId=` — clears the sample and profile
+  entirely; Hanami falls back to its default voice on this writer's next
+  generation
+
+**Applies automatically to `/generate-prose` and `/generate-prose/preview`**
+— `assembleContextPayload` (`rag.ts`) fetches it by `userId` alongside
+Layer 1/3's other round trips, no extra parameter needed on the generation
+call itself. **Does NOT apply to `/ask`** (`includeVoice: false`) — that's
+a factual-answer diagnostic at low temperature, and "write in this
+writer's voice" guidance has no use there and could nudge a plain factual
+answer toward stylistic flourish instead of precision, the same carve-out
+this project already applies to Layer 0 chapter instructions, which `/ask`
+also never receives.
+
+**Mirrored on the MCP surface** as `get_writing_voice` (read-only — there's
+no MCP write tool for this; pasting a sample is a deliberate, one-time
+writer action better suited to the frontend/test-UI form than an LLM
+autonomously overwriting a writer's own voice profile mid-conversation).
+`generate_prose_direct`'s description nudges Claude to call it and fold
+the profile into `compiledContext` itself, since that tool bypasses the
+automatic Layer 1/2/3/Voice pipeline entirely — without this, a direct
+call writes in Hanami's default voice with no sense of how this writer
+actually writes, the same reasoning already established for why that
+tool's description nudges `userId` (Banned Terms) and
+`get_collaboration_learnings`.
+
 ### Layer 1 — Codex (Explicit Match)
 
 Direct string/alias lookup against saved character, location, and lore
@@ -1581,6 +1659,15 @@ Read (safe to call freely):
   growing, cross-book record of Hanami behavior patterns, stated
   preferences, continuity misses, and craft notes — see Collaboration
   Learnings above. Check this before a real drafting session
+- `get_writing_voice` — `{ userId }` — this writer's own prose voice, if
+  they've pasted a sample, distilled into a compact style profile — see
+  Writing Voice above. `generate_prose_direct` skips the automatic
+  pipeline that would otherwise inject this, so call this and fold the
+  profile into `compiledContext` yourself when drafting for a writer who
+  has one set. Deliberately read-only: there's no `save_writing_voice`
+  tool, since pasting a sample is a one-time, deliberate writer action
+  meant to happen via the frontend/test-UI form, not something an LLM
+  should overwrite mid-conversation
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept

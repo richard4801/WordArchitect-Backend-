@@ -3,6 +3,7 @@ import { estimateTokens, truncateToTokenBudget } from "../lib/tokenBudget.js";
 import { textMentionsAnyOf } from "../lib/textMatch.js";
 import { generateEmbedding } from "./embedding.js";
 import { expandSceneBeatConcepts } from "./queryExpansion.js";
+import { getWritingVoiceProfile } from "./writingVoice.js";
 import type { CodexEntry, ManuscriptChunkMatch } from "../types/domain.js";
 
 // The hard ceiling from CLAUDE.md's Strict Context Boundary: Layer 1 + 2 +
@@ -32,6 +33,15 @@ const SECTION_SEPARATOR = "\n\n---\n\n";
 // directives for the chapter about to be written, not a full style guide.
 const CHAPTER_INSTRUCTIONS_TOKEN_BUDGET = 500;
 
+// A writer's own prose voice (see src/services/writingVoice.ts — pasted
+// once via POST /api/v1/writing-voice, distilled into a compact style
+// profile by a one-shot Claude analysis call) — ranked above Layer 1/2/3
+// but below this chapter's own fresh instructions, which should win if
+// they ever conflict. Bounded the same way Layer 0 is, for the same
+// reason: the profile is already meant to be a compact rule list, not a
+// full style guide, and this is a defensive cap, not the expected size.
+const VOICE_TOKEN_BUDGET = 500;
+
 const LAYER1_TOKEN_BUDGET = 800;
 const LAYER2_MAX_WORDS = 2000;
 const LAYER2_TOKEN_BUDGET = 2000;
@@ -51,6 +61,9 @@ const LAYER3_MATCH_COUNT_PER_CONCEPT = 3;
 const MEMORY_HEADER_TOKENS_ESTIMATE = 20;
 
 export interface AssembleContextParams {
+  // Used to fetch this writer's Writing Voice profile (see
+  // src/services/writingVoice.ts) — previously accepted here but unused
+  // before that feature existed.
   userId: string;
   bookId: string;
   userSceneBeat: string;
@@ -68,6 +81,13 @@ export interface AssembleContextParams {
   // (buildSystemPrompt in generateProse.ts) so this stays decoupled from
   // that exact wording.
   reservedTokens?: number;
+  // Default true. /ask sets this false — it's a factual-answer diagnostic
+  // at low temperature, not prose generation, and "write in this writer's
+  // voice" guidance has no use there and could even nudge the answer
+  // toward stylistic flourish instead of plain precision. Same carve-out
+  // this project already applies to Layer 0 chapter instructions, which
+  // /ask also never receives.
+  includeVoice?: boolean;
 }
 
 type Layer1CodexRow = Pick<
@@ -138,6 +158,15 @@ function buildChapterInstructionsSection(chapterInstructions?: string, chapterAv
   }
 
   return truncateToTokenBudget(lines.join("\n"), CHAPTER_INSTRUCTIONS_TOKEN_BUDGET);
+}
+
+// Formats the writer's derived style profile into a section, or "" if no
+// profile exists yet (the common case for a writer who hasn't pasted a
+// sample — this section costs nothing when unset, same as Layer 0).
+function buildVoiceSection(styleProfile: string | null): string {
+  if (!styleProfile) return "";
+  const text = `## This Writer's Voice — Write In This Style\n\n${styleProfile}`;
+  return truncateToTokenBudget(text, VOICE_TOKEN_BUDGET);
 }
 
 // Layer 1 — Codex (Explicit Match): scans the scene beat for known
@@ -475,24 +504,36 @@ export interface AssembleContextResult {
 }
 
 // Compiles the context payload for a scene beat: this chapter's
-// instructions (highest priority) + Layer 1 (Codex) + Layer 2 (Recent
-// History) + Layer 3 (Deep Past RAG). Layer 1's lookup and Layer 3's
-// candidate-gathering run concurrently (independent round trips); Layer 2
-// is a pure local slice, and the chapter instructions section is built
-// synchronously from the request itself (no DB round trip — it's never
-// saved). The instructions section is measured first, then Layer 1 and 2,
-// so Layer 3's actual token budget reflects whatever's genuinely left —
-// any budget the higher-priority sections don't use goes to Layer 3
-// instead of being left on the table, see TOTAL_TOKEN_BUDGET above for why.
+// instructions (highest priority) + this writer's Voice profile + Layer 1
+// (Codex) + Layer 2 (Recent History) + Layer 3 (Deep Past RAG). Layer 1's
+// lookup, Layer 3's candidate-gathering, and the Voice profile fetch run
+// concurrently (independent round trips); Layer 2 is a pure local slice,
+// and the chapter instructions section is built synchronously from the
+// request itself (no DB round trip — it's never saved). Instructions and
+// Voice are measured first, then Layer 1 and 2, so Layer 3's actual token
+// budget reflects whatever's genuinely left — any budget the
+// higher-priority sections don't use goes to Layer 3 instead of being
+// left on the table, see TOTAL_TOKEN_BUDGET above for why.
 export async function assembleContextPayload(params: AssembleContextParams): Promise<AssembleContextResult> {
-  const { bookId, userSceneBeat, recentHistoryText, chapterInstructions, chapterAvoid, reservedTokens = 0 } = params;
+  const {
+    userId,
+    bookId,
+    userSceneBeat,
+    recentHistoryText,
+    chapterInstructions,
+    chapterAvoid,
+    reservedTokens = 0,
+    includeVoice = true,
+  } = params;
 
-  const [layer1, layer3Gathered] = await Promise.all([
+  const [layer1, layer3Gathered, voiceProfile] = await Promise.all([
     buildLayer1Codex(bookId, userSceneBeat),
     gatherLayer3Candidates(bookId, userSceneBeat),
+    includeVoice ? getWritingVoiceProfile(userId) : Promise.resolve(null),
   ]);
   const layer2 = buildLayer2RecentHistory(recentHistoryText);
   const instructions = buildChapterInstructionsSection(chapterInstructions, chapterAvoid);
+  const voiceSection = buildVoiceSection(voiceProfile?.style_profile ?? null);
 
   const sections: string[] = [];
   let usedTokens = reservedTokens;
@@ -500,6 +541,10 @@ export async function assembleContextPayload(params: AssembleContextParams): Pro
   if (instructions) {
     sections.push(instructions);
     usedTokens += estimateTokens(instructions) + estimateTokens(SECTION_SEPARATOR);
+  }
+  if (voiceSection) {
+    sections.push(voiceSection);
+    usedTokens += estimateTokens(voiceSection) + estimateTokens(SECTION_SEPARATOR);
   }
   if (layer1) {
     const section = `## Codex — Relevant Characters, Locations & Lore\n\n${layer1}`;

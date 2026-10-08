@@ -328,6 +328,23 @@
 </fieldset>
 
 <fieldset>
+  <legend>Writing Voice</legend>
+  <p class="sub" style="margin-top:0;">Paste a sample of your own prose for this User ID and Hanami will try to write in that voice on every generation, across every one of your books — Claude analyzes the sample once and distills it into a compact style profile (sentence rhythm, dialogue conventions, POV/tense, tics to use or avoid), which is what actually gets injected, not the raw sample. Re-paste any time to replace it.</p>
+  <div class="row">
+    <div><label>Prose sample (a full scene or two is better than a paragraph)</label><textarea id="vSample" rows="8" placeholder="Paste a representative sample of your own writing here..."></textarea></div>
+  </div>
+  <button id="vSave">Save &amp; analyze</button>
+  <button class="secondary" id="vRefresh" type="button">Refresh</button>
+  <button class="secondary" id="vReextract" type="button">Re-analyze current sample</button>
+  <button class="secondary" id="vClear" type="button">Clear</button>
+  <div id="vStatus" class="status"></div>
+  <div id="vProfileBlock" style="display:none; margin-top:10px;">
+    <p class="meta-line">Derived style profile (this is what's actually sent to Hanami):</p>
+    <pre id="vProfileText" style="white-space:pre-wrap; background:var(--bg-soft); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:13px;"></pre>
+  </div>
+</fieldset>
+
+<fieldset>
   <legend>Generate prose</legend>
   <div class="row">
     <div>
@@ -1243,6 +1260,106 @@ $("tAdd").addEventListener("click", async () => {
     setStatus($("tStatus"), String(err.message || err), "error");
   } finally {
     $("tAdd").disabled = false;
+  }
+});
+
+// ---- Writing Voice ----
+function renderVoiceProfile(profile) {
+  const block = $("vProfileBlock");
+  if (profile && profile.style_profile) {
+    $("vProfileText").textContent = profile.style_profile;
+    block.style.display = "";
+  } else {
+    block.style.display = "none";
+  }
+  if (profile && profile.sample_text) {
+    $("vSample").value = profile.sample_text;
+  }
+}
+
+async function loadWritingVoice() {
+  const userId = $("userId").value.trim();
+  if (!userId) { setStatus($("vStatus"), "Enter a User ID above to load your writing voice.", "error"); return; }
+  setStatus($("vStatus"), "Loading...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/writing-voice?userId=" + encodeURIComponent(userId));
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderVoiceProfile(data.profile);
+    setStatus($("vStatus"), data.profile ? "Loaded." : "No sample saved yet.", "ok");
+  } catch (err) {
+    setStatus($("vStatus"), String(err.message || err), "error");
+  }
+}
+
+$("vRefresh").addEventListener("click", loadWritingVoice);
+
+$("vSave").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  const sampleText = $("vSample").value;
+  if (!userId || !sampleText.trim()) {
+    setStatus($("vStatus"), "User ID (above) and a prose sample are required.", "error");
+    return;
+  }
+  $("vSave").disabled = true;
+  setStatus($("vStatus"), "Saving and analyzing — this calls Claude once to derive the style profile...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/writing-voice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, sampleText }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderVoiceProfile(data.profile);
+    setStatus(
+      $("vStatus"),
+      data.extractionFailed
+        ? "Sample saved, but analysis failed: " + (data.profile.extraction_error || "unknown error") + " — try Re-analyze."
+        : "Saved and analyzed. Applies to every generation for this writer from now on.",
+      data.extractionFailed ? "error" : "ok"
+    );
+  } catch (err) {
+    setStatus($("vStatus"), String(err.message || err), "error");
+  } finally {
+    $("vSave").disabled = false;
+  }
+});
+
+$("vReextract").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  if (!userId) { setStatus($("vStatus"), "Enter a User ID above first.", "error"); return; }
+  $("vReextract").disabled = true;
+  setStatus($("vStatus"), "Re-analyzing saved sample...");
+  try {
+    const res = await fetch(apiBase() + "/api/v1/writing-voice/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    const data = await parseJsonResponse(res);
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    renderVoiceProfile(data.profile);
+    setStatus($("vStatus"), data.profile.extraction_error ? "Failed: " + data.profile.extraction_error : "Re-analyzed.", data.profile.extraction_error ? "error" : "ok");
+  } catch (err) {
+    setStatus($("vStatus"), String(err.message || err), "error");
+  } finally {
+    $("vReextract").disabled = false;
+  }
+});
+
+$("vClear").addEventListener("click", async () => {
+  const userId = $("userId").value.trim();
+  if (!userId) { setStatus($("vStatus"), "Enter a User ID above first.", "error"); return; }
+  if (!confirm("Clear your saved writing voice sample and profile? Future generations go back to Hanami's default voice.")) return;
+  try {
+    const res = await fetch(apiBase() + "/api/v1/writing-voice?userId=" + encodeURIComponent(userId), { method: "DELETE" });
+    if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status);
+    $("vSample").value = "";
+    renderVoiceProfile(null);
+    setStatus($("vStatus"), "Cleared.", "ok");
+  } catch (err) {
+    setStatus($("vStatus"), String(err.message || err), "error");
   }
 });
 

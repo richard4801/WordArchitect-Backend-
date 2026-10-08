@@ -82,6 +82,7 @@ askRouter.post("/ask", async (req: Request, res: Response) => {
       userSceneBeat: question,
       recentHistoryText: "",
       reservedTokens: RESERVED_SCAFFOLDING_TOKENS + bookFactsTokens,
+      includeVoice: false,
     });
 
     const fullContext = [bookFactsSection, payload].filter(Boolean).join("\n\n---\n\n");

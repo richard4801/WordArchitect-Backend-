@@ -21,6 +21,7 @@ import { agentPromptsRouter } from "./routes/agentPrompts.js";
 import { planningRouter } from "./routes/planning.js";
 import { platformCraftNotesRouter } from "./routes/platformCraftNotes.js";
 import { collaborationLearningsRouter } from "./routes/collaborationLearnings.js";
+import { writingVoiceRouter } from "./routes/writingVoice.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +57,7 @@ app.use("/api/v1", agentPromptsRouter);
 app.use("/api/v1", planningRouter);
 app.use("/api/v1", platformCraftNotesRouter);
 app.use("/api/v1", collaborationLearningsRouter);
+app.use("/api/v1", writingVoiceRouter);
 app.use(mcpRouter);
 
 app.use((req: Request, res: Response) => {
