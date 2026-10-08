@@ -62,6 +62,51 @@ not the frontend's mock project IDs), and most writes also take `userId`.
 | AI Assistant (in-app chat, persona cards) | Chat Assistant (`/chat`, `/chat/sessions`) | see Chat Assistant section below — separate from Hanami prose generation and from the external MCP server |
 | Outliner (Act/Chapter/Beat) | Outliner (`/outline/beats` for the whole-book board, `/manuscript/chapters/:id/beats` for a single chapter) | Acts are `manuscript_parts`, Chapters are `manuscript_chapters` — both already existed; Beats (`chapter_beats`) are the new piece — see Outliner section below |
 | Dashboard-only stats (today's progress, AI insights, activity feed) | *not built* | frontend's own decision to keep these mock for now |
+| Writing Voice (writer's own prose style) | Writing Voice (`/writing-voice`) | scoped by `userId`, NOT `bookId` — see Writing Voice above and the integration note immediately below |
+
+**Frontend integration — Writing Voice**: this is the one piece of
+writer-facing configuration that deliberately does **not** live inside
+the per-book Project workspace, since it's scoped by `userId` alone —
+there is no `bookId` anywhere in this surface's request/response shapes.
+Put it on a Settings/Profile/Account screen, not inside a book's editor
+or Generate panel.
+
+- **On mount**, load current state: `GET /api/v1/writing-voice?userId=<id>`
+  → `{ profile: null }` if the writer has never pasted a sample, or
+  `{ profile: { id, user_id, sample_text, style_profile, extraction_error,
+  updated_at } }` if they have. Render the textarea pre-filled with
+  `sample_text` and, if `style_profile` is non-null, a read-only block
+  beneath it along the lines of "Here's what we learned from your
+  sample" showing `style_profile` verbatim — this is the actual thing
+  being injected into every generation, so showing it (not just "voice
+  is on") is what makes the feature legible to the writer.
+- **Save/paste**: `POST /api/v1/writing-voice` with `{ userId, sampleText }`
+  → `201 { profile, extractionFailed }`. This both saves the sample and
+  triggers analysis in one call — no separate "save" vs. "analyze" step
+  needed on first paste. If `extractionFailed` is `true`, the sample was
+  still saved; show a non-blocking warning ("saved, but analysis failed —
+  try Re-analyze") rather than treating the call as a failure, and don't
+  blank the style-profile display if an older `style_profile` value is
+  still present (the backend deliberately never blanks a previously-good
+  profile on a failed re-extraction) — stale-but-good is better than
+  nothing.
+- **Re-analyze**: `POST /api/v1/writing-voice/extract` with `{ userId }`
+  → `{ profile }`. Re-runs analysis against the already-saved sample, no
+  re-paste required — wire this to a "Re-analyze" button, shown whenever
+  `extraction_error` is set and optionally always available as a manual
+  refresh.
+- **Clear**: `DELETE /api/v1/writing-voice?userId=<id>` → `204`. This
+  fully clears both the sample and the derived profile — put it behind a
+  destructive-style confirm, since there's no undo and Hanami falls back
+  to its default voice for this writer immediately afterward.
+- **No per-generation toggle exists today** — unlike Chapter Instructions
+  (entered fresh per call, shown inline in the Generate form), Writing
+  Voice is a standing writer preference applied silently to every
+  `/generate-prose` call once a sample exists; there's no opt-out flag on
+  the generation request itself. If the writer should be able to see at
+  generation time whether their voice is active, that has to be a
+  frontend-only indicator (e.g. a small badge reading the same `GET`
+  above) — nothing to request from the generation endpoint for this.
 
 **Partial close of a known gap** — real accounts now exist (see Accounts
 & Authentication below), giving the frontend a `userId` that survives a
