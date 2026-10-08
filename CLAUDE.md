@@ -367,17 +367,37 @@ answer toward stylistic flourish instead of precision, the same carve-out
 this project already applies to Layer 0 chapter instructions, which `/ask`
 also never receives.
 
+**Also applied automatically to `generate_prose_direct` (MCP), the same way
+Banned Terms already is — not something Claude has to remember to do.**
+`generate_prose_direct` bypasses the automatic Layer 1/2/3/Voice pipeline
+entirely by design (see "The handoff problem" under MCP Server below), so
+a writer who drafts exclusively through an MCP-connected Claude session
+(Desktop/claude.ai) never touches `/generate-prose` at all — if Voice
+injection depended on Claude choosing to call `get_writing_voice` and fold
+the result into `compiledContext` every time, it would only ever apply as
+reliably as the live session remembered to do that extra step, unlike the
+automatic pipeline's unconditional guarantee. Closed the same way Banned
+Terms already closed this exact gap for its own tool: when `userId` is
+passed to `generate_prose_direct` (`src/mcp/tools.ts`), the writer's
+`style_profile` is fetched and prepended to `compiledContext` server-side
+— via `buildVoiceSection`, the identical formatting/token-budget function
+`assembleContextPayload` (`rag.ts`) uses for the automatic pipeline, now
+exported so both call sites share one implementation — before the system
+prompt is ever built, with no action required from Claude beyond passing
+`userId`, which its tool description already nudges for banned-terms
+enforcement. Every call within a scene draft session reuses
+`generate_prose_direct`, so this covers that workflow too, not just a
+single direct handoff.
+
 **Mirrored on the MCP surface** as `get_writing_voice` (read-only — there's
 no MCP write tool for this; pasting a sample is a deliberate, one-time
 writer action better suited to the frontend/test-UI form than an LLM
 autonomously overwriting a writer's own voice profile mid-conversation).
-`generate_prose_direct`'s description nudges Claude to call it and fold
-the profile into `compiledContext` itself, since that tool bypasses the
-automatic Layer 1/2/3/Voice pipeline entirely — without this, a direct
-call writes in Hanami's default voice with no sense of how this writer
-actually writes, the same reasoning already established for why that
-tool's description nudges `userId` (Banned Terms) and
-`get_collaboration_learnings`.
+No longer something Claude needs to call before drafting — it exists for
+inspection: reading the profile back to discuss it with the writer,
+confirming one is actually set, or diagnosing why a generation doesn't
+sound like them via `extraction_error` (see "Extraction failure never
+loses the sample" above).
 
 ### Layer 1 — Codex (Explicit Match)
 
@@ -1706,13 +1726,15 @@ Read (safe to call freely):
   Learnings above. Check this before a real drafting session
 - `get_writing_voice` — `{ userId }` — this writer's own prose voice, if
   they've pasted a sample, distilled into a compact style profile — see
-  Writing Voice above. `generate_prose_direct` skips the automatic
-  pipeline that would otherwise inject this, so call this and fold the
-  profile into `compiledContext` yourself when drafting for a writer who
-  has one set. Deliberately read-only: there's no `save_writing_voice`
-  tool, since pasting a sample is a one-time, deliberate writer action
-  meant to happen via the frontend/test-UI form, not something an LLM
-  should overwrite mid-conversation
+  Writing Voice above. Not a prerequisite for drafting: passing `userId`
+  to `generate_prose_direct` already fetches and injects this profile
+  server-side automatically, the same way `userId` auto-enforces banned
+  terms there. This tool is for inspection — reading the profile back to
+  discuss it with the writer, or diagnosing via `extractionError` why a
+  generation doesn't sound like them. Deliberately read-only: there's no
+  `save_writing_voice` tool, since pasting a sample is a one-time,
+  deliberate writer action meant to happen via the frontend/test-UI form,
+  not something an LLM should overwrite mid-conversation
 
 Write (mirror the Codex CRUD routes' full field set — every optional
 column `PATCH /api/v1/codex/:id` accepts, including `characterArc`, kept

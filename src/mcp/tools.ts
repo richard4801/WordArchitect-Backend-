@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 import { generateHanamiProse } from "../services/llm.js";
 import { buildSystemPrompt } from "../routes/generateProse.js";
-import { assembleContextPayload } from "../services/rag.js";
+import { assembleContextPayload, buildVoiceSection } from "../services/rag.js";
 import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
 import { editManuscriptChapterContent, ManuscriptChapterNotFoundError } from "../routes/manuscriptChapters.js";
 import { listCollaborationLearnings, addCollaborationLearning } from "../routes/collaborationLearnings.js";
@@ -314,7 +314,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Get Writing Voice",
       description:
-        "This writer's own prose voice, pasted once (POST /api/v1/writing-voice) and distilled into a compact, actionable style profile — sentence rhythm, dialogue conventions, POV/tense, pacing, tics to use or avoid. Automatically injected into every automatic /generate-prose call for this writer, but generate_prose_direct bypasses that pipeline entirely, so call this and fold the profile into compiledContext yourself if the writer has one set — otherwise your direct call writes in Hanami's default voice with no sense of how this writer actually writes. Returns null styleProfile if the writer hasn't pasted a sample yet.",
+        "This writer's own prose voice, pasted once (POST /api/v1/writing-voice) and distilled into a compact, actionable style profile — sentence rhythm, dialogue conventions, POV/tense, pacing, tics to use or avoid. You don't need to call this before generate_prose_direct — passing userId there already fetches and injects this profile server-side automatically, the same way userId auto-enforces banned terms. This tool is for inspection: reading the profile back to discuss it with the writer, confirming one is actually set, or diagnosing why a generation doesn't sound like them (check extractionError — a failed analysis call leaves styleProfile at its last-good value, or null if there's never been a successful one). Returns null styleProfile if the writer hasn't pasted a sample yet.",
       inputSchema: { userId: z.string().describe("The writer's user ID") },
     },
     async ({ userId }) => {
@@ -741,7 +741,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Generate Prose (Direct)",
       description:
-        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. Pass userId whenever you know it (including every call within a scene draft session) — without it, this writer's banned terms (Ghost Editor) are NOT checked or enforced, unlike POST /generate-prose which always enforces them. With userId, any paragraph containing a term this writer has banned (across ANY of their books — banned terms are scoped per-writer, not per-book) is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint. Worth calling get_collaboration_learnings for this writer before a real drafting session — it may already have Hanami quirks or writer preferences specific to them beyond the general patterns listed above. Also worth calling get_writing_voice — if this writer has pasted a prose sample, fold the returned style profile into compiledContext, since this tool skips the automatic pipeline that would otherwise apply it for you.",
+        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. Pass userId whenever you know it (including every call within a scene draft session) — without it, this writer's banned terms (Ghost Editor) are NOT checked or enforced, unlike POST /generate-prose which always enforces them. With userId, any paragraph containing a term this writer has banned (across ANY of their books — banned terms are scoped per-writer, not per-book) is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint. With userId, this writer's Writing Voice style profile (if they've pasted a sample) is ALSO automatically fetched and injected into the system prompt server-side — you don't need to call get_writing_voice or fold anything into compiledContext yourself for this; it happens the same way banned-terms enforcement does. Worth calling get_collaboration_learnings for this writer before a real drafting session — it may already have Hanami quirks or writer preferences specific to them beyond the general patterns listed above.",
       inputSchema: {
         sceneBeat: z.string().describe("The scene beat to write"),
         compiledContext: z
@@ -755,7 +755,16 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ sceneBeat, compiledContext, userId }) => {
       try {
-        const systemPrompt = buildSystemPrompt(compiledContext);
+        let effectiveContext = compiledContext;
+        if (userId) {
+          const voiceProfile = await getWritingVoiceProfile(userId);
+          const voiceSection = buildVoiceSection(voiceProfile?.style_profile ?? null);
+          if (voiceSection) {
+            effectiveContext = [voiceSection, compiledContext].join("\n\n---\n\n");
+          }
+        }
+
+        const systemPrompt = buildSystemPrompt(effectiveContext);
         const prose = await generateHanamiProse(systemPrompt, sceneBeat);
 
         if (!userId) {

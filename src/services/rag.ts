@@ -163,7 +163,10 @@ function buildChapterInstructionsSection(chapterInstructions?: string, chapterAv
 // Formats the writer's derived style profile into a section, or "" if no
 // profile exists yet (the common case for a writer who hasn't pasted a
 // sample — this section costs nothing when unset, same as Layer 0).
-function buildVoiceSection(styleProfile: string | null): string {
+// Exported so generate_prose_direct (src/mcp/tools.ts) can apply the same
+// formatting when injecting Voice server-side into a Claude-supplied
+// compiledContext, without a second, drifting copy of this formatting.
+export function buildVoiceSection(styleProfile: string | null): string {
   if (!styleProfile) return "";
   const text = `## This Writer's Voice — Write In This Style\n\n${styleProfile}`;
   return truncateToTokenBudget(text, VOICE_TOKEN_BUDGET);
