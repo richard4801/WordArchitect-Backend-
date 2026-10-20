@@ -139,3 +139,42 @@ default to the scope most recently active in the conversation — ask which
 domain it's actually for before designing the storage/data model, since
 "where does this live and who writes to it" depends entirely on the
 answer and is expensive to redo.
+
+## 2026-10-20 — An optional MCP parameter gating a safety guarantee is a silent-failure trap
+
+`generate_prose_direct`'s `userId` parameter was optional from the start,
+with its tool description nudging Claude to "pass it whenever you know
+it." Two real guarantees were gated on it: Ghost Editor banned-term
+enforcement, and (once added) Writing Voice injection. Omitting `userId`
+didn't error — it just quietly skipped both, with the call returning
+normal-looking prose either way. The writer — who drafts almost
+exclusively through an MCP-connected Claude session, not `/generate-prose`
+— reported banned terms reaching their manuscript "for a while," which is
+exactly what this produces: no error, no warning, just a feature that
+silently wasn't running, for an unknown stretch of real drafting sessions,
+because whichever live Claude session was calling the tool didn't happen
+to pass `userId` on those calls. A prompt-level nudge ("pass this when you
+know it") is not a substitute for a hard requirement when the cost of
+skipping it is a safety/consistency guarantee quietly not holding — a
+model's per-call judgment is not a reliable enforcement mechanism for
+something the system is supposed to promise unconditionally.
+
+Fixed by making `userId` a required parameter (not optional) on
+`generate_prose_direct`, so the tool call itself fails loudly if it's
+missing rather than silently degrading. Also fixed, found during the same
+pass: the MCP response text after a banned-term correction said
+"automatically rewritten to remove banned term(s)" even when a paragraph
+still contained the term after exhausting all 3 regeneration attempts
+(`corrections[i].resolved === false`) — the test UI already surfaced
+`resolved` honestly in its report table, but the MCP text summary didn't
+check it before claiming success.
+
+**Rule:** if a tool parameter gates a guarantee the system is supposed to
+provide unconditionally (not a nice-to-have), don't make it optional and
+rely on a description nudging the caller to remember it — make it
+required, so a missing value is a hard, visible failure instead of a
+silent one. And when summarizing a corrective/retry loop's outcome in any
+user- or Claude-facing text, always branch on whether it actually
+succeeded — a correction attempt that exhausted its retries without
+resolving the issue is not the same outcome as one that resolved it, and
+both should never be described with the same success-sounding sentence.

@@ -9,7 +9,7 @@ import { diffDrafts, type TextDiffResult } from "../lib/textDiff.js";
 // word or phrase, is enforced the same way — detect it in already-
 // generated text and regenerate the offending paragraph — which is why
 // this module has one code path, not a fast one and a slow one.
-const MAX_REGENERATION_ATTEMPTS = 3;
+export const MAX_REGENERATION_ATTEMPTS = 3;
 
 export interface BannedTermMatch {
   term: string;

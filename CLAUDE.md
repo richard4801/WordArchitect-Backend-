@@ -556,11 +556,34 @@ via the test UI's Banned Terms panel, or `GET /api/v1/banned-terms?userId=`,
 `POST /api/v1/banned-terms`, and `DELETE /api/v1/banned-terms/:id` — and
 Hanami is guaranteed to never produce it again in any of that writer's
 books, checked on every `/generate-prose` call and on every MCP
-`generate_prose_direct` call that passes `userId` (see MCP Server below —
-`userId` is optional there since not every direct call knows it, but
-omitting it also means this writer's banned terms go unchecked, so the
-MCP tool's own description tells Claude to always pass it when known,
-including every call inside a scene draft session).
+`generate_prose_direct` call (see MCP Server below).
+
+**`userId` on `generate_prose_direct` is a required parameter, not
+optional** — it was optional originally, with the tool's own description
+nudging Claude to "pass it whenever you know it," but a prompt-level nudge
+turned out not to be a reliable enforcement mechanism: a writer who drafts
+almost exclusively through MCP reported banned terms reaching their
+manuscript for an extended stretch, with no error anywhere, because
+whichever live Claude session was calling the tool simply wasn't passing
+`userId` on those calls — and omitting it silently skipped enforcement
+rather than failing loudly. See the `2026-10-20` entry in `LEARNINGS.md`.
+Fixed by making `userId` required: the tool call itself now fails if it's
+missing, rather than quietly degrading. This also means Writing Voice
+(above), which is gated on the same parameter, is enforced automatically
+on every `generate_prose_direct` call too, not just when Claude remembers
+to pass it.
+
+**The MCP response also now distinguishes a fully-resolved correction from
+one that wasn't** — a paragraph that still contains a banned term after
+exhausting all 3 regeneration attempts (`MAX_REGENERATION_ATTEMPTS` in
+`ghostEditor.ts`) used to be reported with the same success-sounding
+sentence as a paragraph that was actually cleaned up. The response text
+now separates resolved corrections from unresolved ones and explicitly
+warns Claude when a banned term is still present in the returned text,
+rather than implying every correction succeeded. The test UI's Ghost
+Editor report table (`/generate-prose`'s path) already surfaced this
+honestly per-paragraph; this closes the same gap on the MCP surface's
+plain-text summary.
 
 **Scoped per writer (`user_id`), not per book** — a real behavior change
 from the original per-book design: a term banned once now applies to
@@ -1850,10 +1873,12 @@ canon, see Collaboration Learnings above):
   "MCP as Arbitrator" below
 
 Generation:
-- `generate_prose_direct` — `{ sceneBeat, compiledContext }` — see "the
-  handoff problem" above. Buffers Hanami's full response and returns it
-  as one result rather than streaming, since the caller is a tool result,
-  not a live browser connection (`generateHanamiProse` in `llm.ts`).
+- `generate_prose_direct` — `{ sceneBeat, compiledContext, userId }` —
+  see "the handoff problem" above. `userId` is required, not optional —
+  see Banned Terms above for why. Buffers Hanami's full response and
+  returns it as one result rather than streaming, since the caller is a
+  tool result, not a live browser connection (`generateHanamiProse` in
+  `llm.ts`).
 
 Supervised drafting (see "Supervised drafting" above; state lives in
 `scene_draft_sessions`/`scene_draft_iterations`, not conversation memory):
