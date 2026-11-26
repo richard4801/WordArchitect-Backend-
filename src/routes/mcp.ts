@@ -3,6 +3,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { renderInstructions } from "../process/render.js";
 import { registerWordArchitectTools } from "../mcp/tools.js";
 
 export const mcpRouter = Router();
@@ -46,7 +47,9 @@ function requireMcpAuth(req: Request, res: Response, next: NextFunction): void {
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
 function createServer(): McpServer {
-  const server = new McpServer({ name: "wordarchitect", version: "1.0.0" });
+  // The drafting process's short version goes to every client at connect
+  // (src/process/), so a session without any skill installed still gets it.
+  const server = new McpServer({ name: "wordarchitect", version: "1.0.0" }, { instructions: renderInstructions() });
   registerWordArchitectTools(server);
   return server;
 }

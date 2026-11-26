@@ -118,6 +118,12 @@ review, approval, prose review and save. Gates:
 
 Narrow reruns and comment-driven rewrites are covered by the approval scope chosen in decision 1 below.
 
+**As built (26 Nov):** the workflow is derived from the records the gates already keep (manuscript reads, reviews,
+approvals and their calls, draft sessions, saved content) instead of a `chapter_workflows` table, so it can't drift from
+them; `submit_card` was not needed because the card is reviewed through `request_reviews` (targetType `beat_card`), and
+`request_prompt_approval` is `record_prompt_approval`. See CLAUDE.md "Recorded Go, Chapter Workflow and the Drafting
+Process Module".
+
 ## 4. The "Go" gate: a recorded approval, asked for in chat (decided 26 Nov)
 
 The author's ruling: Go stays a chat rule ("Claude has to obey and just ask first"); no app button. The backend makes

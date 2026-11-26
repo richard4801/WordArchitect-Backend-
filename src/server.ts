@@ -23,6 +23,7 @@ import { platformCraftNotesRouter } from "./routes/platformCraftNotes.js";
 import { collaborationLearningsRouter } from "./routes/collaborationLearnings.js";
 import { writingVoiceRouter } from "./routes/writingVoice.js";
 import { skillReviewsRouter } from "./routes/skillReviews.js";
+import { processRouter } from "./routes/process.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +61,7 @@ app.use("/api/v1", platformCraftNotesRouter);
 app.use("/api/v1", collaborationLearningsRouter);
 app.use("/api/v1", writingVoiceRouter);
 app.use("/api/v1", skillReviewsRouter);
+app.use("/api/v1", processRouter);
 app.use(mcpRouter);
 
 app.use((req: Request, res: Response) => {

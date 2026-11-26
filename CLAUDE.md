@@ -940,6 +940,69 @@ stitched two non-adjacent sentences together.
 &chapterNumber=&planningRunId=` → `{ reviews }`; `GET /api/v1/skill-reviews/:id`
 → `{ review, items }`. Tests: `npm run test:skills` (in-memory store).
 
+## Recorded Go, Chapter Workflow and the Drafting Process Module
+
+Three pieces that turn the author's drafting process (`docs/process/
+claude-hanami-drafting-process.pdf`) into something the backend serves and
+enforces, so every session follows the same version of it and a new session
+resumes where the last stopped. Design record: `docs/process/SYSTEM_DESIGN.md`
+sections 2 to 4.
+
+**The recorded Go** (`src/services/promptApproval.ts`, migration
+`037_prompt_approvals.sql`). The author's rule: nothing goes to Hanami until
+they have seen the exact prompts and said Go. It stays a chat rule (author,
+26 Nov: no app button); the backend records it.
+- MCP `record_prompt_approval` `{ userId, bookId, chapterNumber, cardReviewId,
+  beats: [{ label, sceneBeat, compiledContext }], writerApproval,
+  writerOverride? }` → `approvalId`. `writerApproval` is the author's words,
+  quoted. Refused without a completed `beat_card` review of the same book and
+  chapter (pending refuses; BLOCKED/incomplete needs the author's override,
+  stored on the review). `CARD_REVIEW_GATE=off` disables that check.
+- `generate_prose_direct` REQUIRES `approvalId` (tool-schema change: remove and
+  re-add the connector). A call is covered when its `sceneBeat` matches an
+  approved beat (SHA-256 with ALL whitespace collapsed, `beatHash`, unlike the
+  review hash, which keeps line breaks), or when it declares a narrow rerun
+  (`rerunOfBeat` + `rerunReason`). Scope decided 26 Nov: card beats + reruns;
+  a new beat or a changed fact needs a new Go. `compiledContext` is stored but
+  not matched, because its "story so far" anchor is the previous beat's
+  accepted prose, which can't exist when the card is approved. Every call is
+  logged in `prompt_approval_calls` (beat, approved/rerun, reason, full
+  prompt). `GO_GATE=off` disables the check.
+- Limits, stated plainly: the backend can't prove the author said the quoted
+  words, and Claude could label a new beat a rerun. Both are stored and shown
+  to the author by `get_chapter_workflow`.
+
+**Chapter workflow** (`src/services/chapterWorkflow.ts`). Derived, not stored:
+computed from `manuscript_reads`, `skill_reviews` (card and prose), the
+approvals and their calls, `scene_draft_sessions` and the chapter's saved
+content, so there is no second copy of state to drift. Steps: manuscript
+context, card reviewed, Go, drafting (every approved beat sent), prose
+reviewed, saved; each `done` / `in_progress` / `todo` / `needs_author`, plus
+the next required step. MCP `get_chapter_workflow { bookId, chapterNumber }`;
+`GET /api/v1/chapter-workflow?bookId=&chapterNumber=`. `request_reviews`,
+`record_prompt_approval` and `save_manuscript_scene` end their results with the
+next step.
+
+**The process module** (`src/process/drafting.ts`, `src/process/render.ts`).
+One versioned source (`PROCESS_VERSION`) for the 12 steps (each with its rule,
+source, tools and what the backend enforces), the call template and
+principles, correction kinds, Hanami's known behaviour, craft rules, saving
+rules, the corrections since the 26 Nov PDF (model name, sampler preset,
+`bookId` required, "fresh figures only" instead of "no similes", the new
+reviewers and gates) and the limits. Rendered as:
+- the MCP `instructions` every client receives at connect (`src/routes/mcp.ts`),
+- the MCP prompt `chapter_workflow` and the tool `get_drafting_process`,
+- `GET /api/v1/process` (markdown; `?format=json` for structured),
+- `GET /api/v1/skills` and `GET /api/v1/skills/:name/download`: the Claude-side
+  `SKILL.md` files `hanami-drafting`, `story-concept-gatekeeper` (a thin
+  launcher for the backend reviewers) and `manuscript-context` (re-pointed at
+  the backend). Their names match the skills they replace, so uploading one
+  swaps the old version. Each is a thin pointer to the backend, so it doesn't
+  go stale.
+Book-specific rules are not in the module; they are `book_rulings` data.
+Tests (`npm run test:workflow`) check every tool a step or skill file names is
+really registered, and that the stale facts are gone.
+
 ## Collaboration Learnings
 
 A growing, per-writer (`user_id`, not `book_id`) record of what's actually
@@ -2155,8 +2218,9 @@ canon, see Collaboration Learnings above):
   "MCP as Arbitrator" below
 
 Generation:
-- `generate_prose_direct` — `{ sceneBeat, compiledContext, userId, bookId }` —
-  see "the handoff problem" above. `userId` is required, not optional —
+- `generate_prose_direct` — `{ sceneBeat, compiledContext, userId, bookId,
+  approvalId, rerunOfBeat?, rerunReason? }` — see "the handoff problem"
+  above, and "Recorded Go" for `approvalId`. `userId` is required, not optional —
   see Banned Terms above for why. Buffers Hanami's full response and
   returns it as one result rather than streaming, since the caller is a
   tool result, not a live browser connection (`generateHanamiProse` in

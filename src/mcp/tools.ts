@@ -24,6 +24,10 @@ import { diffDrafts } from "../lib/textDiff.js";
 import { requestReviews, getReviewBrief, submitReviewVerdict, getSkillReview, checkReviewForAcceptance, describeReview, SkillReviewGateError } from "../services/skillReview.js";
 import { scanForSlop, formatSlopScanNote } from "../skills/antiSlopScan.js";
 import { recordManuscriptRead, manuscriptFirstRefusal } from "../services/manuscriptFirst.js";
+import { recordPromptApproval, checkCallIsApproved, isGoGateEnabled, PromptApprovalError } from "../services/promptApproval.js";
+import { getChapterWorkflow, describeWorkflow, nextStepLine } from "../services/chapterWorkflow.js";
+import { renderProcessMarkdown, renderInstructions } from "../process/render.js";
+import { PROCESS_VERSION } from "../process/drafting.js";
 import { listBookRulings, addBookRuling, retireBookRuling, RULING_CATEGORIES } from "../services/bookRulings.js";
 import { getPlanningRun as loadPlanningRunForReview, currentUnitKey, parentArtifactFor, formatLedger } from "../services/planningEngine.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "../services/bookContextTools.js";
@@ -813,11 +817,95 @@ export function registerWordArchitectTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "get_drafting_process",
+    {
+      title: "Get Drafting Process",
+      description:
+        "Returns the full, current drafting process (who does what, the 12 steps and which the backend enforces, how a Hanami call is built, how to correct what comes back, Hanami's known behaviour, the reviewers, the craft rules, saving, and what changed since the author's 26 Nov document). Call it at the start of any drafting work; it outranks any older copy of the process you may have.",
+      inputSchema: {},
+    },
+    async () => textResult(renderProcessMarkdown())
+  );
+
+  server.registerTool(
+    "get_chapter_workflow",
+    {
+      title: "Get Chapter Workflow",
+      description:
+        "Where a chapter stands in the drafting process, kept server-side so a new session resumes where the last stopped: manuscript lookups, the beat card's review, the author's recorded Go (with their words), every Hanami call made under it (approved prompt or rerun, with the reason), draft sessions, the prose review, and whether it's saved. Ends with the next required step. Call it when picking a chapter back up, and whenever you're unsure what comes next.",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        chapterNumber: z.number().int().describe("The chapter"),
+      },
+    },
+    async ({ bookId, chapterNumber }) => {
+      try {
+        return textResult(describeWorkflow(await getChapterWorkflow(bookId, chapterNumber)));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "record_prompt_approval",
+    {
+      title: "Record the Author's Go",
+      description:
+        "Records the author's Go on the exact Hanami prompts for a chapter's beats. Call it ONLY after you have shown the author every prompt (compiledContext and sceneBeat per beat) and they have said Go in this conversation; writerApproval is their words, quoted exactly, never your paraphrase and never assumed. Requires the beat card's completed review (cardReviewId from request_reviews with targetType beat_card); a BLOCKED or incomplete card review needs writerOverride with the author's own reason. Returns the approvalId that generate_prose_direct requires. The beats are matched by sceneBeat (compiledContext is stored for the author to see but may change between beats as accepted prose becomes the anchor). A new beat or a changed fact needs a new Go. The backend cannot prove the author said the words you quote: they are stored and shown back to the author, so quote exactly.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        bookId: z.string().describe("The book's ID"),
+        chapterNumber: z.number().int().describe("The chapter these beats are for"),
+        cardReviewId: z.string().optional().describe("The reviewId of the beat card's review (request_reviews, targetType beat_card). Required unless the card-review gate is switched off."),
+        beats: z
+          .array(
+            z.object({
+              label: z.string().describe("Short label, e.g. 'M1 The hall empties'"),
+              sceneBeat: z.string().describe("The exact sceneBeat shown to the author"),
+              compiledContext: z.string().describe("The exact compiledContext shown to the author"),
+            })
+          )
+          .min(1)
+          .describe("Every prompt the author approved, in order. Index 0 is the first."),
+        writerApproval: z.string().describe("The author's own words of approval, quoted exactly (e.g. \"Go\")"),
+        writerOverride: z.string().optional().describe("Only when the card review is BLOCKED or incomplete and the author chose to go ahead: their reason, in their words"),
+      },
+    },
+    async ({ userId, bookId, chapterNumber, cardReviewId, beats, writerApproval, writerOverride }) => {
+      try {
+        const { approval, note } = await recordPromptApproval({ userId, bookId, chapterNumber, cardReviewId, beats, writerApproval, writerOverride });
+        return textResult(
+          [
+            `approvalId: ${approval.id}`,
+            `Recorded the author's Go ("${approval.writer_approval}") on ${approval.beats.length} beat(s) for chapter ${chapterNumber}: ${approval.beats.map((b) => `${b.index} ${b.label}`).join("; ")}. ${note}`,
+            "Next required step: send the beats to Hanami ONE AT A TIME with generate_prose_direct, passing this approvalId; for a narrow rerun of a beat pass rerunOfBeat (its index) and rerunReason. Log each pass with record_scene_draft_iteration.",
+          ].join("\n")
+        );
+      } catch (err) {
+        if (err instanceof PromptApprovalError) return errorResult(err.message);
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerPrompt(
+    "chapter_workflow",
+    {
+      title: `Drafting process v${PROCESS_VERSION}`,
+      description: "The WordArchitect drafting process: the steps for every chapter, which the backend enforces, and how to build a Hanami call.",
+    },
+    () => ({
+      messages: [{ role: "user", content: { type: "text", text: `${renderInstructions()}\n\n${renderProcessMarkdown()}` } }],
+    })
+  );
+
+  server.registerTool(
     "generate_prose_direct",
     {
       title: "Generate Prose (Direct)",
       description:
-        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. userId is REQUIRED (not optional) — without it, this writer's banned terms (Ghost Editor) would NOT be checked and their Writing Voice profile would NOT be applied, both silently, with no error to signal it; this was a real, extended gap in practice until the parameter was made mandatory, so there is no way to skip it. With userId, any paragraph containing a term this writer has banned (across ANY of their books — banned terms are scoped per-writer, not per-book) is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint — if a term survives 3 regeneration attempts, the response says so explicitly rather than implying success. This writer's Writing Voice style profile (if they've pasted a sample) is also automatically fetched and injected into the system prompt server-side — you don't need to call get_writing_voice or fold anything into compiledContext yourself for this. Worth calling get_collaboration_learnings for this writer before a real drafting session — it may already have Hanami quirks or writer preferences specific to them beyond the general patterns listed above. bookId is ALSO REQUIRED: it is how this book's narration switch (point of view + tense, set on the book itself) is looked up. When the book has one, the backend injects the rule into the prompt, restates it right before the scene beat, then checks the returned prose and rewrites any paragraph that slips (wrong tense, wrong person) — you do not need to write 'first person, past tense' into compiledContext yourself, and you should not have to re-check it by eye. If a paragraph still breaks the setting after the retries, the response says so with a WARNING instead of implying success.",
+        "Sends a scene beat straight to Hanami along with context YOU compile and supply — bypassing the automatic Layer 1/2/3 retrieval pipeline entirely. Compile compiledContext yourself from what you've gathered via search_manuscript, get_codex_entry, and this conversation with the writer — Hanami will write from exactly what you give it and nothing else, so make sure it's actually complete before calling this. Returns the full generated prose (not streamed). Every call is completely stateless — Hanami has no memory of any previous call, including its own prior drafts. If you're revising a draft rather than writing fresh (e.g. as part of a scene draft session), paste the previous draft verbatim into compiledContext or sceneBeat along with what to change — Hanami has no way to know a previous attempt exists otherwise. Two behavior patterns confirmed in real supervised use, worth planning around: (1) scope discipline degrades sharply past roughly one paragraph per call — a multi-paragraph/multi-beat pass is meaningfully more likely to drop or alter content outside the intended change than a single-paragraph pass, so for precise revisions, scope each call to one paragraph at a time rather than the whole scene; (2) it will invent small unestablished physical details (a scar, an object, an expression) even under a general instruction to avoid embellishment — telling it not to do this needs to be explicit and specific nearly every call, not assumed as default behavior. Neither is 100% reliable even at single-paragraph scope, so diff the result against the prior draft (diff_drafts, or the automatic diff returned by record_scene_draft_iteration) rather than trusting a scoped instruction was followed. userId is REQUIRED (not optional) — without it, this writer's banned terms (Ghost Editor) would NOT be checked and their Writing Voice profile would NOT be applied, both silently, with no error to signal it; this was a real, extended gap in practice until the parameter was made mandatory, so there is no way to skip it. With userId, any paragraph containing a term this writer has banned (across ANY of their books — banned terms are scoped per-writer, not per-book) is automatically detected and regenerated before the result is returned to you, same guarantee as the normal generation endpoint — if a term survives 3 regeneration attempts, the response says so explicitly rather than implying success. This writer's Writing Voice style profile (if they've pasted a sample) is also automatically fetched and injected into the system prompt server-side — you don't need to call get_writing_voice or fold anything into compiledContext yourself for this. Worth calling get_collaboration_learnings for this writer before a real drafting session — it may already have Hanami quirks or writer preferences specific to them beyond the general patterns listed above. bookId is ALSO REQUIRED: it is how this book's narration switch (point of view + tense, set on the book itself) is looked up. When the book has one, the backend injects the rule into the prompt, restates it right before the scene beat, then checks the returned prose and rewrites any paragraph that slips (wrong tense, wrong person) — you do not need to write 'first person, past tense' into compiledContext yourself, and you should not have to re-check it by eye. If a paragraph still breaks the setting after the retries, the response says so with a WARNING instead of implying success. approvalId is ALSO REQUIRED (the recorded Go): before the first Hanami call for a card, show the author the exact prompts and ask; when they say Go, call record_prompt_approval with the beats and their words quoted, and pass the returned approvalId here. The call is refused unless sceneBeat is one of the approved beats; for a narrow rerun of an approved beat (a broken paragraph, an author's comment) pass rerunOfBeat with the beat's index and rerunReason. A new beat or a changed fact needs a new Go. Every call is logged for the author (get_chapter_workflow).",
       inputSchema: {
         sceneBeat: z.string().describe("The scene beat to write"),
         compiledContext: z
@@ -833,12 +921,34 @@ export function registerWordArchitectTools(server: McpServer): void {
           .describe(
             "The book's ID — required. Looks up this book's narration switch (point of view + tense) so the backend can inject and enforce it automatically. Required for the same reason userId is: an optional parameter gating a guarantee is a silent-failure trap."
           ),
+        approvalId: z
+          .string()
+          .describe("Required. The id record_prompt_approval returned when the author said Go on these prompts."),
+        rerunOfBeat: z
+          .number()
+          .int()
+          .optional()
+          .describe("Only for a narrow rerun of an approved beat: that beat's index in the approval. The rerun's prompt is logged for the author."),
+        rerunReason: z
+          .string()
+          .optional()
+          .describe("Required with rerunOfBeat: what was broken in the pass, or the author's comment the rerun answers."),
       },
     },
-    async ({ sceneBeat, compiledContext, userId, bookId }) => {
+    async ({ sceneBeat, compiledContext, userId, bookId, approvalId, rerunOfBeat, rerunReason }) => {
       try {
         const refusal = await manuscriptFirstRefusal("Sending this to Hanami", bookId, `${sceneBeat}\n\n${compiledContext}`);
         if (refusal) return errorResult(refusal);
+        let goNote = "";
+        if (isGoGateEnabled()) {
+          try {
+            const covered = await checkCallIsApproved({ bookId, approvalId, sceneBeat, compiledContext, rerunOfBeat, rerunReason });
+            goNote = `[Go: chapter ${covered.approval.chapter_number}, beat ${covered.beat.index} "${covered.beat.label}", ${covered.kind === "rerun" ? "rerun (logged)" : "approved prompt"}; author's words: "${covered.approval.writer_approval}"]`;
+          } catch (err) {
+            if (err instanceof PromptApprovalError) return errorResult(err.message);
+            throw err;
+          }
+        }
         const voiceProfile = await getWritingVoiceProfile(userId);
         const voiceSection = buildVoiceSection(voiceProfile?.style_profile ?? null);
         const effectiveContext = voiceSection ? [voiceSection, compiledContext].join("\n\n---\n\n") : compiledContext;
@@ -876,7 +986,7 @@ export function registerWordArchitectTools(server: McpServer): void {
         // through request_reviews, which save_manuscript_scene requires.
         const slopNoteFor = (text: string) => formatSlopScanNote(scanForSlop(text));
         const withNarrationNote = (text: string) => {
-          const notes = [narrationNote, slopNoteFor(text)].filter(Boolean);
+          const notes = [narrationNote, slopNoteFor(text), goNote].filter(Boolean);
           return notes.length ? `${text}\n\n${notes.join("\n\n")}` : text;
         };
 
@@ -915,7 +1025,7 @@ export function registerWordArchitectTools(server: McpServer): void {
 
         const slopNote = slopNoteFor(finalText);
         return textResult(
-          [finalText, `[Ghost Editor: ${notes.join(" ")}]`, narrationNote, slopNote].filter(Boolean).join("\n\n")
+          [finalText, `[Ghost Editor: ${notes.join(" ")}]`, narrationNote, slopNote, goNote].filter(Boolean).join("\n\n")
         );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
@@ -1103,7 +1213,9 @@ export function registerWordArchitectTools(server: McpServer): void {
           `${launches.length} reviewer(s) to launch. Spawn ONE separate subagent per prompt below, passing the prompt verbatim; run them in parallel. Do not review the text yourself and do not submit verdicts yourself.`,
           ...launches.map((l, n) => `\n--- Reviewer ${n + 1}: ${l.title} (briefId ${l.briefId}) ---\n${l.prompt}`),
           skipped.length ? `\nNot applicable here: ${skipped.join("; ")}.` : "",
-          `\nWhen every subagent has replied, call get_skill_review with reviewId ${review.id} and show the author the verdicts. Then save_manuscript_scene with skillReviewId ${review.id}.`,
+          targetType === "beat_card"
+            ? `\nWhen every subagent has replied, call get_skill_review with reviewId ${review.id}, apply the fixes to the card and report them to the author. Then show the author the exact Hanami prompts; when they say Go, call record_prompt_approval with cardReviewId ${review.id}.`
+            : `\nWhen every subagent has replied, call get_skill_review with reviewId ${review.id} and show the author the verdicts. Then save_manuscript_scene with skillReviewId ${review.id}.`,
         ];
         return textResult(body.filter(Boolean).join("\n"));
       } catch (err) {
@@ -1337,8 +1449,9 @@ export function registerWordArchitectTools(server: McpServer): void {
           rawText,
           chapterTitle: chapterTitle ?? null,
         });
+        const next = await nextStepLine(bookId, chapterNumber);
         return textResult(
-          `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content. ${gateNote}`
+          [`Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content. ${gateNote}`, next].filter(Boolean).join("\n\n")
         );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));

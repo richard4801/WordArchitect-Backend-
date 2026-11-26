@@ -12,7 +12,8 @@
     "test:engine": "tsx scripts/seed-and-test.ts",
     "test:narration": "tsx scripts/test-narration.ts",
     "test:skills": "tsx scripts/test-skill-review.ts",
-    "test:ghost": "tsx scripts/test-ghost-editor.ts"
+    "test:ghost": "tsx scripts/test-ghost-editor.ts",
+    "test:workflow": "tsx scripts/test-workflow.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",

@@ -325,3 +325,19 @@ it a hard contradiction and the backend turned it into a BLOCK.
 error before trusting it (the same rule as the narration detector's labelled
 corpus). When it misses, the fix is usually a sharper distinction in the
 criterion's wording, not a stronger instruction.
+
+## 2026-11-26 — Two "same text" checks need two different normalizers
+
+The recorded Go matches a Hanami call's sceneBeat against the beats the author
+approved. Reusing the skill-review hash (`normalizeForHash`, which keeps line
+breaks because paragraphing matters in saved prose) made a re-wrapped but
+word-identical beat fail the match in the first test run. A beat is matched on
+its words, so `beatHash` collapses all whitespace; a saved chapter is matched
+on its words AND paragraphing, so the review hash keeps line breaks. Also:
+compiledContext can't be part of the Go match at all, because its "story so
+far" anchor is the previous beat's accepted prose, which doesn't exist when the
+author approves the card.
+
+**Rule:** before reusing a hash or normalizer for a new "is this the same
+thing" check, decide what differences that check should forgive, and test a
+case that differs only in those.
