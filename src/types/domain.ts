@@ -286,7 +286,17 @@ export type AgentRole =
   | "arbitrator_directive"
   | "entity_extractor"
   | "ledger_extractor"
-  | "platform_researcher";
+  | "platform_researcher"
+  // Skill reviewers (src/skills/): one role per skill, so a writer can
+  // override a skill's built-in rubric with an agent_prompts row.
+  | "skill_werewolf_genre"
+  | "skill_romance_craft"
+  | "skill_erotic_heat"
+  | "skill_serial_plotting"
+  | "skill_secrets_reveals"
+  | "skill_fiction_fundamentals"
+  | "skill_anti_slop"
+  | "skill_current_market";
 
 export const VALID_AGENT_ROLES: AgentRole[] = [
   "generator",
@@ -299,6 +309,14 @@ export const VALID_AGENT_ROLES: AgentRole[] = [
   "entity_extractor",
   "ledger_extractor",
   "platform_researcher",
+  "skill_werewolf_genre",
+  "skill_romance_craft",
+  "skill_erotic_heat",
+  "skill_serial_plotting",
+  "skill_secrets_reveals",
+  "skill_fiction_fundamentals",
+  "skill_anti_slop",
+  "skill_current_market",
 ];
 
 // The critics that make up the Scrutiny Panel, run in parallel by
@@ -337,7 +355,10 @@ export type PlanningStage =
   | "codex_documentation"
   | "hook_chapters_outline"
   | "all"
-  | "intake";
+  | "intake"
+  // Prompt-lookup only, like "intake": a skill reviewer's rubric override
+  // for manuscript prose (as opposed to a Planning Engine stage).
+  | "prose";
 
 // The subset of PlanningStage a run's current_stage or a stage_artifacts
 // key's phase can actually be — excludes "all" and "intake", which only
@@ -359,6 +380,7 @@ export const VALID_PLANNING_STAGES: PlanningStage[] = [
   "hook_chapters_outline",
   "all",
   "intake",
+  "prose",
 ];
 
 // Fixed, not model-decided — "the AI can never go against it." A 600-

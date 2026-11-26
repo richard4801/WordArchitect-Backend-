@@ -242,3 +242,25 @@ Related gotchas found while doing it:
 - **Counting a heuristic's hits by eye is not validation.** One output I had
   labelled "wrong" was actually fine and one I had labelled "fine" had no
   narrator at all; label first from the text, then measure.
+
+## 2026-11-26 — A shipped switch is not an active switch: the main book's pov/tense are null in production
+
+While testing skill reviews against real chapters, a plain read of
+`GET /api/v1/books/a1b2c3d4-2222-4a2b-9c3d-000000000002` showed `pov: null`
+and `tense: null`. The narration switch (entry above, CLAUDE.md "Narration
+Switch") is only ON when both are set, so for the writer's main book it has
+been injecting and checking nothing since it shipped, with no error, because
+"off" is the documented, silent state for a book without a setting. The code
+was right; the data never turned it on.
+
+**Rule:** after shipping a feature gated on stored data (a book setting, a
+seeded prompt row, a profile), read the real row for the real book and confirm
+the gate is actually open before telling anyone the feature is working. For
+the same reason, skill reviews ship with built-in rubrics instead of requiring
+a seeded `agent_prompts` row.
+
+Related, practical: production's read-only GET endpoints
+(`/manuscript/chapters?bookId=`, `/manuscript/chapters/:id`, `/books/:id`)
+are reachable from a cloud session with plain `curl`, which is the easy way to
+pull real chapter text into scratch files for offline testing. MCP connector
+results are not saved to disk, so retyping them is the only other route.
