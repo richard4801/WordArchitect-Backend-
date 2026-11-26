@@ -66,3 +66,24 @@ should treat the ownership matrix and the verdict ladder below as proposals for 
 | 06 fiction fundamentals | | yes | yes | | yes |
 | 07 anti-slop | | yes | yes | yes | yes |
 | 08 market | yes | yes | | | |
+
+## 5. The manuscript-context skill (added later on 26 Nov; the author called it "very important")
+
+Source: `manuscript-context/` (`SKILL.md` plus five references). The process document's step 1 makes it a standing rule
+(18 Nov): the protocol runs before carding or drafting, "every agent follows this, including the gatekeeper". So it is not a
+ninth reviewer. It is the **foundation layer** that supplies facts to the drafter, the gatekeeper and the eight reviewers.
+
+**Author decisions recorded 26 Nov:** yes to a real, non-fakeable approval action for the "Go" gate; yes to porting the
+gatekeeper into the backend; yes to the ownership split in section 2.
+
+| # | Finding | Evidence | Proposed resolution |
+| --- | --- | --- | --- |
+| M1 | **Frozen in time.** The skill hard-codes its searches, "live threads" and a character bible from about chapter 200 (it says "a character in chapter 205" and "200+ chapters"): `Torin alive Bram face council deception`, `recording crystal Irina consequence`, four fixed Mina searches, bios of Mina, Sera, Fenris, Aldric and Irina. | Run against the live manuscript on 26 Nov: the top 8 matches for those two searches are in chapters 63 to 314 (mostly 162 to 261) and none is later, while the book is now at about chapter 595 and in the Jace, Kane and Elara arc. I did not check whether those threads were resolved. | The protocol (what to establish, in what order) is portable. The strings and bios are data and must be derived: current chapter from `get_book_facts`, the last chapters read in full, the pinned ledger notes (the process doc's step 12 writes them and they are the best "where are we" source), the cast from the card, searches templated from names, bios from the Codex with a warning where Codex coverage is thin. |
+| M2 | **Targets claude.ai Project knowledge, not the backend.** `reading-the-manuscript.md`: "The project knowledge search returns chunks of the manuscript". | The backend already has `search_manuscript` (8 ranked results, no cutoff), `get_manuscript_chapter`, Codex tools and notes. | Re-point every search to the backend's retrieval. |
+| M3 | **The same work as the gatekeeper's continuity audit.** `character-state.md` (history, current situation, relationships, what they know and don't know, voice lines) is the gatekeeper's "current-state sheet". Built twice, by different agents, at different times. | Compare `character-state.md` with the gatekeeper's Continuity Audit step 3. | Build one **context pack** in the backend. One condition: the gatekeeper's rule that the work must not grade itself, and that it "does NOT rely on the brief, a summary, or memory", still holds. So the pack is built by the backend (not by the drafting Claude), stored with chapter citations, and reviewers consume it but still verify contested claims against the raw text, including the "a character's claim is not a fact" rule and the three-phrasing search rule. |
+| M4 | **Drafting-time guidance, not a review rubric.** `context-to-prose.md` (surface vs engine, the echo question, "if this chapter were removed, what would be lost?", a scene must shift). | Its "must shift" overlaps briefs 02, 04 and 06, which check that every chapter changes something. | Keep it in the process module as an instruction at the card-building step. Briefs 02, 04 and 06 verify the result. |
+| M5 | **It points at other skills.** "The chapter-hook skill governs the mechanics of the opening." | The author's Claude account has more Claude-side skills in the same territory that nobody has compared yet: `chapter-hook`, `prose-style`, `sensory-truth`, `authentic-dialogue`, `hanami-drafting`, `story-brainstorm-drafting-process`, `serial-arc-qa-panel` (names only, from the session's skill list; contents not read). | Ask the author to attach them or confirm they are out of scope. |
+| M6 | **Its rule is right and should be kept verbatim:** "The manuscript is always right. Memory is always suspect." | Consistent with the gatekeeper. | Make it the precedence rule: author rulings first, then manuscript facts, then everything else. |
+
+Updated ownership row: **context pack** (story position, character state, scene context) is owned by a backend context
+builder implementing the manuscript-context protocol, consumed by the drafter, the gatekeeper and all eight reviewers.
