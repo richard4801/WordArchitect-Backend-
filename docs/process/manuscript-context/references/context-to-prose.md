@@ -45,7 +45,7 @@ The surface is a woman alone in a room at night. The engine is everything. A cha
 
 ## How to Open Once You Know the Engine
 
-The chapter-hook skill governs the mechanics of the opening. This reference governs the choice of what the opening is actually about.
+This reference governs the choice of what the opening is actually about.
 
 Once you know the engine, the opening should place the reader inside it without announcing it. The first sentence should contain the engine in disguised form — as a specific observation, a blunt statement, an absence, a wrong detail.
 
