@@ -46,7 +46,7 @@ function buildAskSystemPrompt(contextPayload: string): string {
 
 const RESERVED_SCAFFOLDING_TOKENS = estimateTokens(`${ASK_SYSTEM_INSTRUCTIONS}\n\n`);
 
-// Hanami's default temperature (0.85) is tuned for creative prose variation,
+// Hanami's default temperature (1.3) is tuned for creative prose variation,
 // which works against strict "answer only from context, say so if you can't"
 // instruction-following. A low temperature here favors precise adherence to
 // the compiled context over creative embellishment.

@@ -5,6 +5,14 @@ import { estimateTokens } from "../lib/tokenBudget.js";
 import { markBracketedInstructions } from "../lib/bracketInstructions.js";
 import { listBannedTerms } from "../services/bannedTerms.js";
 import { enforceBannedTerms } from "../services/ghostEditor.js";
+import { enforceNarration } from "../services/narrationEditor.js";
+import { getBookNarrationSetting } from "../services/narrationSetting.js";
+import {
+  buildNarrationSection,
+  appendNarrationReminder,
+  isNarrationEnforcementEnabled,
+  type NarrationSetting,
+} from "../lib/narration.js";
 import { getSupabaseClient } from "../lib/supabaseClient.js";
 
 export const generateProseRouter = Router();
@@ -96,9 +104,16 @@ const SYSTEM_PROMPT_INSTRUCTIONS = [
   "Do not restate or summarize this context in your response. Write only the continuation prose for the upcoming scene beat.",
 ].join("\n");
 
-export function buildSystemPrompt(contextPayload: string): string {
+// `narration` is the book's narration switch (POV + tense), if it has one.
+// When set, its standard wording goes right after the fixed instructions and
+// before the compiled context, so it ranks above Codex/History/RAG — a
+// book-wide rule shouldn't get crowded out by scene material.
+export function buildSystemPrompt(contextPayload: string, narration?: NarrationSetting | null): string {
   const context = contextPayload || "No prior codex, history, or manuscript memory is available yet.";
-  return [SYSTEM_PROMPT_INSTRUCTIONS, "", context].join("\n");
+  const parts = [SYSTEM_PROMPT_INSTRUCTIONS, ""];
+  if (narration) parts.push(buildNarrationSection(narration), "");
+  parts.push(context);
+  return parts.join("\n");
 }
 
 // The MUST NOT list also appears once already, at the top of the compiled
@@ -115,7 +130,11 @@ export function buildSystemPrompt(contextPayload: string): string {
 // entirely, since the point is to put them directly in the one message
 // Hanami is actually writing from, not have them compete for attention
 // with Codex/History/RAG further up the prompt.
-export function buildUserMessage(userSceneBeat: string, chapterAvoid?: string): string {
+export function buildUserMessage(
+  userSceneBeat: string,
+  chapterAvoid?: string,
+  narration?: NarrationSetting | null
+): string {
   const { text: beatWithDirectives, instructionCount } = markBracketedInstructions(userSceneBeat);
   const parts: string[] = [];
 
@@ -131,7 +150,19 @@ export function buildUserMessage(userSceneBeat: string, chapterAvoid?: string): 
   }
   parts.push(beatWithDirectives);
 
-  return parts.join("\n");
+  // Narration reminder goes LAST, right where generation starts — the
+  // closest position to the first generated token, same reasoning as the
+  // MUST NOT reminder above.
+  const message = parts.join("\n");
+  return narration ? appendNarrationReminder(message, narration) : message;
+}
+
+// The narration section's token cost has to be reserved out of the
+// 6,000-token compiled-context budget up front (same as the fixed
+// scaffolding), otherwise Layer 3 could fill the payload to the ceiling and
+// the section wrapped around it would push the real system prompt over.
+function narrationReservedTokens(narration: NarrationSetting | null): number {
+  return narration ? estimateTokens(`${buildNarrationSection(narration)}\n\n`) : 0;
 }
 
 // The fixed instructional scaffolding's token cost, reserved up front so
@@ -164,6 +195,7 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
   const userSceneBeat = resolvedBeat.text;
 
   try {
+    const narration = await getBookNarrationSetting(bookId);
     const { payload, layer3Candidates, expandedChapters, estimatedTotalTokens } = await assembleContextPayload({
       userId,
       bookId,
@@ -171,12 +203,15 @@ generateProseRouter.post("/generate-prose/preview", async (req: Request, res: Re
       recentHistoryText: recentHistoryText ?? "",
       chapterInstructions: chapterInstructions ?? "",
       chapterAvoid: chapterAvoid ?? "",
-      reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
+      reservedTokens: RESERVED_SCAFFOLDING_TOKENS + narrationReservedTokens(narration),
     });
-    const systemPrompt = buildSystemPrompt(payload);
-    const userMessage = buildUserMessage(userSceneBeat, chapterAvoid);
+    const systemPrompt = buildSystemPrompt(payload, narration);
+    const userMessage = buildUserMessage(userSceneBeat, chapterAvoid, narration);
 
     res.json({
+      // The book's narration switch as the backend resolved it, or null if
+      // the book has no (or only a partial) POV/tense setting.
+      narration,
       contextPayload: payload,
       systemPrompt,
       userMessage,
@@ -218,6 +253,7 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
   const userSceneBeat = resolvedBeat.text;
 
   try {
+    const narration = await getBookNarrationSetting(bookId);
     const { payload } = await assembleContextPayload({
       userId,
       bookId,
@@ -225,17 +261,23 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
       recentHistoryText: recentHistoryText ?? "",
       chapterInstructions: chapterInstructions ?? "",
       chapterAvoid: chapterAvoid ?? "",
-      reservedTokens: RESERVED_SCAFFOLDING_TOKENS,
+      reservedTokens: RESERVED_SCAFFOLDING_TOKENS + narrationReservedTokens(narration),
     });
 
-    const systemPrompt = buildSystemPrompt(payload);
-    const userMessage = buildUserMessage(userSceneBeat, chapterAvoid);
+    const systemPrompt = buildSystemPrompt(payload, narration);
+    const userMessage = buildUserMessage(userSceneBeat, chapterAvoid, narration);
 
     const bannedTerms = await listBannedTerms(userId);
+    // The narration check runs on the finished text, so a book with the
+    // switch on buffers exactly like a writer with banned terms does.
+    const verifyNarration = narration !== null && isNarrationEnforcementEnabled();
 
-    if (bannedTerms.length === 0) {
-      // No banned terms configured for this writer — identical to the
-      // original behavior, live token-by-token streaming, zero added cost.
+    if (bannedTerms.length === 0 && !verifyNarration) {
+      // No banned terms and no narration check — identical to the original
+      // behavior, live token-by-token streaming, zero added cost. (A book
+      // with the switch on but verification turned off via
+      // NARRATION_ENFORCEMENT=off still gets the prompt wording, just not
+      // the check.)
       await streamHanamiProse(systemPrompt, userMessage, res);
       return;
     }
@@ -255,15 +297,54 @@ generateProseRouter.post("/generate-prose", async (req: Request, res: Response) 
     res.setHeader("Connection", "keep-alive");
 
     const rawProse = await generateHanamiProse(systemPrompt, userMessage);
-    const { finalText, corrections } = await enforceBannedTerms({
-      text: rawProse,
-      bannedTerms: bannedTerms.map((t) => t.term),
-      systemPrompt,
-    });
 
-    res.write(finalText);
-    if (corrections.length > 0) {
-      res.write(GHOST_EDITOR_REPORT_MARKER + JSON.stringify(corrections));
+    // Narration first, then banned terms: narration repairs can rewrite whole
+    // paragraphs, so the banned-term pass has to see the final wording.
+    let prose = rawProse;
+    const reportEntries: unknown[] = [];
+
+    if (verifyNarration && narration) {
+      const narrationResult = await enforceNarration({
+        text: prose,
+        setting: narration,
+        systemPrompt,
+        userMessage,
+      });
+      prose = narrationResult.finalText;
+      // Same report array and marker the Ghost Editor already uses, so
+      // existing readers of it keep working: each narration entry carries the
+      // Ghost Editor's fields (bannedTermsFound is empty) plus kind: "narration"
+      // and the problems found. paragraphIndex is never negative here — a
+      // whole-text regeneration is reported as paragraph 0.
+      for (const c of narrationResult.corrections) {
+        reportEntries.push({
+          kind: "narration",
+          problems: c.problems,
+          paragraphIndex: Math.max(0, c.paragraphIndex),
+          wholeText: c.paragraphIndex === -1,
+          originalText: c.originalText,
+          finalText: c.finalText,
+          bannedTermsFound: [],
+          attempts: c.attempts,
+          resolved: c.resolved,
+          diff: c.diff,
+        });
+      }
+    }
+
+    if (bannedTerms.length > 0) {
+      const { finalText, corrections } = await enforceBannedTerms({
+        text: prose,
+        bannedTerms: bannedTerms.map((t) => t.term),
+        systemPrompt,
+      });
+      prose = finalText;
+      for (const c of corrections) reportEntries.push({ kind: "banned_terms", ...c });
+    }
+
+    res.write(prose);
+    if (reportEntries.length > 0) {
+      res.write(GHOST_EDITOR_REPORT_MARKER + JSON.stringify(reportEntries));
     }
     res.end();
   } catch (error) {

@@ -211,3 +211,34 @@ Findings, all from live calls rather than assumption:
 to API calls, and don't assume an omitted parameter means "same as the UI."
 Verify with a high-temperature comparison, where truncation settings actually
 change the output.
+
+## 2026-11-26 — Tense and POV fail systematically when the prompt has no prose to copy; a prompt line is not a switch
+
+Tested on a real chapter-opening call: with only the facts and no previous
+prose in the prompt, none of 10 runs held "first person, past tense" (nearly
+all came out third person, present tense). The same call with the preceding
+paragraphs added to the context held the voice in 9 of 9. So a rule
+stated once in the prompt is not reliable exactly where it matters most (the
+first call of a chapter, where there is nothing to imitate), and putting the
+same content into a Python-script-style prompt did not fix it (tense slipped in
+2 of 8 runs where the plain format had 0 of 8). Fixed by building the narration
+switch (see CLAUDE.md, "Narration Switch"): a book-level setting the backend
+injects every time and then verifies, with paragraph-level rewrite, instead of
+relying on the prompt.
+
+Related gotchas found while doing it:
+- **Node's built-in `fetch` does not use the sandbox's credential proxy by
+  default.** `curl` honors `HTTPS_PROXY` and the proxy injects the Infermatic
+  key into a request that has NO `Authorization` header; Node's `fetch` goes
+  direct, so a live test of backend code gets "No api key passed in". Run such
+  tests with `NODE_USE_ENV_PROXY=1 NODE_EXTRA_CA_CERTS=/root/.ccr/ca-bundle.crt`
+  and drop the Authorization header (the proxy will not overwrite one you send;
+  a dummy key reaches Infermatic as a dummy key).
+- **A regex tense detector needs a labelled corpus before it is trusted.** The
+  first version false-flagged "where would they start?" (a subject after a
+  modal) and a 198-word text with no "I"; both were found only by running it
+  over ~100 saved outputs whose correct answer was already known. Keep saved
+  generations around as a regression set whenever a heuristic checks them.
+- **Counting a heuristic's hits by eye is not validation.** One output I had
+  labelled "wrong" was actually fine and one I had labelled "fine" had no
+  narrator at all; label first from the text, then measure.

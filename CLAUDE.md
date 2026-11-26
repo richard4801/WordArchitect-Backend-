@@ -108,6 +108,18 @@ or Generate panel.
   frontend-only indicator (e.g. a small badge reading the same `GET`
   above) — nothing to request from the generation endpoint for this.
 
+**Frontend integration — Narration switch**: nothing new to call. Set it with
+the existing `PATCH /api/v1/books/:id` (`{ pov, tense }`) — `pov` of
+`"first"`/`"third"` and `tense` of `"past"`/`"present"` (legacy free-text values
+like `"First Person"` and `"Past Tense"` are understood too); the switch is on
+once both are set, and `null` on either turns it off. Two observable changes
+for a book with it on: `/generate-prose` no longer streams (the finished text
+arrives at once, like a writer with banned terms), and the trailing
+`<<<GHOST_EDITOR_REPORT>>>` JSON array can now contain entries with
+`kind: "narration"` (fields as described in the Narration Switch section) next
+to the Ghost Editor ones, which now carry `kind: "banned_terms"`. A reader that
+already renders that array needs no change; to label rows, switch on `kind`.
+
 **Partial close of a known gap** — real accounts now exist (see Accounts
 & Authentication below), giving the frontend a `userId` that survives a
 new device/browser instead of one that only ever lived in local storage.
@@ -522,13 +534,36 @@ Priority order when trimming to fit budget: Layer 0 (this chapter's
 instructions) > Layer 1 (Codex) > Layer 2 (Recent History) > Layer 3
 (Deep Past RAG).
 
+## Hanami Sampling — Temperature and Sampler Values
+
+Every Hanami call (`streamHanamiTokens` in `src/services/llm.ts`, which both
+`streamHanamiProse` and `generateHanamiProse` go through) sends
+`temperature: 1.3` plus Infermatic's own preset for the model: `min_p: 0.02`,
+`top_p: 0.95`, `top_k: 40`, `repetition_penalty: 1.05`. `/ask` overrides only
+the temperature (0.2); Ghost Editor and the narration editor's corrective
+rewrites run at their own settings (see the Narration Switch section).
+
+Why the sampler values are sent explicitly, not left to the API: they were not
+sent at all until 2026-11-26, and the API's defaults when they are omitted are
+far looser than the values shown in Infermatic's UI — the UI sliders do not
+apply to API calls. Tested against the live API: at temperature 1.5 with the
+four values omitted, every output degraded into word salad; with them sent,
+output stayed coherent. So 1.3 is only safe together with the preset. The
+working endpoint is `https://api.totalgpt.ai/v1`; the key is limited to 1
+parallel request and 12 requests per minute, so never fire Hanami calls in
+parallel. `temperature` in the request body is honored (temperature 0 gave
+identical output across repeated calls; 1.5 gave five different ones), unlike
+`logit_bias` — see Banned Terms. Temperature 0 is NOT strictly deterministic
+across time, so don't use exact-match comparisons at 0 to prove two request
+shapes are equivalent.
+
 ## `POST /api/v1/ask` — Retrieval Accuracy Diagnostic
 
 Not prose generation: asks Hanami a direct factual question using the same
 Layer 1/3 retrieval `/generate-prose` relies on (Layer 2 is skipped — a
 question has no cursor position), instructed via a stricter system prompt
 to answer only from the compiled context and say plainly when it can't,
-at a low temperature (0.2, vs. prose generation's 0.85) since precision
+at a low temperature (0.2, vs. prose generation's 1.3) since precision
 matters more than creative variation here. Exists to separate two
 failure modes that look identical from prose output alone: retrieval
 finding the wrong/no context, vs. Hanami failing to use context it was
@@ -657,6 +692,96 @@ strips out and renders as its own table rather than showing as raw text
 in the prose output — the same transparency principle as the diff
 tooling elsewhere in this project: show what actually happened, not just
 a claim that it worked.
+
+## Narration Switch — Point of View and Tense, Per Book
+
+A book-level setting for point of view and tense that the backend injects into
+every Hanami generation and then verifies, instead of relying on whoever (or
+whichever Claude session) compiles the prompt to remember to say it. Added
+after live testing showed the failure is systematic, not random: with no
+previous prose in the prompt to copy, none of 10 runs held "first person, past
+tense" (nearly all came out third person, present tense); with a few
+paragraphs of the chapter so far added, 9 of 9 held it, which is exactly why
+the calls that most need the rule — the first call of a chapter — are the ones
+that fail. See `src/lib/narration.ts`, `src/services/narrationEditor.ts`,
+`src/services/narrationSetting.ts`.
+
+**Where the setting lives**: the existing `books.pov` and `books.tense` columns.
+No migration, and nothing the frontend already sends is rejected — those
+columns were always free text (no `CHECK`), so this feature NORMALIZES what is
+stored instead of tightening validation: `normalizePov` maps "First Person",
+"first-person", "1st" to `first` and "Third person limited", "3rd" to `third`;
+`normalizeTense` maps anything containing "past" or "present". The switch is ON
+for a book only when BOTH halves are understood (`resolveNarrationSetting`); a
+book with one half, an empty value, or something unrecognizable (e.g. second
+person) simply has it off — never an error. Because it is just those two
+columns, any book whose pov and tense were already filled in by the frontend
+starts enforcing as soon as this ships.
+
+**Injection** (always, whenever the switch is on): `buildNarrationSection`
+writes the rule once, in standard wording, into the system prompt right after
+the fixed instructions and ahead of the compiled context (so a book-wide rule
+ranks above Codex/History/RAG), and `buildNarrationReminder` restates it as
+the LAST line of the user turn — the closest position to the first generated
+token, the same recency reasoning as the MUST NOT reminder. Its token cost is
+reserved out of the 6,000-token context budget up front, like the fixed
+scaffolding.
+
+**Verification** (`enforceNarration`, the Ghost Editor pattern): the finished
+text is buffered, dialogue is stripped (quoted speech may use any tense), and
+each paragraph is checked by a deterministic heuristic — not a grammar parser.
+It classifies clauses anchored on a subject pronoun by the verb right after it
+(skipping adverbs; subjects after an auxiliary, as in "where would they start?",
+are ignored), and flags a paragraph only when at least 2 clauses are in the
+wrong tense and they are more than half of the classifiable clauses, so one
+stray present-tense thought inside past narration does not trigger a rewrite.
+In third person any 2+ first-person pronouns outside dialogue is a slip. In
+first person, a generation of 100+ words with no first-person pronoun at all is
+treated as missing its narrator and regenerated whole (the threshold is high
+on purpose so one short paragraph of pure description, the way a supervised
+session calls Hanami, can't trip it). A flagged paragraph is rewritten with a
+narrowly scoped Hanami call at temperature 0.85 (a corrective rewrite is the
+opposite of what high temperature is for), re-checked, and retried up to
+`MAX_REGENERATION_ATTEMPTS` (3). If it never resolves it is returned as-is and
+reported `resolved: false` — never claimed as fixed. Tested offline
+(`npm run test:narration`, 17 fixtures) and against ~100 real Hanami outputs
+from one scene: it flagged 11 of the 12 outputs labelled wrong in advance (the
+twelfth turned out to be past tense after all) and none of the ~95 correct ones
+except one passage that really had no narrator; a live run regenerated a
+narrator-less passage into first-person past and re-verified it clean. That is
+one scene and one author, not a benchmark. It will miss subtle slips and can misjudge unusual
+prose; a clause whose subject is a name or a noun is not looked at.
+
+**Where it applies**: `POST /api/v1/generate-prose` and the MCP
+`generate_prose_direct` tool. `/generate-prose/preview` returns the resolved
+setting as `narration` (null when off) and shows the section in the compiled
+system prompt. It does NOT apply to `/ask` (a factual diagnostic) or to the
+raw `/generate-prose/direct` passthrough (it has no `bookId`).
+
+**Cost, stated plainly**: a book with the switch on loses live token-by-token
+streaming on `/generate-prose` — the same trade as banned terms, for the same
+reason — and occasionally pays for an extra rewrite call. A book without it is
+unaffected. `NARRATION_ENFORCEMENT=off` (env var, default on) turns the verify
+step off without a code change, while the prompt wording keeps being applied;
+it exists because the detector is a heuristic and should be easy to switch off
+if it misfires in production.
+
+**Report**: narration corrections ride in the same `<<<GHOST_EDITOR_REPORT>>>`
+array Ghost Editor already uses, so existing readers keep working: each entry
+has the Ghost Editor's fields (`paragraphIndex`, `originalText`, `finalText`,
+`attempts`, `resolved`, `diff`, with `bannedTermsFound: []`) plus
+`kind: "narration"`, `problems` (`"tense"` and/or `"pov"`) and `wholeText`
+(true when the whole generation was regenerated; reported as paragraph 0).
+Ghost Editor entries now also carry `kind: "banned_terms"`. Narration runs
+first, then banned terms, so the banned-term pass sees the final wording.
+
+**MCP**: `generate_prose_direct` now REQUIRES `bookId`, for the same reason
+`userId` was made required (see the 2026-10-20 entry in `LEARNINGS.md`): an
+optional parameter gating a guarantee is a silent-failure trap. It is a
+schema change, so an already-connected MCP client keeps its cached schema until
+the connector is fully removed and re-added (see the 2026-10-01 entry). The
+response appends a `[Narration check: ...]` note when anything was corrected,
+and a WARNING when something is still wrong after the retries.
 
 ## Collaboration Learnings
 
@@ -1873,7 +1998,7 @@ canon, see Collaboration Learnings above):
   "MCP as Arbitrator" below
 
 Generation:
-- `generate_prose_direct` — `{ sceneBeat, compiledContext, userId }` —
+- `generate_prose_direct` — `{ sceneBeat, compiledContext, userId, bookId }` —
   see "the handoff problem" above. `userId` is required, not optional —
   see Banned Terms above for why. Buffers Hanami's full response and
   returns it as one result rather than streaming, since the caller is a

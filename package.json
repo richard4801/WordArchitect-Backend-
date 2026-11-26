@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
-    "test:engine": "tsx scripts/seed-and-test.ts"
+    "test:engine": "tsx scripts/seed-and-test.ts",
+    "test:narration": "tsx scripts/test-narration.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",

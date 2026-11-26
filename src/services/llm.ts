@@ -3,7 +3,28 @@ import { getEnvVar } from "../lib/env.js";
 import { DIRECTIVE_OPEN, DIRECTIVE_CLOSE } from "../lib/bracketInstructions.js";
 
 const HANAMI_MODEL = "Sao10K-L3.1-70B-Hanami-x1";
-const TEMPERATURE = 0.85;
+// Hanami's default creative temperature. Raised from 0.85 to 1.3 on the
+// writer's request after direct testing against the live API (see the
+// 2026-11-26 entries in LEARNINGS.md). 1.3 is only safe together with the
+// sampler values below: with temperature alone and no truncation settings,
+// the API's defaults let the low-probability tail through and output
+// degrades into word salad (confirmed at 1.5 in testing).
+const TEMPERATURE = 1.3;
+
+// Infermatic's own preset for Hanami (Min P 0.02, Top P 0.95, Top K 40,
+// Repetition Penalty 1.05). These were NOT being sent before this change, so
+// the API ran on its much looser defaults regardless of what Infermatic's
+// UI showed — the UI sliders do not apply to API calls. Sent on every
+// request now so the behaviour matches the preset the writer actually
+// chose. min_p/top_k/repetition_penalty are non-OpenAI sampler fields the
+// Infermatic endpoint accepts and honors (verified by comparing outputs
+// with and without them at high temperature).
+const SAMPLING_PARAMS = {
+  min_p: 0.02,
+  top_p: 0.95,
+  top_k: 40,
+  repetition_penalty: 1.05,
+} as const;
 
 interface InfermaticStreamChoice {
   delta?: { content?: string };
@@ -35,6 +56,7 @@ async function* streamHanamiTokens(
     body: JSON.stringify({
       model: HANAMI_MODEL,
       temperature,
+      ...SAMPLING_PARAMS,
       stream: true,
       messages: [
         { role: "system", content: systemPrompt },
