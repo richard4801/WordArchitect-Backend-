@@ -55,17 +55,21 @@ The frozen ~ch200 searches and bios, `context-to-prose.md` and the character bib
 Claude itself is not running an isolated search on a chapter, or few chapters. It would query the system on anything
 mentioned for the context it needs." So the gate is driven by the work itself:
 - At each action, the backend scans the text being acted on (the beat and compiled context sent to Hanami, the scene
-  being saved, the text sent for review, the planning directive) for every name it knows: Codex entries and their
-  aliases.
+  being saved, the text sent for review, the planning directive) for **every proper name**: capitalised words and
+  phrases that don't merely start a sentence, plus Codex names and aliases. The Codex is only a shortcut for aliases;
+  it is not the list of what counts. **"The manuscript is always the source of truth"** (the author, 26 Nov): a name
+  missing from the Codex is looked up in the manuscript, not skipped.
 - Each name needs a recent manuscript query about it on record for this book: a `search_manuscript` whose query
   mentions it, or a read of its Codex entry. Window: 6 hours.
 - Missing names refuse the action, listed by name: "Not yet looked up in the manuscript: Amara, Kane. Search for each,
   then retry."
+- A name the manuscript has never mentioned (a full-text check on the manuscript) is reported, not silently accepted:
+  "'Samuel' appears nowhere in the manuscript: invented, or new? Confirm with the author." This catches the names
+  Hanami invents (process doc section 7).
 - Reviewer subagents: every claim about the story must cite a chapter and an exact quote, checked by the backend.
 
-**Limit of the name scan:** the backend only recognises names it already knows. A character, object or past event with
-no Codex entry can't be detected, so the gate can't force a lookup for it; those are reported as THIN CODEX and left to
-the gatekeeper's independent check. Keeping the Codex current is what widens the gate.
+**Limit:** an unnamed object or event ("the bar", "the feast") can't be detected by a name scan. The gatekeeper
+subagent covers those: it searches the manuscript itself and must cite chapter and quote for every claim.
 
 **Honest limit:** the backend can prove an agent *asked* the manuscript, not that it read or used the answer. The
 gatekeeper's independent re-check against the raw text is what covers that.
