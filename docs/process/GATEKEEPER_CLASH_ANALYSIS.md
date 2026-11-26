@@ -73,7 +73,7 @@ Source: `manuscript-context/`. **Author's ruling (26 Nov): it exists only to for
 context from the manuscript first, before doing anything at all.** So it is a rule that gates action. It is not a ninth
 reviewer and it is not a context builder.
 
-**Author decisions recorded 26 Nov:** yes to a real, non-fakeable approval action for the "Go" gate; yes to porting the
+**Author decisions recorded 26 Nov:** the "Go" gate is a chat rule with no app button (the author: "It's a simple feature Claude has to obey and just ask first before it does anything. I don't want to have to go to the app to click 'Go'"); the backend instead requires Claude to quote the author's Go in the Hanami call and stores it with the approved card beats (see `SYSTEM_DESIGN.md`; this corrects an earlier reading of "yes to all" as a non-fakeable app-side approval); yes to porting the
 gatekeeper into the backend; yes to the ownership split in section 2.
 
 | # | Finding | Evidence | Resolution |
