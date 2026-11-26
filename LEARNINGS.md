@@ -307,3 +307,21 @@ forward"): Hanami doesn't respect span boundaries.
 **Rule:** judge a corrective rewrite loop by what it changed outside the target,
 not only by whether the target is gone; diff it. And the smallest unit Hanami
 can safely rewrite is a sentence, not a word or phrase.
+
+## 2026-11-26 — A reviewer rubric is only trusted after it catches a known error; "met or heard of" let a real one through
+
+Validated the ported gatekeeper by putting back an error it is on record as
+catching (Ch 565: Kane asks "Is Mina happy about it?" though he has never heard
+her name) and giving a fresh Opus reviewer the exact backend brief. First run:
+it found the line but rated it a minor soft gap, because Ch 543 shows Mina on
+Jace's arm in a room Kane is in, and the check read "a person they have never
+met or heard of" — seeing her satisfied "met". The backend's citation check
+confirmed its Ch 543 quote was real, so the reviewer wasn't hallucinating; the
+rubric's wording was too loose. After adding "seeing someone is not knowing
+their name: find the scene where they heard the name", a fresh reviewer marked
+it a hard contradiction and the backend turned it into a BLOCK.
+
+**Rule:** validate every reviewer rubric against at least one known, recorded
+error before trusting it (the same rule as the narration detector's labelled
+corpus). When it misses, the fix is usually a sharper distinction in the
+criterion's wording, not a stronger instruction.
