@@ -21,6 +21,8 @@ import {
   finishSceneDraftSession,
 } from "../services/sceneDraftSessions.js";
 import { diffDrafts } from "../lib/textDiff.js";
+import { runSkillReview, getSkillReview, checkReviewForAcceptance, describeReview, SkillReviewGateError } from "../services/skillReview.js";
+import { scanForSlop, formatSlopScanNote } from "../skills/antiSlopScan.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "../services/bookContextTools.js";
 import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
 import type { NoteCategory } from "../types/domain.js";
@@ -796,7 +798,14 @@ export function registerWordArchitectTools(server: McpServer): void {
           }
           if (parts.length > 0) narrationNote = `[Narration check: ${parts.join(" ")}]`;
         }
-        const withNarrationNote = (text: string) => (narrationNote ? `${text}\n\n${narrationNote}` : text);
+        // Skill 07's free deterministic half runs on every draft: a regex scan,
+        // not a verdict. The real anti-slop review (and every other skill) runs
+        // in run_skill_review, which save_manuscript_scene requires.
+        const slopNoteFor = (text: string) => formatSlopScanNote(scanForSlop(text));
+        const withNarrationNote = (text: string) => {
+          const notes = [narrationNote, slopNoteFor(text)].filter(Boolean);
+          return notes.length ? `${text}\n\n${notes.join("\n\n")}` : text;
+        };
 
         const bannedTerms = await listBannedTerms(userId);
         if (bannedTerms.length === 0) {
@@ -827,7 +836,10 @@ export function registerWordArchitectTools(server: McpServer): void {
           );
         }
 
-        return textResult(withNarrationNote(`${finalText}\n\n[Ghost Editor: ${notes.join(" ")}]`));
+        const slopNote = slopNoteFor(finalText);
+        return textResult(
+          [finalText, `[Ghost Editor: ${notes.join(" ")}]`, narrationNote, slopNote].filter(Boolean).join("\n\n")
+        );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -978,16 +990,84 @@ export function registerWordArchitectTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "run_skill_review",
+    {
+      title: "Run Skill Review",
+      description:
+        "Runs the backend's independent skill reviewers on a piece of text and stores the verdict. Each skill is a separate reviewer agent with its own rubric (e.g. anti-slop: formula and machine-made writing) — not you, and not the session that drafted the text, so its verdict is an outside read, not self-assessment. You supply only the text and where it sits; the backend fetches the context each reviewer sees (Codex entries named in the text, the end of the previous chapter, the chapter's planned beats, the narration setting). Returns reviewId plus, per skill: passed / needs_revision / failed, the criteria it checked with short evidence quotes, MUST FIX items, or reviewer_error when a reviewer refused or returned an unusable verdict (that is NOT a pass). save_manuscript_scene requires a reviewId for the exact text being saved, so run this on the final text, after your last edit. Show the writer any MUST FIX items before saving. Costs real money (roughly $0.10–0.20 per applicable skill on a chapter, capped at $1.00 per review): review final candidates, not every intermediate Hanami pass.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        bookId: z.string().describe("The book's ID"),
+        text: z.string().describe("The exact text to review — the same text you intend to save"),
+        targetType: z
+          .enum(["prose_fragment", "prose_scene", "prose_chapter"])
+          .describe("prose_fragment: a paragraph or a few; prose_scene: one scene; prose_chapter: a whole chapter"),
+        chapterNumber: z.number().int().optional().describe("Chapter this text belongs to — strongly recommended: it is how the reviewer gets the previous chapter's ending and this chapter's beats"),
+        sceneDraftSessionId: z.string().optional().describe("The scene draft session this text came from, if any (for the record)"),
+      },
+    },
+    async ({ userId, bookId, text, targetType, chapterNumber, sceneDraftSessionId }) => {
+      try {
+        const review = await runSkillReview({
+          userId,
+          bookId,
+          text,
+          targetType,
+          chapterNumber: chapterNumber ?? null,
+          sceneDraftSessionId: sceneDraftSessionId ?? null,
+        });
+        const header =
+          review.overall_status === "passed"
+            ? "PASSED — you can save this exact text with save_manuscript_scene, passing this reviewId as skillReviewId."
+            : review.overall_status === "incomplete"
+              ? "INCOMPLETE — at least one reviewer could not deliver a verdict (see below). This is not a pass. Tell the writer; saving needs writerOverride."
+              : "NEEDS REVISION — show the MUST FIX items to the writer. Revise and review again, or save only with the writer's own reason in writerOverride.";
+        return textResult(`reviewId: ${review.id}\n${header}\n\n${describeReview(review)}\n\nFull verdict JSON:\n${JSON.stringify(review.results, null, 2)}`);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_skill_review",
+    {
+      title: "Get Skill Review",
+      description: "Fetches one stored skill review by id: overall status, each skill's verdict, criteria, evidence and MUST FIX items, cost, and any writer override recorded against it.",
+      inputSchema: { reviewId: z.string().describe("The skill review id") },
+    },
+    async ({ reviewId }) => {
+      try {
+        const review = await getSkillReview(reviewId);
+        return textResult(`${describeReview(review)}\n\n${JSON.stringify(review, null, 2)}`);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
     "save_manuscript_scene",
     {
       title: "Save Manuscript Scene",
       description:
-        "Saves accepted prose into permanent manuscript memory (chunked and embedded), so future generations — automatic or Claude-assisted — can recall it, AND appends it to that chapter's content in the rich-text editor (manuscript_chapters) so the writer can see and edit it there too — creating the chapter row if it doesn't exist yet. Appends rather than replaces if the chapter already has editor content, so this never overwrites anything the writer was editing themselves. Call this once the writer has accepted a generated or hand-written scene.",
+        "Saves accepted prose into permanent manuscript memory (chunked and embedded), so future generations — automatic or Claude-assisted — can recall it, AND appends it to that chapter's content in the rich-text editor (manuscript_chapters) so the writer can see and edit it there too — creating the chapter row if it doesn't exist yet. Appends rather than replaces if the chapter already has editor content, so this never overwrites anything the writer was editing themselves. Call this once the writer has accepted a generated or hand-written scene. skillReviewId is REQUIRED: run run_skill_review on the exact rawText first. The save is refused if the review is missing, belongs to another book, or was run on different text (content hash), and it is refused if the review did not pass unless writerOverride carries the writer's own reason for keeping it anyway (stored and shown to the writer). Never invent an override the writer didn't give.",
       inputSchema: {
         userId: z.string().describe("The user's ID"),
         bookId: z.string().describe("The book's ID"),
         chapterNumber: z.number().int().describe("Chapter number this scene belongs to"),
         rawText: z.string().describe("The full scene text to save"),
+        skillReviewId: z
+          .string()
+          .describe(
+            "Required. The reviewId returned by run_skill_review for this exact rawText. Required (not optional) because an optional gate is a silent-failure trap (LEARNINGS 2026-10-20)."
+          ),
+        writerOverride: z
+          .string()
+          .optional()
+          .describe(
+            "Only when the review did not pass AND the writer has decided to keep the text anyway: the writer's reason, in their words. Stored on the review and shown back to them."
+          ),
         chapterTitle: z
           .string()
           .optional()
@@ -996,8 +1076,16 @@ export function registerWordArchitectTools(server: McpServer): void {
           ),
       },
     },
-    async ({ userId, bookId, chapterNumber, rawText, chapterTitle }) => {
+    async ({ userId, bookId, chapterNumber, rawText, skillReviewId, writerOverride, chapterTitle }) => {
       try {
+        let gateNote: string;
+        try {
+          const gate = await checkReviewForAcceptance({ bookId, text: rawText, skillReviewId, writerOverride: writerOverride ?? null });
+          gateNote = gate.note;
+        } catch (err) {
+          if (err instanceof SkillReviewGateError) return errorResult(err.message);
+          throw err;
+        }
         const result = await saveManuscriptScene({
           userId,
           bookId,
@@ -1006,7 +1094,7 @@ export function registerWordArchitectTools(server: McpServer): void {
           chapterTitle: chapterTitle ?? null,
         });
         return textResult(
-          `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content.`
+          `Saved ${result.chunksSaved} chunk(s) to manuscript memory, and ${result.chapterAction} chapter ${chapterNumber}'s editor content. ${gateNote}`
         );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));

@@ -783,6 +783,81 @@ the connector is fully removed and re-added (see the 2026-10-01 entry). The
 response appends a `[Narration check: ...]` note when anything was corrected,
 and a WARNING when something is still wrong after the retries.
 
+## Skill Reviews — Independent Reviewer Agents
+
+Eight craft "skills" (one per research brief in `docs/skill-research/`), each
+run by its **own** reviewer agent — never by the Claude session that drafted
+the text — against a piece of manuscript prose or a planning unit, returning a
+structured verdict the backend validates, stores and enforces. Design record
+and the decision log: `docs/skill-research/DESIGN.md`. Code: `src/skills/`
+(definitions, rubrics, the free anti-slop scan), `src/services/skillReview.ts`
+(context, calls, validation, the gate), `src/routes/skillReviews.ts`,
+`skill_reviews` table (migration `034_skill_reviews.sql`).
+
+**Status: skill 07 (anti-slop) is built end to end as the first slice; the
+other seven are designed (stage table in DESIGN.md) but not yet built.**
+
+**Why per-skill agents, not a prompt rule**: a rubric in Hanami's prompt would
+blow the 6,000-token budget and a rule stated in a prompt is not enforcement
+(LEARNINGS 2026-11-26, 2026-10-20); a rubric in the drafting Claude's
+instructions makes the author its own grader. One reviewer per skill isolates a
+refusal to one skill, lets each rubric be edited and priced separately, and is
+the same pattern the Planning Engine's critics already use.
+
+**Rubrics**: each skill ships a built-in rubric with numbered criteria (`AS1`…
+for anti-slop) in `src/skills/rubrics/`. A writer can override the rubric TEXT
+per book with an `agent_prompts` row (role `skill_<key>`, stage `prose` or a
+planning stage, `all` fallback) — model and effort come from that row too. The
+criteria list and output contract are always appended by the backend, so an
+override can't drop them. Built-in default rather than "no prompt = error":
+otherwise a book with no seeded row would have every save blocked.
+
+**Context is fetched server-side** (`gatherProseContext`): Codex entries named
+in the text, the last ~1,200 words of the previous chapter, the chapter's own
+beats, the narration setting. The drafting session supplies only the text and
+its chapter number, so it can't steer the reviewer by choosing what to show it.
+The shared block (preamble + context + text) is identical for every skill in
+one review and is prompt-cached: the first skill writes it, the rest read it.
+
+**Verdicts — the backend decides the status, not the model**: every criterion
+must be answered (`met` / `not_met` / `n_a`, severity `minor` / `major`, a
+≤25-word evidence quote). 0 majors = `passed`, 1–2 = `needs_revision`, 3+ =
+`failed`; minors never block; `minorOnly` criteria are capped at minor. A
+refusal (`stop_reason: "refusal"`, after the API's server-side fallback chain),
+empty output, truncation, non-JSON or a missing criterion is `reviewer_error`
+— never a pass. A skill skipped by the cost cap is `skipped_cost_cap`. Overall:
+`passed`, `needs_revision`, or `incomplete` (any error/skip).
+
+**The gate (decision: reviewing is mandatory, passing is not)**: MCP
+`save_manuscript_scene` now REQUIRES `skillReviewId`. The save is refused if
+the review doesn't exist, belongs to another book, or was run on different
+text (SHA-256 of whitespace-normalized text — any edit needs a fresh review).
+If the review didn't pass, the save is refused unless `writerOverride` carries
+the writer's own reason; the reason is stored on the review
+(`override_reason`/`overridden_at`) and shown back. The REST
+`POST /manuscript/save-scene` (the frontend's writer-confirmed save) is NOT
+gated — there the writer is the one accepting. Tool-schema change: already
+connected MCP clients must remove and re-add the connector (LEARNINGS
+2026-10-01).
+
+**Free nudge on every draft**: `generate_prose_direct` appends the
+deterministic anti-slop phrase scan (`scanForSlop`, regex over the brief's
+over-used phrase list) as a note. It's a pointer, not a verdict.
+
+**Cost**: default reviewer model `claude-opus-5-5` at effort `medium`
+(decision (c)). Measured prompt size for one 800–1,100-word chapter with
+context: ~5k tokens per skill, about $0.08 per skill. Cap: $1.00 per review
+(`SKILL_REVIEW_COST_CAP_USD`); skills are admitted in priority order by a
+pre-call estimate and the rest are reported as skipped. Stored cost is from
+actual usage.
+
+**Endpoints / tools**: `POST /api/v1/skill-reviews` `{ userId, bookId, text,
+targetType: prose_fragment|prose_scene|prose_chapter, chapterNumber?,
+sceneDraftSessionId? }` → `201 { review }`; `GET /api/v1/skill-reviews?bookId=
+&chapterNumber=&planningRunId=` → `{ reviews }`; `GET /api/v1/skill-reviews/:id`
+→ `{ review }`. MCP: `run_skill_review`, `get_skill_review`. Tests:
+`npm run test:skills` (stub reviewer, no key or database needed).
+
 ## Collaboration Learnings
 
 A growing, per-writer (`user_id`, not `book_id`) record of what's actually
