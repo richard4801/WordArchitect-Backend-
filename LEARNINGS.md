@@ -178,3 +178,36 @@ user- or Claude-facing text, always branch on whether it actually
 succeeded — a correction attempt that exhausted its retries without
 resolving the issue is not the same outcome as one that resolved it, and
 both should never be described with the same success-sounding sentence.
+
+## 2026-11-26 — Infermatic's UI sampler settings do not apply to our API calls, and `.env.example` has a stale base URL
+
+Tested directly against the real Hanami model (`Sao10K-L3.1-70B-Hanami-x1`).
+Findings, all from live calls rather than assumption:
+
+- **`temperature` in the request body is honored.** Five calls at 0 returned
+  identical text; five at 1.5 returned five completely different outputs that
+  degraded into word salad and mixed-language/code fragments. So a value set
+  in Infermatic's own dashboard/playground does not override what
+  `src/services/llm.ts` sends (0.85).
+- **`min_p`/`top_p`/`top_k`/`repetition_penalty` are NOT sent by us** (the
+  request body is only `model`, `temperature`, `stream`, `messages`), and the
+  API's defaults when they are omitted are far looser than the values shown in
+  Infermatic's UI (Min P 0.02, Top P 0.95, Top K 40, Rep Penalty 1.05): at
+  temperature 1.5, omitting them gave word salad every time, while sending
+  those four values explicitly gave coherent prose every time. The UI sliders
+  are not a statement of what our calls use.
+- **Temperature 0 is not strictly deterministic across time.** Five calls in
+  one batch were identical, but the same prompt minutes later gave a different
+  text. Don't use an exact-match comparison at temperature 0 to prove two
+  request shapes are equivalent; it can't distinguish a real difference from
+  server-side nondeterminism.
+- **The working endpoint is `https://api.totalgpt.ai/v1`.** `.env.example`
+  says `https://api.infermatic.ai/v1`, which returned 401 for the key that
+  worked on totalgpt.ai. Check this before debugging a "bad key."
+- **The key is rate limited:** 1 parallel request and 12 requests/minute.
+  Firing parallel calls produces 429s that look like failures; pace them.
+
+**Rule:** don't assume a sampler setting visible in a provider's UI is applied
+to API calls, and don't assume an omitted parameter means "same as the UI."
+Verify with a high-temperature comparison, where truncation settings actually
+change the output.
