@@ -6,7 +6,8 @@ import { getBookNarrationSetting } from "./narrationSetting.js";
 import { getActivePrompt } from "./agentPrompts.js";
 import { getBookFacts } from "./bookFacts.js";
 import { scanForSlop, countWords, type SlopScanResult } from "../skills/antiSlopScan.js";
-import { SKILLS, getSkill, skillAppliesTo } from "../skills/registry.js";
+import { SKILLS, getSkill, skillAppliesTo, MARKET_STALE_AFTER_DAYS } from "../skills/registry.js";
+import { listBookRulings, formatRulings } from "./bookRulings.js";
 import type {
   CriterionVerdict,
   Finding,
@@ -78,7 +79,7 @@ interface ParagraphLike {
   text?: unknown;
 }
 
-async function chapterPlainText(bookId: string, chapterNumber: number): Promise<string | null> {
+export async function chapterPlainText(bookId: string, chapterNumber: number): Promise<string | null> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("manuscript_chapters")
@@ -164,6 +165,7 @@ async function pinnedNotesText(bookId: string): Promise<string> {
 
 export interface ContextPack {
   highestChapter: number | null;
+  rulings?: string;
   narration: string | null;
   pinnedNotes: string;
   codex: string;
@@ -197,6 +199,7 @@ export async function buildContextPack(bookId: string, text: string, chapterNumb
 // ---------------------------------------------------------------------------
 
 const TARGET_LABEL: Record<ReviewTargetType, string> = {
+  beat_card: "a chapter card (the plan for one chapter: POV, time, place, cast, hard facts, the moments in order, rules), not prose",
   prose_fragment: "a fragment of manuscript prose (one or a few paragraphs from a draft)",
   prose_scene: "one scene of manuscript prose",
   prose_chapter: "one full chapter of manuscript prose",
@@ -220,6 +223,7 @@ export function buildSharedBlock(params: {
   const p = params.pack;
   if (p?.highestChapter) parts.push(`The manuscript currently runs to chapter ${p.highestChapter}.`);
   if (p?.narration) parts.push(`The book's narration setting is ${p.narration}.`);
+  if (p?.rulings) parts.push("", "# The author's rulings (they outrank every craft rule; breaking one is a finding)", p.rulings);
   if (p?.pinnedNotes) parts.push("", "# Pinned notes (the author's ledger: latest state, timing, rulings)", p.pinnedNotes);
   if (p?.codex) parts.push("", "# Codex entries for names in the text", p.codex);
   if (p?.thinCodex.length) parts.push(`THIN CODEX: ${p.thinCodex.join(", ")} have little or nothing in the Codex. Check the manuscript for them; don't rely on the Codex.`);
@@ -233,6 +237,12 @@ export function buildSharedBlock(params: {
 export function buildSkillBlock(skill: SkillDefinition, rubricText: string, deterministic: SlopScanResult | null): string {
   const criteria = skill.criteria.map((c) => `- ${c.id} — ${c.title}: ${c.check}`).join("\n");
   const parts = [`# Your rubric: ${skill.title}`, rubricText, "", "# Criteria — answer every one", criteria];
+  if (skill.researchDate) {
+    const days = Math.floor((Date.now() - Date.parse(skill.researchDate)) / 86400000);
+    if (days > MARKET_STALE_AFTER_DAYS) {
+      parts.push("", `STALENESS WARNING: this rubric's market facts were gathered on ${skill.researchDate}, ${days} days ago. Say so in the note of any finding that depends on a time-sensitive fact.`);
+    }
+  }
   if (deterministic) {
     const hits = deterministic.hits.length ? deterministic.hits.map((h) => `- ${h.label} ×${h.count}: ${h.examples.join(" | ")}`).join("\n") : "(no hits)";
     parts.push(
@@ -247,12 +257,16 @@ export function buildSkillBlock(skill: SkillDefinition, rubricText: string, dete
 
 export function submissionInstructions(skill: SkillDefinition): string {
   const ids = skill.criteria.map((c) => c.id).join(", ");
+  const sourced = skill.criteria.filter((c) => c.requiresSource).map((c) => c.id);
+  const sourceLine = sourced.length
+    ? `\nFor ${sourced.join(", ")}: every not_met answer must also give "sources": [{"chapter": <number>, "quote": "<exact words from that chapter>"}], the manuscript passage that shows the conflict. The backend opens that chapter and rejects the verdict if the quote isn't there.`
+    : "";
   return `# How to submit
 Call submit_review_verdict with this briefId and a JSON verdict of exactly this shape:
-{"criteria": [{"id": "<one of ${ids}>", "result": "met" | "not_met" | "n_a", "severity": "none" | "minor" | "major", "evidence": "<exact quote from the text, or \\"\\">", "note": "<one plain sentence>"}],
+{"criteria": [{"id": "<one of ${ids}>", "result": "met" | "not_met" | "n_a", "severity": "none" | "minor" | "major", "evidence": "<exact quote from the text under review, or \"\">", "note": "<one plain sentence>", "sources": [{"chapter": 0, "quote": "..."}]}],
  "mustFix": [{"criterionId": "<id>", "problem": "<what is wrong>", "fix": "<the shape of the fix: the object, line or act that is missing — not a rewrite>"}],
  "summary": "<two sentences: what works, what most needs fixing>"}
-Answer every criterion (${ids}). n_a only when a criterion genuinely cannot apply. For not_met, severity "major" means a reader would notice and it weakens the chapter; "minor" is a blemish. Give a mustFix entry for every major. Evidence must be copied exactly from the text: the backend checks every quote and rejects the verdict if one can't be found. Your verdict is final once accepted.
+What the results mean, whichever way a criterion is worded: "met" = the work PASSES this check (no problem here); "not_met" = the problem IS present; "n_a" = the check cannot apply to this text. Answer every criterion (${ids}). For not_met, severity "major" means a reader would notice and it weakens the work; "minor" is a blemish. Give a mustFix entry for every major. Evidence must be copied exactly from the text under review: the backend checks every quote and rejects the verdict if one can't be found.${sourceLine} Your verdict is final once accepted.
 If you decline to review this text, call submit_review_verdict with {"refused": true, "reason": "<why>"} instead. Do not stay silent: an unsubmitted review blocks the save.`;
 }
 
@@ -348,6 +362,8 @@ export interface RequestReviewsParams {
 export interface RequestReviewsDeps {
   store?: ReviewStore;
   pack?: ContextPack | null;
+  // The author's rulings, formatted; fetched from book_rulings when omitted.
+  rulings?: string;
   resolveRubric?: (skill: SkillDefinition, bookId: string, stage: RealPlanningStage | "prose") => Promise<{ rubric: string; source: "built_in" | "agent_prompts"; version?: number }>;
 }
 
@@ -378,8 +394,23 @@ export async function requestReviews(params: RequestReviewsParams, deps: Request
   const stage = params.planningStage ?? null;
   const chapterNumber = params.chapterNumber ?? null;
 
-  const pack =
+  const builtPack =
     deps.pack !== undefined ? deps.pack : params.targetType === "planning_unit" ? null : await buildContextPack(params.bookId, text, chapterNumber);
+  let rulings = deps.rulings;
+  if (rulings === undefined) {
+    try {
+      rulings = formatRulings(await listBookRulings(params.bookId));
+    } catch (err) {
+      // Rulings missing (e.g. migration 036 not run yet) must not stop a review.
+      console.error("could not load book rulings:", err);
+      rulings = "";
+    }
+  }
+  const pack: ContextPack | null = builtPack
+    ? { ...builtPack, rulings }
+    : rulings
+      ? { highestChapter: null, narration: null, pinnedNotes: "", codex: "", thinCodex: [], previousChapterTail: null, chapterBeats: "", rulings }
+      : null;
   const slopScan = scanForSlop(text);
 
   const newItems: NewItem[] = [];
@@ -537,7 +568,22 @@ export function validateSubmission(skill: SkillDefinition, raw: unknown, reviewe
     if (result === "not_met" && severity === "major" && !evidence) {
       errors.push(`Criterion ${id}: a major problem needs an exact quote as evidence.`);
     }
-    byId.set(id, { id, result, severity, evidence: clampWords(evidence, EVIDENCE_MAX_WORDS), note: typeof c.note === "string" ? c.note.trim() : "" });
+    const sources = Array.isArray(c.sources)
+      ? (c.sources as Record<string, unknown>[])
+          .map((x) => ({ chapter: Number(x?.chapter), quote: typeof x?.quote === "string" ? x.quote.trim() : "" }))
+          .filter((x) => Number.isInteger(x.chapter) && x.chapter > 0 && x.quote)
+      : [];
+    if (def.requiresSource && result === "not_met" && sources.length === 0) {
+      errors.push(`Criterion ${id}: a not_met answer needs "sources" with a chapter number and an exact quote from that chapter.`);
+    }
+    byId.set(id, {
+      id,
+      result,
+      severity,
+      evidence: clampWords(evidence, EVIDENCE_MAX_WORDS),
+      note: typeof c.note === "string" ? c.note.trim() : "",
+      sources: sources.length ? sources : undefined,
+    });
   }
   const missing = skill.criteria.filter((c) => !byId.has(c.id)).map((c) => c.id);
   if (missing.length) errors.push(`Criteria not answered: ${missing.join(", ")}. Answer every criterion.`);
@@ -548,9 +594,26 @@ export function validateSubmission(skill: SkillDefinition, raw: unknown, reviewe
   const findings: Finding[] = [];
   for (const c of criteria) {
     if (c.result !== "not_met") continue;
-    // Craft skills cap at FLAG; the ladder reserves BLOCK for the gatekeeper
-    // and author rulings.
-    const level: Finding["level"] = c.severity === "major" ? (skill.maxLevel === "BLOCK" ? "BLOCK" : "FLAG") : "NOTE";
+    // The ladder: craft skills cap at FLAG (major → FLAG, minor → NOTE). A
+    // BLOCK-capable skill (the gatekeeper) BLOCKs only on criteria marked
+    // blockOn (hard contradictions, core prose failure, author rulings), where
+    // a minor (a soft gap) is still a FLAG.
+    const def = skill.criteria.find((d) => d.id === c.id)!;
+    const blockable = skill.maxLevel === "BLOCK" && def.blockOn === true;
+    // In the gatekeeper every other finding is a weakness flag to fix (its
+    // SKILL.md: soft gaps and scattered prose faults are weakness flags),
+    // except a minorOnly criterion (Unverified), which is a NOTE for the author.
+    const level: Finding["level"] = blockable
+      ? c.severity === "major"
+        ? "BLOCK"
+        : "FLAG"
+      : skill.maxLevel === "BLOCK"
+        ? def.minorOnly
+          ? "NOTE"
+          : "FLAG"
+        : c.severity === "major"
+          ? "FLAG"
+          : "NOTE";
     const fix = rawFix.find((m) => m?.criterionId === c.id);
     findings.push({
       level,
@@ -581,11 +644,34 @@ export interface SubmitOutcome {
   overall: OverallStatus;
 }
 
+export type ChapterTextFetcher = (bookId: string, chapterNumber: number) => Promise<string | null>;
+
+// Every manuscript citation a reviewer gives is checked against that
+// chapter's real text: the gatekeeper's "cite the page" rule, enforced.
+export async function verifySources(verdict: SubmittedVerdict, bookId: string, fetchChapter: ChapterTextFetcher): Promise<string[]> {
+  const errors: string[] = [];
+  const cache = new Map<number, string | null>();
+  for (const c of verdict.criteria) {
+    for (const src of c.sources ?? []) {
+      if (!cache.has(src.chapter)) cache.set(src.chapter, await fetchChapter(bookId, src.chapter));
+      const text = cache.get(src.chapter);
+      if (!text) {
+        errors.push(`Criterion ${c.id}: chapter ${src.chapter} has no saved text to check the quote against.`);
+        continue;
+      }
+      const missing = findMissingQuotePieces(src.quote, text);
+      if (missing.length) errors.push(`Criterion ${c.id}: "${missing[0]}" is not in chapter ${src.chapter}. Quote the chapter exactly.`);
+    }
+  }
+  return errors;
+}
+
 export async function submitReviewVerdict(
   params: { briefId: string; verdict: unknown; reviewerModel?: string | null },
-  deps: { store?: ReviewStore } = {}
+  deps: { store?: ReviewStore; fetchChapter?: ChapterTextFetcher } = {}
 ): Promise<SubmitOutcome> {
   const store = deps.store ?? supabaseReviewStore;
+  const fetchChapter = deps.fetchChapter ?? chapterPlainText;
   const item = await store.getItem(params.briefId);
   const skill = getSkill(item.skill);
   if (!skill) throw new Error(`Unknown skill "${item.skill}".`);
@@ -607,7 +693,11 @@ export async function submitReviewVerdict(
     return { accepted: true, item: updated, overall: await refreshOverall(review.id, store) };
   }
 
-  const result = validateSubmission(skill, raw, review.reviewed_text ?? "");
+  let result = validateSubmission(skill, raw, review.reviewed_text ?? "");
+  if (result.ok) {
+    const sourceErrors = await verifySources(result.verdict, review.book_id, fetchChapter);
+    if (sourceErrors.length) result = { ok: false, errors: sourceErrors };
+  }
   const attempts = item.submit_attempts + 1;
   if (!result.ok) {
     if (attempts >= MAX_SUBMIT_ATTEMPTS) {

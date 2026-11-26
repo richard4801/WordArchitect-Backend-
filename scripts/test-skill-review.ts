@@ -15,6 +15,10 @@ import {
   type ReviewStore,
 } from "../src/services/skillReview.js";
 import { antiSlopSkill } from "../src/skills/rubrics/antiSlop.js";
+import { gatekeeperSkill } from "../src/skills/rubrics/gatekeeper.js";
+import { SKILLS, skillAppliesTo, intimacyGate } from "../src/skills/registry.js";
+import { verifySources } from "../src/services/skillReview.js";
+import { checkManuscriptFirst, extractNameCandidates } from "../src/services/manuscriptFirst.js";
 import { scanForSlop } from "../src/skills/antiSlopScan.js";
 import type { ReviewItemRow, SkillReviewRow } from "../src/skills/types.js";
 
@@ -137,8 +141,8 @@ await test("prose instead of JSON is rejected", () => {
 await test("request → launch prompts that tell the subagent to fetch its own brief", async () => {
   const store = memoryStore();
   const { review, launches } = await requestReviews(
-    { bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", chapterNumber: 3 },
-    { store, pack: null, resolveRubric: builtIn }
+    { bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", chapterNumber: 3, onlySkills: ["anti_slop"] },
+    { store, pack: null, rulings: "", resolveRubric: builtIn }
   );
   assert.equal(review.overall_status, "pending");
   assert.equal(launches.length, 1);
@@ -151,7 +155,7 @@ await test("request → launch prompts that tell the subagent to fetch its own b
 
 await test("full flow: pending blocks save → submit → flagged saves with FLAGs listed", async () => {
   const store = memoryStore();
-  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", onlySkills: ["anti_slop"] }, { store, pack: null, rulings: "", resolveRubric: builtIn });
   await assert.rejects(
     checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: review.id }, { store }),
     (e: unknown) => e instanceof SkillReviewGateError && /no verdict yet/.test((e as Error).message)
@@ -169,7 +173,7 @@ await test("full flow: pending blocks save → submit → flagged saves with FLA
 
 await test("an accepted verdict is final: a second submission is refused", async () => {
   const store = memoryStore();
-  const { launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const { launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", onlySkills: ["anti_slop"] }, { store, pack: null, rulings: "", resolveRubric: builtIn });
   await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: verdict() }, { store });
   await assert.rejects(submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: verdict() }, { store }), /final verdict/);
   await assert.rejects(getReviewBrief(launches[0]!.briefId, { store }), /final verdict/);
@@ -177,7 +181,7 @@ await test("an accepted verdict is final: a second submission is refused", async
 
 await test("invalid submissions get retries, then become reviewer_error → incomplete → override needed", async () => {
   const store = memoryStore();
-  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", onlySkills: ["anti_slop"] }, { store, pack: null, rulings: "", resolveRubric: builtIn });
   const bad = verdict({ AS2: { result: "not_met", severity: "major", evidence: "a quote that is not there" } });
   for (let i = 1; i < MAX_SUBMIT_ATTEMPTS; i++) {
     const out = await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: bad }, { store });
@@ -195,7 +199,7 @@ await test("invalid submissions get retries, then become reviewer_error → inco
 
 await test("a refusal is recorded as reviewer_error, never a pass", async () => {
   const store = memoryStore();
-  const { launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const { launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", onlySkills: ["anti_slop"] }, { store, pack: null, rulings: "", resolveRubric: builtIn });
   const out = await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: JSON.stringify({ refused: true, reason: "content" }) }, { store });
   assert.equal(out.item.status, "reviewer_error");
   assert.equal(out.overall, "incomplete");
@@ -203,7 +207,7 @@ await test("a refusal is recorded as reviewer_error, never a pass", async () => 
 
 await test("gate: edited text, wrong book, unknown review are all refused", async () => {
   const store = memoryStore();
-  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", onlySkills: ["anti_slop"] }, { store, pack: null, rulings: "", resolveRubric: builtIn });
   await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: verdict() }, { store });
   await checkReviewForAcceptance({ bookId: "b1", text: `  ${TEXT}\n`, skillReviewId: review.id }, { store });
   await assert.rejects(checkReviewForAcceptance({ bookId: "b1", text: TEXT + " Then she left.", skillReviewId: review.id }, { store }), /hash/);
@@ -227,6 +231,111 @@ await test("scan: catches stock phrases, ignores clean prose", () => {
     assert.ok(ids.includes(id), `expected ${id}`);
   }
   assert.equal(scanForSlop(TEXT).totalHits, 0);
+});
+
+
+// --- all skills ---------------------------------------------------------------
+
+await test("nine skills registered; the stage table routes them", () => {
+  assert.equal(SKILLS.length, 9);
+  const at = (t: Parameters<typeof skillAppliesTo>[1], st: Parameters<typeof skillAppliesTo>[2] = null) => SKILLS.filter((s) => skillAppliesTo(s, t, st)).map((s) => s.key).sort();
+  assert.deepEqual(at("prose_fragment"), ["anti_slop", "erotic_heat", "gatekeeper"]);
+  assert.ok(at("beat_card").includes("werewolf_genre") && at("beat_card").includes("gatekeeper"));
+  assert.deepEqual(at("planning_unit", "stage_1_summary"), ["anti_slop", "current_market", "werewolf_genre"]);
+  for (const s of SKILLS) {
+    const ids = s.criteria.map((c) => c.id);
+    assert.equal(new Set(ids).size, ids.length, `${s.key} has duplicate criterion ids`);
+    assert.ok(s.criteria.length >= 7, `${s.key} has too few criteria`);
+    if (s.maxLevel !== "BLOCK") assert.ok(s.criteria.every((c) => !c.blockOn), `${s.key} is a craft skill but marks blockOn`);
+  }
+});
+await test("no rubric carries the other book's names", () => {
+  const all = JSON.stringify(SKILLS.map((s) => [s.rubric, s.criteria]));
+  for (const n of ["Maren", "Ronan", "Nadia", "Brida", "Ilsa", "Rhett", "Halvard", "Plump"]) assert.ok(!all.includes(n), n);
+});
+await test("heat gate: runs on intimate text, skips plain text", () => {
+  assert.equal(intimacyGate("He kissed her throat. Her thighs tightened around his hips and she moaned."), null);
+  assert.match(intimacyGate("The map was of the southern ridge.") ?? "", /No intimate content/);
+});
+
+// --- gatekeeper: BLOCK mapping and manuscript citations ------------------------
+
+function gkVerdict(over: Record<string, { result: string; severity: string; evidence?: string; sources?: { chapter: number; quote: string }[] }> = {}) {
+  return {
+    criteria: gatekeeperSkill.criteria.map((c) => ({ id: c.id, result: over[c.id]?.result ?? "met", severity: over[c.id]?.severity ?? "none", evidence: over[c.id]?.evidence ?? "", note: "n", sources: over[c.id]?.sources })),
+    mustFix: Object.entries(over).filter(([, v]) => v.severity === "major").map(([id]) => ({ criterionId: id, problem: "p", fix: "f" })),
+    summary: "s",
+  };
+}
+const KANE = "Kane looked up. \"Is Mina happy about it?\" he asked.";
+await test("gatekeeper: a HARD contradiction is a BLOCK; a soft gap is a FLAG; voice is a FLAG", () => {
+  const r = validateSubmission(gatekeeperSkill, gkVerdict({
+    GK2: { result: "not_met", severity: "major", evidence: "Is Mina happy about it?", sources: [{ chapter: 560, quote: "Kane had never heard her name" }] },
+    GK9: { result: "not_met", severity: "minor", evidence: "Kane looked up", sources: [{ chapter: 559, quote: "x y" }] },
+    GK8: { result: "not_met", severity: "major", evidence: "he asked", sources: [{ chapter: 558, quote: "a b" }] },
+  }), KANE);
+  assert.ok(r.ok);
+  if (r.ok) {
+    assert.equal(r.status, "blocked");
+    assert.deepEqual(r.verdict.findings.map((f) => `${f.criterionId}:${f.level}`).sort(), ["GK2:BLOCK", "GK8:FLAG", "GK9:FLAG"]);
+  }
+});
+await test("gatekeeper: a continuity finding without a manuscript source is rejected", () => {
+  const r = validateSubmission(gatekeeperSkill, gkVerdict({ GK2: { result: "not_met", severity: "major", evidence: "Is Mina happy about it?" } }), KANE);
+  assert.ok(!r.ok && /needs "sources"/.test(r.errors.join(" ")));
+});
+await test("gatekeeper: a source quote not in the cited chapter is rejected; a real one passes", async () => {
+  const r = validateSubmission(gatekeeperSkill, gkVerdict({ GK2: { result: "not_met", severity: "major", evidence: "Is Mina happy about it?", sources: [{ chapter: 560, quote: "Kane had never heard her name" }] } }), KANE);
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const chapters: Record<number, string> = { 560: "Jace kept Mina to himself. Kane had never heard her name, and Jace meant to keep it that way." };
+  assert.deepEqual(await verifySources(r.verdict, "b1", async (_b, n) => chapters[n] ?? null), []);
+  const bad = await verifySources(r.verdict, "b1", async () => "Something else entirely happened here.");
+  assert.match(bad.join(" "), /not in chapter 560/);
+  const none = await verifySources(r.verdict, "b1", async () => null);
+  assert.match(none.join(" "), /no saved text/);
+});
+
+// --- the manuscript-first gate ----------------------------------------------------
+
+await test("names: mid-sentence capitals are names, multi-word names join, labels and caps are ignored", () => {
+  const c = extractNameCandidates("Narrator: Jace, first person, PAST TENSE. He walked into the Great Hall where Kane waited. Kill me quick, she said. Josie turned away.");
+  assert.deepEqual(c.names, ["Great Hall", "Kane"]);
+  // After a label colon or at a sentence start, the manuscript decides.
+  assert.ok(c.initialOnly.includes("Jace") && c.initialOnly.includes("Josie") && c.initialOnly.includes("Kill"));
+});
+const codex = async () => [{ name: "Amara", aliases: ["Runa"] }];
+await test("gate: refuses until every name has a recent lookup, and names what is missing", async () => {
+  const text = "Runa stood at the gate while Kane watched from the yard, and Jace said nothing.";
+  const deps = { codex, recentReads: async () => [{ tool: "search_manuscript", query: "Kane last scene with Elara", entry_name: null }], existsInManuscript: async () => true, usedAsNameInManuscript: async () => false };
+  const r = await checkManuscriptFirst({ bookId: "b1", text }, deps);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.missing, ["Amara", "Jace"]);
+});
+await test("gate: a Codex alias lookup or entry read satisfies the name; then it passes", async () => {
+  const text = "Runa stood at the gate while Kane watched, and Jace said nothing.";
+  const reads = [
+    { tool: "search_manuscript", query: "Kane", entry_name: null },
+    { tool: "search_manuscript", query: "Jace standing in the North", entry_name: null },
+    { tool: "get_codex_entry", query: null, entry_name: "Amara" },
+  ];
+  const r = await checkManuscriptFirst({ bookId: "b1", text }, { codex, recentReads: async () => reads, existsInManuscript: async () => true, usedAsNameInManuscript: async () => false });
+  assert.equal(r.ok, true);
+});
+await test("gate: a sentence-opening name counts when the manuscript uses it as a name; invented names are reported", async () => {
+  const text = "Josie turned away. Samuel waited by the door with Kane.";
+  const r = await checkManuscriptFirst(
+    { bookId: "b1", text },
+    { codex: async () => [], recentReads: async () => [], existsInManuscript: async (_b, n) => n !== "Samuel", usedAsNameInManuscript: async (_b, w) => w === "Josie" }
+  );
+  assert.deepEqual(r.missing.sort(), ["Josie", "Kane"]);
+  // Samuel opens a sentence and the manuscript never uses it as a name, so it
+  // isn't required; a mid-sentence invented name is required AND reported:
+  const r2 = await checkManuscriptFirst(
+    { bookId: "b1", text: "Kane waited by the door with Samuel." },
+    { codex: async () => [], recentReads: async () => [], existsInManuscript: async (_b, n) => n !== "Samuel", usedAsNameInManuscript: async () => false }
+  );
+  assert.deepEqual(r2.notInManuscript, ["Samuel"]);
 });
 
 console.log(`\n${passed} passed`);

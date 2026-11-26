@@ -123,7 +123,7 @@ function currentPosition(run: PlanningRun): UnitPosition {
   };
 }
 
-function currentUnitKey(run: PlanningRun): string {
+export function currentUnitKey(run: PlanningRun): string {
   return unitKey(currentPosition(run));
 }
 
@@ -217,7 +217,7 @@ function previousPosition(pos: UnitPosition, partChapterRanges: Record<string, P
 // The immediate parent unit's approved content — what this unit is a
 // detailed expansion of. Distinct from BOOK_VISION (always Stage 1,
 // regardless of depth) and from CONTINUITY_LEDGER (hard facts, not prose).
-function parentArtifactFor(run: PlanningRun): string {
+export function parentArtifactFor(run: PlanningRun): string {
   const pos = currentPosition(run);
   if (pos.stage === "stage_1_summary") return "";
   if (pos.stage === "codex_documentation") return run.stage_artifacts["stage_1_summary"] ?? "";
@@ -227,7 +227,7 @@ function parentArtifactFor(run: PlanningRun): string {
   return run.stage_artifacts[`act_${pos.act}_part_${pos.part}_outline`] ?? "";
 }
 
-function formatLedger(ledger: ContinuityLedgerEntry[]): string {
+export function formatLedger(ledger: ContinuityLedgerEntry[]): string {
   if (ledger.length === 0) return "";
   return ledger.map((e) => `- [${e.sourcedFrom}] ${e.fact} (from ${e.unit})`).join("\n");
 }

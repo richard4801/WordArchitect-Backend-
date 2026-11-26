@@ -17,7 +17,9 @@ export type SkillKey =
   | "current_market"
   | "gatekeeper";
 
-export type ReviewTargetType = "prose_fragment" | "prose_scene" | "prose_chapter" | "planning_unit";
+// beat_card: a chapter card (the MOMENT pattern in the author's process),
+// reviewed before the author says Go.
+export type ReviewTargetType = "beat_card" | "prose_fragment" | "prose_scene" | "prose_chapter" | "planning_unit";
 
 export interface SkillCriterion {
   id: string;
@@ -27,6 +29,12 @@ export interface SkillCriterion {
   // A criterion that can note a weakness but never rise above NOTE on its own
   // (its severity is capped at "minor" by the backend, whatever is submitted).
   minorOnly?: boolean;
+  // Only on a skill whose maxLevel is BLOCK (the gatekeeper): a MAJOR finding
+  // on this criterion is a BLOCK; on any other criterion it is a FLAG.
+  blockOn?: boolean;
+  // The reviewer must back a not_met answer with a manuscript citation
+  // (chapter + exact quote), which the backend checks against that chapter.
+  requiresSource?: boolean;
 }
 
 export interface SkillGateInput {
@@ -69,12 +77,18 @@ export interface SkillDefinition {
 export type CriterionResult = "met" | "not_met" | "n_a";
 export type Severity = "none" | "minor" | "major";
 
+export interface ManuscriptSource {
+  chapter: number;
+  quote: string;
+}
+
 export interface CriterionVerdict {
   id: string;
   result: CriterionResult;
   severity: Severity;
   evidence: string;
   note: string;
+  sources?: ManuscriptSource[] | undefined;
 }
 
 export interface Finding {

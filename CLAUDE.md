@@ -820,9 +820,27 @@ the free anti-slop scan), `src/services/skillReview.ts`,
 `skill_review_items` (migration 035, one row per review × skill, so parallel
 subagents never overwrite each other).
 
-**Status: skill 07 (anti-slop) is built end to end. The gatekeeper port, the
-other seven skills, the process module and the recorded Go approval are
-designed in SYSTEM_DESIGN.md and not yet built.**
+**The nine skills** (`src/skills/rubrics/`, registered in `src/skills/registry.ts`):
+
+| Skill | Key | Runs on | Highest level |
+| --- | --- | --- | --- |
+| Gatekeeper (continuity + line audit), ported from `docs/process/gatekeeper/SKILL.md` | `gatekeeper` | cards, prose, Act/Part outlines and beats | BLOCK |
+| 07 Anti-slop | `anti_slop` | cards, prose, every planning stage | FLAG |
+| 01 Werewolf genre promises | `werewolf_genre` | cards, pitch, outlines | FLAG |
+| 02 Romance craft | `romance_craft` | cards, chapters, outlines | FLAG |
+| 03 Heat (only when intimate: keyword gate in the registry) | `erotic_heat` | cards, prose, beats | FLAG |
+| 04 Serial pull | `serial_plotting` | cards, chapters, Part outlines and beats | FLAG |
+| 05 Secrets and reveals | `secrets_reveals` | cards, chapters, outlines | FLAG |
+| 06 Fiction fundamentals | `fiction_fundamentals` | cards, chapters, outlines | FLAG |
+| 08 Market positioning (dated 6 Nov 2026; briefs warn after 90 days; includes the gatekeeper's pitch checks at Stage 1) | `current_market` | pitch, Act summaries | FLAG |
+
+Ownership follows `docs/process/GATEKEEPER_CLASH_ANALYSIS.md` section 2 (one owner per class of issue), so one line never collects three flags. The seven craft rubrics were written from the portable findings of each brief; nothing about the other book they were written for is carried over (a test checks for its names).
+
+**The gatekeeper** BLOCKs only on criteria marked `blockOn` (hard contradictions GK1-GK7, an author-ruling violation GK14, a core prose failure GK15); every other finding of its is a FLAG, and Unverified (GK16) is a NOTE so the author is asked. Continuity criteria are `requiresSource`: a not_met answer must cite a chapter and an exact quote, and the backend opens that chapter (`chapterPlainText`) and rejects the verdict if the quote isn't there.
+
+**The author's rulings** are data: `book_rulings` (migration 036), listed in every brief and above every craft rule (precedence: author rulings > manuscript facts > craft > market). MCP: `list_book_rulings`, `add_book_ruling` (only rulings the author made in the conversation), `retire_book_ruling`. An optional seed of the rulings already on record is in `supabase/seed/book_rulings_grace_of_the_barbarian.sql`, to run only if the author agrees with every line.
+
+**Targets**: `beat_card` (reviewed before the author says Go), `prose_fragment`, `prose_scene`, `prose_chapter` via `request_reviews`; a Planning Engine run's current unit via `request_planning_reviews` `{ userId, runId }` (Book Vision, parent unit and continuity ledger supplied; it complements the three critics and does not gate approval).
 
 **The flow** (MCP):
 1. `request_reviews` `{ userId, bookId, text, targetType, chapterNumber?,
@@ -879,6 +897,37 @@ appended by the backend, so an override can't drop them.
 **Free nudge on every draft**: `generate_prose_direct` appends the
 deterministic anti-slop phrase scan (`scanForSlop`) as a note — a pointer,
 not a verdict.
+
+## Manuscript-First Gate
+
+The author's ruling on manuscript-context (26 Nov): Claude and every subagent
+"always seek context first from the Manuscript before doing anything at
+all", querying "on anything mentioned", and "the manuscript is always the
+source of truth" (a name missing from the Codex is looked up in the
+manuscript, not skipped). `src/services/manuscriptFirst.ts`, table
+`manuscript_reads` (migration 036).
+
+- **Every lookup is logged by the read tools themselves**: `search_manuscript`
+  (the query), `get_manuscript_chapter` (the chapter), `get_codex_entry` (the
+  entry name). Nothing for Claude to remember.
+- **Action tools refuse until every name in the text has a lookup** in the
+  last 6 hours for that book: `generate_prose_direct` (scene beat + compiled
+  context), `start_scene_draft_session`, `save_manuscript_scene`,
+  `request_reviews`. The refusal lists the names still missing.
+- **Names come from the text, not the Codex**: capitalised words used
+  mid-sentence (multi-word names joined, labels, titles and ALL-CAPS ignored).
+  A word capitalised only where a sentence starts counts if the manuscript
+  itself uses it capitalised mid-sentence (a Postgres regex on
+  `manuscript_chunks`). The Codex only adds aliases: a search for any alias,
+  or reading the entry, satisfies the name.
+- **Names the manuscript has never mentioned** are reported in the refusal
+  ("invented, or new? confirm with the author"), which catches names Hanami
+  invents.
+- Limits: it proves an agent asked, not that it used the answer; an unnamed
+  object or event can't be detected by a name scan (the gatekeeper covers
+  those). The mid-sentence regex check could not be run from the build
+  session and fails safe (an error means "not a name"). Kill switch:
+  `MANUSCRIPT_FIRST=off`.
 
 **Validated on real chapters (read-only)**: three Opus reviewers given the
 exact anti-slop brief for Ch 12, 300 and 590 found one FLAG each in 12 and

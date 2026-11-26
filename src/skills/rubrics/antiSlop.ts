@@ -8,13 +8,13 @@ export const antiSlopSkill: SkillDefinition = {
   role: "skill_anti_slop",
   title: "Anti-slop (formula and machine-made writing)",
   priority: 1,
-  proseTargets: ["prose_fragment", "prose_scene", "prose_chapter"],
+  proseTargets: ["beat_card", "prose_fragment", "prose_scene", "prose_chapter"],
   planningStages: ["stage_1_summary", "act_summary", "part_outline", "part_beats", "codex_documentation", "hook_chapters_outline"],
   maxLevel: "FLAG",
   reviewerModel: "Opus 5.5",
   rubric: `Working definition: slop is what you get when every choice is the likeliest one — the likeliest word, image, next event, chapter ending. Any single likely choice is fine. A passage built mostly of them reads as if nobody made it, and paying readers of serial romance can tell and punish it. Your job is to find where the likeliest choice was taken in place of a specific one, and say what specific thing is missing.
 
-What specificity looks like: an object, a physical act, a line someone actually says, a detail only this world could produce. "He drops a hot paper bundle of meat pies in her lap. 'Eat.'" is specific. "A tender moment over food reveals his softer side, highlighting their evolving dynamic" is slop: no object, no act, no line, and analysis words where events should be.
+What specificity looks like: an object, a physical act, a line someone actually says, a detail only this world could produce. "He tears the heel off the loaf, puts it in her hand and doesn't let go of her wrist until she bites. 'Eat.'" is specific. "A tender moment over food reveals his softer side, highlighting their evolving dynamic" is slop: no object, no act, no line, and analysis words where events should be.
 
 Known signals (signs, not proof — people wrote these first; judge clustering and substitution, not single honest uses):
 - Over-used phrases measured across dozens of language models: flickered, a voice barely above a whisper, took a deep breath, eyes never leaving, every fibre of my being, pulse roared in my ears, eyes that seemed to see right through me, after an eternity, eyes darkening, the sentence shape "it's not X, it's Y".

@@ -23,6 +23,9 @@ import {
 import { diffDrafts } from "../lib/textDiff.js";
 import { requestReviews, getReviewBrief, submitReviewVerdict, getSkillReview, checkReviewForAcceptance, describeReview, SkillReviewGateError } from "../services/skillReview.js";
 import { scanForSlop, formatSlopScanNote } from "../skills/antiSlopScan.js";
+import { recordManuscriptRead, manuscriptFirstRefusal } from "../services/manuscriptFirst.js";
+import { listBookRulings, addBookRuling, retireBookRuling, RULING_CATEGORIES } from "../services/bookRulings.js";
+import { getPlanningRun as loadPlanningRunForReview, currentUnitKey, parentArtifactFor, formatLedger } from "../services/planningEngine.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "../services/bookContextTools.js";
 import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
 import type { NoteCategory } from "../types/domain.js";
@@ -108,6 +111,8 @@ export function registerWordArchitectTools(server: McpServer): void {
     async ({ entryId }) => {
       try {
         const data = await getCodexEntry(entryId);
+        const row = data as { book_id?: string; name?: string } | null;
+        if (row?.book_id) await recordManuscriptRead({ bookId: row.book_id, tool: "get_codex_entry", entryName: row.name ?? null });
         return textResult(JSON.stringify(data, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
@@ -523,6 +528,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     async ({ bookId, query }) => {
       try {
         const matches = await searchManuscript(bookId, query);
+        await recordManuscriptRead({ bookId, tool: "search_manuscript", query });
         return textResult(JSON.stringify(matches, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
@@ -544,6 +550,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     async ({ bookId, chapterNumber }) => {
       try {
         const result = await getManuscriptChapterText(bookId, chapterNumber);
+        await recordManuscriptRead({ bookId, tool: "get_manuscript_chapter", chapterNumber });
         return textResult(JSON.stringify(result, null, 2));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
@@ -830,6 +837,8 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ sceneBeat, compiledContext, userId, bookId }) => {
       try {
+        const refusal = await manuscriptFirstRefusal("Sending this to Hanami", bookId, `${sceneBeat}\n\n${compiledContext}`);
+        if (refusal) return errorResult(refusal);
         const voiceProfile = await getWritingVoiceProfile(userId);
         const voiceSection = buildVoiceSection(voiceProfile?.style_profile ?? null);
         const effectiveContext = voiceSection ? [voiceSection, compiledContext].join("\n\n---\n\n") : compiledContext;
@@ -933,6 +942,8 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ userId, bookId, sceneBeat, plotPoints, chapterNumber, label }) => {
       try {
+        const refusal = await manuscriptFirstRefusal("Starting this draft session", bookId, `${sceneBeat}\n\n${plotPoints.join("\n")}`);
+        if (refusal) return errorResult(refusal);
         const session = await startSceneDraftSession({ userId, bookId, sceneBeat, plotPoints, chapterNumber, label });
         return textResult(JSON.stringify(session, null, 2));
       } catch (err) {
@@ -1068,14 +1079,16 @@ export function registerWordArchitectTools(server: McpServer): void {
         bookId: z.string().describe("The book's ID"),
         text: z.string().describe("The exact text to review — the same text you intend to save"),
         targetType: z
-          .enum(["prose_fragment", "prose_scene", "prose_chapter"])
-          .describe("prose_fragment: a paragraph or a few; prose_scene: one scene; prose_chapter: a whole chapter"),
+          .enum(["beat_card", "prose_fragment", "prose_scene", "prose_chapter"])
+          .describe("beat_card: a chapter card (POV, time, place, cast, hard facts, the moments in order, rules), reviewed before the author says Go; prose_fragment: a paragraph or a few; prose_scene: one scene; prose_chapter: a whole chapter"),
         chapterNumber: z.number().int().optional().describe("Chapter this text belongs to — strongly recommended: it is how reviewers get the previous chapter's ending and this chapter's beats"),
         sceneDraftSessionId: z.string().optional().describe("The scene draft session this text came from, if any (for the record)"),
       },
     },
     async ({ userId, bookId, text, targetType, chapterNumber, sceneDraftSessionId }) => {
       try {
+        const refusal = await manuscriptFirstRefusal("Requesting reviews", bookId, text);
+        if (refusal) return errorResult(refusal);
         const { review, items, launches } = await requestReviews({
           userId,
           bookId,
@@ -1093,6 +1106,121 @@ export function registerWordArchitectTools(server: McpServer): void {
           `\nWhen every subagent has replied, call get_skill_review with reviewId ${review.id} and show the author the verdicts. Then save_manuscript_scene with skillReviewId ${review.id}.`,
         ];
         return textResult(body.filter(Boolean).join("\n"));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "request_planning_reviews",
+    {
+      title: "Request Skill Reviews of a Planning Unit",
+      description:
+        "Starts the independent skill reviews of a Planning Engine run's CURRENT unit (Core Summary, Act summary, Part outline or beats) and returns one launch prompt per applicable skill, exactly like request_reviews: spawn ONE separate subagent per prompt, verbatim; each fetches its own brief and submits its own verdict. The backend supplies the unit's draft, the Book Vision, the parent unit and the continuity ledger. This complements critique_planning_unit's three critics; it does not replace them, and approving the unit is not gated on it.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        runId: z.string().describe("The planning_runs row ID"),
+      },
+    },
+    async ({ userId, runId }) => {
+      try {
+        const run = await loadPlanningRunForReview(runId);
+        const unit = currentUnitKey(run);
+        const artifact = run.stage_artifacts[unit];
+        if (!artifact) return errorResult(`The run's current unit (${unit}) has no draft yet. Generate it first.`);
+        const stage = run.current_stage as import("../types/domain.js").RealPlanningStage;
+        const extraContext = [
+          "# Book Vision (the approved Core Summary)",
+          run.stage_artifacts["stage_1_summary"] ?? "(none yet)",
+          "",
+          "# Parent unit (what this unit expands)",
+          parentArtifactFor(run) || "(none)",
+          "",
+          "# Continuity ledger (hard facts so far)",
+          formatLedger(run.continuity_ledger) || "(empty)",
+        ].join("\n");
+        const { review, items, launches } = await requestReviews({
+          userId,
+          bookId: run.book_id,
+          text: artifact,
+          targetType: "planning_unit",
+          planningRunId: run.id,
+          planningUnit: unit,
+          planningStage: stage,
+          extraContext,
+        });
+        const skipped = items.filter((i) => i.status === "not_applicable").map((i) => i.brief.title);
+        return textResult(
+          [
+            `reviewId: ${review.id} (unit ${unit})`,
+            `${launches.length} reviewer(s) to launch. Spawn ONE separate subagent per prompt, verbatim, in parallel. Do not review or submit verdicts yourself.`,
+            ...launches.map((l, n) => `\n--- Reviewer ${n + 1}: ${l.title} (briefId ${l.briefId}) ---\n${l.prompt}`),
+            skipped.length ? `\nNot applicable at ${stage}: ${skipped.join("; ")}.` : "",
+            `\nWhen every subagent has replied, call get_skill_review with reviewId ${review.id} and show the author the findings alongside the critics'.`,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "list_book_rulings",
+    {
+      title: "List the Author's Rulings",
+      description:
+        "Lists the author's standing rulings for this book (house rules, banned patterns, voice rulings, e.g. \"no dashes except cut-off dialogue\", \"never quote past dialogue in a memory\"). They outrank every craft rule, every reviewer sees them, and the gatekeeper can BLOCK on a violation. Read these before building a card or a Hanami prompt.",
+      inputSchema: { bookId: z.string().describe("The book's ID") },
+    },
+    async ({ bookId }) => {
+      try {
+        const rulings = await listBookRulings(bookId);
+        if (rulings.length === 0) return textResult("No rulings recorded for this book yet.");
+        return textResult(rulings.map((r) => `- [${r.category}] ${r.ruling}${r.source ? ` (${r.source})` : ""} — id ${r.id}`).join("\n"));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "add_book_ruling",
+    {
+      title: "Record an Author Ruling",
+      description:
+        "Records a standing ruling the author has just made for this book, in their own terms, so every reviewer and every future session holds to it. Only call this when the author has made the ruling in this conversation; never invent one. Include where it came from (a chapter, or 'author, <date>').",
+      inputSchema: {
+        bookId: z.string().describe("The book's ID"),
+        ruling: z.string().describe("The ruling, stated plainly"),
+        category: z.enum(RULING_CATEGORIES).optional().describe("house_rule | banned_pattern | voice | ruling"),
+        source: z.string().optional().describe("Where it came from, e.g. 'ch573' or 'author, 26 Nov'"),
+      },
+    },
+    async ({ bookId, ruling, category, source }) => {
+      try {
+        const r = await addBookRuling({ bookId, ruling, category: category ?? "ruling", source: source ?? null });
+        return textResult(`Recorded: [${r.category}] ${r.ruling}`);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "retire_book_ruling",
+    {
+      title: "Retire an Author Ruling",
+      description: "Retires a ruling the author has withdrawn (it stays in the history, no longer applied). Only when the author asks. Use the id from list_book_rulings.",
+      inputSchema: { rulingId: z.string().describe("The ruling's id") },
+    },
+    async ({ rulingId }) => {
+      try {
+        await retireBookRuling(rulingId);
+        return textResult("Ruling retired.");
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -1192,6 +1320,8 @@ export function registerWordArchitectTools(server: McpServer): void {
     },
     async ({ userId, bookId, chapterNumber, rawText, skillReviewId, writerOverride, chapterTitle }) => {
       try {
+        const refusal = await manuscriptFirstRefusal("Saving this scene", bookId, rawText);
+        if (refusal) return errorResult(refusal);
         let gateNote: string;
         try {
           const gate = await checkReviewForAcceptance({ bookId, text: rawText, skillReviewId, writerOverride: writerOverride ?? null });

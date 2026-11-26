@@ -8,7 +8,7 @@ import type { ReviewTargetType } from "../skills/types.js";
 // here. See CLAUDE.md "Skill Reviews".
 export const skillReviewsRouter = Router();
 
-const PROSE_TARGETS: ReviewTargetType[] = ["prose_fragment", "prose_scene", "prose_chapter"];
+const PROSE_TARGETS: ReviewTargetType[] = ["beat_card", "prose_fragment", "prose_scene", "prose_chapter"];
 
 // POST /api/v1/skill-reviews — { userId, bookId, text, targetType, chapterNumber?, sceneDraftSessionId? }
 // Creates the review and its briefs; returns the launch prompt for each reviewer.
