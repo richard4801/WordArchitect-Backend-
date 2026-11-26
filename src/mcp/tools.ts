@@ -8,7 +8,7 @@ import { saveManuscriptScene } from "../services/manuscriptSceneSave.js";
 import { editManuscriptChapterContent, ManuscriptChapterNotFoundError } from "../routes/manuscriptChapters.js";
 import { listCollaborationLearnings, addCollaborationLearning } from "../routes/collaborationLearnings.js";
 import { getWritingVoiceProfile } from "../services/writingVoice.js";
-import { listBannedTerms } from "../services/bannedTerms.js";
+import { listBannedTerms, addBannedTerm, removeBannedTerm } from "../services/bannedTerms.js";
 import { enforceBannedTerms, MAX_REGENERATION_ATTEMPTS } from "../services/ghostEditor.js";
 import { enforceNarration } from "../services/narrationEditor.js";
 import { getBookNarrationSetting } from "../services/narrationSetting.js";
@@ -738,6 +738,70 @@ export function registerWordArchitectTools(server: McpServer): void {
       if (error) return errorResult(`Failed to update codex entry: ${error.message}`);
       if (!data) return errorResult(`No codex entry found with id ${entryId}`);
       return textResult(JSON.stringify(data, null, 2));
+    }
+  );
+
+  server.registerTool(
+    "list_banned_terms",
+    {
+      title: "List Banned Terms",
+      description:
+        "Lists every word or phrase this writer has banned. Bans apply to ALL of the writer's books, not just one. Every generate_prose_direct call already enforces them automatically (the Ghost Editor rewrites any paragraph that contains one), so you never need to pass them to Hanami yourself.",
+      inputSchema: { userId: z.string().describe("The writer's user ID") },
+    },
+    async ({ userId }) => {
+      try {
+        const terms = await listBannedTerms(userId);
+        if (terms.length === 0) return textResult("This writer has no banned terms.");
+        return textResult(`${terms.length} banned term(s):\n${terms.map((t) => `- "${t.term}"`).join("\n")}`);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "ban_term",
+    {
+      title: "Ban a Term",
+      description:
+        "Bans a word or phrase for this writer, across ALL their books, from the next Hanami call on. Only call this when the writer has asked for the ban in this conversation, with the exact wording they want banned. Matching is case-insensitive and by substring, so banning \"delve\" also catches \"delved\" but not \"delving\": ban each form the writer wants gone. Banning a term that is already banned is a harmless no-op.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        bookId: z.string().describe("The book currently open (stored as provenance only; the ban covers every book)"),
+        term: z.string().describe("The exact word or phrase to ban"),
+      },
+    },
+    async ({ userId, bookId, term }) => {
+      try {
+        const { term: row, alreadyExisted } = await addBannedTerm({ userId, bookId, term });
+        return textResult(alreadyExisted ? `"${row.term}" was already banned. Nothing changed.` : `Banned "${row.term}" for this writer, across all their books.`);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "unban_term",
+    {
+      title: "Unban a Term",
+      description: "Removes a word or phrase from this writer's banned list. Only call this when the writer has asked for it in this conversation. Matches the term case-insensitively.",
+      inputSchema: {
+        userId: z.string().describe("The writer's user ID"),
+        term: z.string().describe("The banned word or phrase to remove, as listed by list_banned_terms"),
+      },
+    },
+    async ({ userId, term }) => {
+      try {
+        const wanted = term.trim().toLowerCase();
+        const match = (await listBannedTerms(userId)).find((t) => t.term.toLowerCase() === wanted);
+        if (!match) return errorResult(`"${term}" is not on this writer's banned list. Call list_banned_terms to see the exact entries.`);
+        await removeBannedTerm(match.id);
+        return textResult(`Removed "${match.term}" from the banned list.`);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
   );
 

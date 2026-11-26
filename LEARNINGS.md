@@ -282,3 +282,28 @@ it executes (the backend calling an API, or a subagent in the writer's own
 Claude session) and whose account pays, before building the call path.
 "Backend" in this project can mean "the backend enforces it" without meaning
 "the backend runs it".
+
+## 2026-11-26 — The Ghost Editor removes banned terms reliably but rewrites far more than the term
+
+Tested live against Hanami with the real `enforceBannedTerms` (paragraph-level
+regeneration) on five paragraphs, using the writer's two real banned phrases plus
+a test-only list of likely substitutes. It resolved all five, including a case
+that needed 3 attempts because the first rewrites landed on other banned
+phrases, so the retry loop works. But one banned phrase in a 100-word paragraph
+got the WHOLE paragraph rewritten: two named characters (Fenris, Mina) dropped
+out, a dash (house-banned) and a stock line ("The air hung heavy with unspoken
+tension") came in. Another case turned two sentences into 70 words of invented
+content. "resolved: true" only means the banned string is gone; it says nothing
+about what else changed.
+
+Also tested the narrower alternatives. Sentence-level rewrite (only the sentence
+holding the term, re-checked against the full list, landed-on terms added to the
+avoid list) resolved everything in 1-2 calls and left the rest of the paragraph
+byte-for-byte, though the rewritten sentence could still pick up an invented
+detail. Asking Hanami for replacement words for ONLY the banned span and splicing
+them in broke grammar every time ("to look look at", "stepped forward. step
+forward"): Hanami doesn't respect span boundaries.
+
+**Rule:** judge a corrective rewrite loop by what it changed outside the target,
+not only by whether the target is gone; diff it. And the smallest unit Hanami
+can safely rewrite is a sentence, not a word or phrase.
