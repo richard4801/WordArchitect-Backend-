@@ -54,6 +54,11 @@ await test("guard: a rewrite that drops or adds a name, adds a dash, or adds sto
   assert.match(guardProblems("When nobody spoke I made myself step forward.", "When Samuel spoke I stepped forward.").join(" "), /added the name/);
   assert.match(guardProblems("I made myself step forward.", "I stepped forward — slowly.").join(" "), /dash/);
   assert.match(guardProblems("I made myself step forward.", "I took a deep breath and stepped forward.").join(" "), /stock phrasing/);
+  assert.match(guardProblems("I couldn't look away from that knife.", "The knife drew me in like a moth to flame.").join(" "), /comparison/);
+  // Live-test false positives (26 Nov): ALL CAPS emphasis and sentence-opening verb forms are not names.
+  assert.deepEqual(guardProblems("I MADE MYSELF count the strokes.", "I counted the strokes."), []);
+  assert.deepEqual(guardProblems("I took a deep breath, trying to steady my pulse.", "Trying to steady my pulse, I breathed in."), []);
+  assert.deepEqual(guardProblems("I swallowed hard, unable to find a lie that sounded convincing.", "Unable to find a lie that sounded convincing, I stayed quiet."), []);
   const primary = scripted(["When Samuel spoke I stepped forward into the light.", "When nobody spoke I stepped forward into the light."]);
   const r = await enforceBannedTerms({ text: PARA, bannedTerms: BANS, systemPrompt: "", primary, fallback: null });
   assert.equal(r.corrections[0]!.spots![0]!.attempts, 2);

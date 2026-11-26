@@ -123,9 +123,12 @@ function properNames(sentence: string): Set<string> {
   const names = new Set<string>();
   words.forEach((w, i) => {
     if (!/^\p{Lu}/u.test(w) || w === "I" || /^I['’]/.test(w)) return;
+    // ALL-CAPS words are emphasis ("I MADE MYSELF"), not names.
+    if (w.length > 1 && w === w.toUpperCase()) return;
     const bare = w.replace(/['’]s$/, "");
-    // A sentence-initial capital is only a name if it isn't a common opener.
-    if (i === 0 && COMMON_OPENERS.has(bare.toLowerCase())) return;
+    // A sentence-initial capital is only a name if it isn't a common opener
+    // or an obvious verb/adverb form ("Counting", "Trying", "Slowly").
+    if (i === 0 && (COMMON_OPENERS.has(bare.toLowerCase()) || /(ing|ed|ly)$/.test(bare))) return;
     names.add(bare);
   });
   return names;
@@ -142,8 +145,13 @@ export function guardProblems(original: string, rewrite: string): string[] {
   if (!rewrite.trim()) return ["the rewrite was empty"];
   const before = properNames(original);
   const after = properNames(rewrite);
-  const lost = [...before].filter((n) => !after.has(n) && !rewrite.includes(n));
-  const added = [...after].filter((n) => !before.has(n) && !original.includes(n));
+  // Compared case-insensitively against the other sentence's words, so a
+  // word that merely moved to the start of the sentence ("unable" →
+  // "Unable") is not mistaken for a new name.
+  const lowerOriginal = original.toLowerCase();
+  const lowerRewrite = rewrite.toLowerCase();
+  const lost = [...before].filter((n) => !after.has(n) && !lowerRewrite.includes(n.toLowerCase()));
+  const added = [...after].filter((n) => !before.has(n) && !lowerOriginal.includes(n.toLowerCase()));
   if (lost.length) problems.push(`it dropped the name(s) ${lost.join(", ")}`);
   if (added.length) problems.push(`it added the name(s) ${added.join(", ")}, which are not in the original`);
   if (DASH.test(rewrite) && !DASH.test(original)) problems.push("it added a dash (the house style allows none)");
@@ -151,6 +159,8 @@ export function guardProblems(original: string, rewrite: string): string[] {
   const rw = wordCount(rewrite);
   if (rw > Math.max(ow * 1.6, ow + 8)) problems.push(`it is much longer than the original (${rw} words vs ${ow})`);
   if (rw < Math.min(ow * 0.4, ow - 6)) problems.push(`it is much shorter than the original (${rw} words vs ${ow})`);
+  const COMPARISON = /\b(like an?|like the|as if|as though)\b/i;
+  if (COMPARISON.test(rewrite) && !COMPARISON.test(original)) problems.push("it added a comparison (like / as if), and new figures of speech are not allowed in a fix");
   const stockBefore = new Set(scanForSlop(original).hits.map((h) => h.id));
   const stockAdded = scanForSlop(rewrite).hits.filter((h) => !stockBefore.has(h.id));
   if (stockAdded.length) problems.push(`it added stock phrasing (${stockAdded.map((h) => h.label).join(", ")})`);
