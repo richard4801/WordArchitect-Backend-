@@ -21,7 +21,7 @@ import {
   finishSceneDraftSession,
 } from "../services/sceneDraftSessions.js";
 import { diffDrafts } from "../lib/textDiff.js";
-import { runSkillReview, getSkillReview, checkReviewForAcceptance, describeReview, SkillReviewGateError } from "../services/skillReview.js";
+import { requestReviews, getReviewBrief, submitReviewVerdict, getSkillReview, checkReviewForAcceptance, describeReview, SkillReviewGateError } from "../services/skillReview.js";
 import { scanForSlop, formatSlopScanNote } from "../skills/antiSlopScan.js";
 import { listCodexEntries, getCodexEntry, searchManuscript, getManuscriptChapterText } from "../services/bookContextTools.js";
 import { KNOWN_CODEX_ENTRY_TYPES, VALID_NOTE_CATEGORIES } from "../types/domain.js";
@@ -800,7 +800,7 @@ export function registerWordArchitectTools(server: McpServer): void {
         }
         // Skill 07's free deterministic half runs on every draft: a regex scan,
         // not a verdict. The real anti-slop review (and every other skill) runs
-        // in run_skill_review, which save_manuscript_scene requires.
+        // through request_reviews, which save_manuscript_scene requires.
         const slopNoteFor = (text: string) => formatSlopScanNote(scanForSlop(text));
         const withNarrationNote = (text: string) => {
           const notes = [narrationNote, slopNoteFor(text)].filter(Boolean);
@@ -990,11 +990,11 @@ export function registerWordArchitectTools(server: McpServer): void {
   );
 
   server.registerTool(
-    "run_skill_review",
+    "request_reviews",
     {
-      title: "Run Skill Review",
+      title: "Request Skill Reviews",
       description:
-        "Runs the backend's independent skill reviewers on a piece of text and stores the verdict. Each skill is a separate reviewer agent with its own rubric (e.g. anti-slop: formula and machine-made writing) — not you, and not the session that drafted the text, so its verdict is an outside read, not self-assessment. You supply only the text and where it sits; the backend fetches the context each reviewer sees (Codex entries named in the text, the end of the previous chapter, the chapter's planned beats, the narration setting). Returns reviewId plus, per skill: passed / needs_revision / failed, the criteria it checked with short evidence quotes, MUST FIX items, or reviewer_error when a reviewer refused or returned an unusable verdict (that is NOT a pass). save_manuscript_scene requires a reviewId for the exact text being saved, so run this on the final text, after your last edit. Show the writer any MUST FIX items before saving. Costs real money (roughly $0.10–0.20 per applicable skill on a chapter, capped at $1.00 per review): review final candidates, not every intermediate Hanami pass.",
+        "Starts the independent reviews of a piece of text and returns one launch prompt per applicable reviewer skill. Reviews are NOT run by you: for each launch prompt, spawn a SEPARATE subagent (Opus) with that prompt verbatim. Each subagent fetches its own brief from the backend (get_review_brief), judges the text, and submits its own verdict (submit_review_verdict); you never see or edit the brief, and you must never write or submit a verdict yourself — the work must not grade itself. The backend builds the context each reviewer gets (Codex entries named in the text, the end of the previous chapter, this chapter's planned beats, the author's pinned notes, the narration setting); you supply only the text and where it sits. save_manuscript_scene requires the returned reviewId, refuses while any review is still pending, and checks that the saved text is exactly the reviewed text. Run this on the final text after your last edit. Show the author every FLAG before saving.",
       inputSchema: {
         userId: z.string().describe("The writer's user ID"),
         bookId: z.string().describe("The book's ID"),
@@ -1002,13 +1002,13 @@ export function registerWordArchitectTools(server: McpServer): void {
         targetType: z
           .enum(["prose_fragment", "prose_scene", "prose_chapter"])
           .describe("prose_fragment: a paragraph or a few; prose_scene: one scene; prose_chapter: a whole chapter"),
-        chapterNumber: z.number().int().optional().describe("Chapter this text belongs to — strongly recommended: it is how the reviewer gets the previous chapter's ending and this chapter's beats"),
+        chapterNumber: z.number().int().optional().describe("Chapter this text belongs to — strongly recommended: it is how reviewers get the previous chapter's ending and this chapter's beats"),
         sceneDraftSessionId: z.string().optional().describe("The scene draft session this text came from, if any (for the record)"),
       },
     },
     async ({ userId, bookId, text, targetType, chapterNumber, sceneDraftSessionId }) => {
       try {
-        const review = await runSkillReview({
+        const { review, items, launches } = await requestReviews({
           userId,
           bookId,
           text,
@@ -1016,13 +1016,58 @@ export function registerWordArchitectTools(server: McpServer): void {
           chapterNumber: chapterNumber ?? null,
           sceneDraftSessionId: sceneDraftSessionId ?? null,
         });
-        const header =
-          review.overall_status === "passed"
-            ? "PASSED — you can save this exact text with save_manuscript_scene, passing this reviewId as skillReviewId."
-            : review.overall_status === "incomplete"
-              ? "INCOMPLETE — at least one reviewer could not deliver a verdict (see below). This is not a pass. Tell the writer; saving needs writerOverride."
-              : "NEEDS REVISION — show the MUST FIX items to the writer. Revise and review again, or save only with the writer's own reason in writerOverride.";
-        return textResult(`reviewId: ${review.id}\n${header}\n\n${describeReview(review)}\n\nFull verdict JSON:\n${JSON.stringify(review.results, null, 2)}`);
+        const skipped = items.filter((i) => i.status === "not_applicable").map((i) => `${i.brief.title} (${i.reason})`);
+        const body = [
+          `reviewId: ${review.id}`,
+          `${launches.length} reviewer(s) to launch. Spawn ONE separate subagent per prompt below, passing the prompt verbatim; run them in parallel. Do not review the text yourself and do not submit verdicts yourself.`,
+          ...launches.map((l, n) => `\n--- Reviewer ${n + 1}: ${l.title} (briefId ${l.briefId}) ---\n${l.prompt}`),
+          skipped.length ? `\nNot applicable here: ${skipped.join("; ")}.` : "",
+          `\nWhen every subagent has replied, call get_skill_review with reviewId ${review.id} and show the author the verdicts. Then save_manuscript_scene with skillReviewId ${review.id}.`,
+        ];
+        return textResult(body.filter(Boolean).join("\n"));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_review_brief",
+    {
+      title: "Get Review Brief",
+      description:
+        "For a REVIEWER SUBAGENT only: fetches your brief (rubric, criteria, the backend-built context, the exact text, and how to submit) by the briefId in your launch prompt. A drafting session should never call this — reviewing your own draft defeats the review.",
+      inputSchema: { briefId: z.string().describe("The briefId from your launch prompt") },
+    },
+    async ({ briefId }) => {
+      try {
+        return textResult(await getReviewBrief(briefId));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err));
+      }
+    }
+  );
+
+  server.registerTool(
+    "submit_review_verdict",
+    {
+      title: "Submit Review Verdict",
+      description:
+        "For a REVIEWER SUBAGENT only: submits your verdict for a brief. The backend checks that every criterion is answered and that every evidence quote appears verbatim in the reviewed text; if not, it tells you what to fix and you submit again (3 attempts). An accepted verdict is final and can't be replaced. If you decline to review, submit {\"refused\": true, \"reason\": \"...\"} — never stay silent, since an unsubmitted review blocks the save. A drafting session must never call this.",
+      inputSchema: {
+        briefId: z.string().describe("The briefId from your launch prompt"),
+        verdict: z.string().describe("Your verdict as a JSON string, in the shape your brief specifies"),
+        reviewerModel: z.string().optional().describe("The model you are running on, e.g. 'Opus 5.5'"),
+      },
+    },
+    async ({ briefId, verdict, reviewerModel }) => {
+      try {
+        const out = await submitReviewVerdict({ briefId, verdict, reviewerModel: reviewerModel ?? null });
+        if (!out.accepted) {
+          return errorResult(`Verdict NOT accepted (${out.attemptsLeft} attempt(s) left). Fix these and submit again:\n- ${(out.errors ?? []).join("\n- ")}`);
+        }
+        const note = out.errors?.length ? ` Recorded as reviewer_error after too many invalid submissions: ${out.errors.slice(0, 2).join(" ")}` : "";
+        return textResult(`Verdict recorded: ${out.item.status}. Overall review status now: ${out.overall}.${note}`);
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -1033,13 +1078,14 @@ export function registerWordArchitectTools(server: McpServer): void {
     "get_skill_review",
     {
       title: "Get Skill Review",
-      description: "Fetches one stored skill review by id: overall status, each skill's verdict, criteria, evidence and MUST FIX items, cost, and any writer override recorded against it.",
-      inputSchema: { reviewId: z.string().describe("The skill review id") },
+      description:
+        "Fetches one review by id: overall status (pending / passed / flagged / blocked / incomplete), each reviewer's status, its BLOCK and FLAG findings with exact quotes and fix shapes, which model ran it, and any author override. Show the author every FLAG and BLOCK.",
+      inputSchema: { reviewId: z.string().describe("The review id from request_reviews") },
     },
     async ({ reviewId }) => {
       try {
-        const review = await getSkillReview(reviewId);
-        return textResult(`${describeReview(review)}\n\n${JSON.stringify(review, null, 2)}`);
+        const { review, items } = await getSkillReview(reviewId);
+        return textResult(`${describeReview(review, items)}\n\n${JSON.stringify(items.map((i) => ({ skill: i.skill, status: i.status, reason: i.reason, reviewerModel: i.reviewer_model, verdict: i.verdict })), null, 2)}`);
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }
@@ -1051,7 +1097,7 @@ export function registerWordArchitectTools(server: McpServer): void {
     {
       title: "Save Manuscript Scene",
       description:
-        "Saves accepted prose into permanent manuscript memory (chunked and embedded), so future generations — automatic or Claude-assisted — can recall it, AND appends it to that chapter's content in the rich-text editor (manuscript_chapters) so the writer can see and edit it there too — creating the chapter row if it doesn't exist yet. Appends rather than replaces if the chapter already has editor content, so this never overwrites anything the writer was editing themselves. Call this once the writer has accepted a generated or hand-written scene. skillReviewId is REQUIRED: run run_skill_review on the exact rawText first. The save is refused if the review is missing, belongs to another book, or was run on different text (content hash), and it is refused if the review did not pass unless writerOverride carries the writer's own reason for keeping it anyway (stored and shown to the writer). Never invent an override the writer didn't give.",
+        "Saves accepted prose into permanent manuscript memory (chunked and embedded), so future generations — automatic or Claude-assisted — can recall it, AND appends it to that chapter's content in the rich-text editor (manuscript_chapters) so the writer can see and edit it there too — creating the chapter row if it doesn't exist yet. Appends rather than replaces if the chapter already has editor content, so this never overwrites anything the writer was editing themselves. Call this once the writer has accepted a generated or hand-written scene. skillReviewId is REQUIRED: the reviewId from request_reviews on the exact rawText, after every reviewer subagent has submitted. The save is refused while any review is pending, if the review belongs to another book, or if it was run on different text (content hash). FLAGs never block (show them to the author). A BLOCK, or a review a reviewer couldn't complete, refuses the save unless writerOverride carries the author's own reason (stored and shown to the author). Never invent an override the author didn't give.",
       inputSchema: {
         userId: z.string().describe("The user's ID"),
         bookId: z.string().describe("The book's ID"),
@@ -1060,13 +1106,13 @@ export function registerWordArchitectTools(server: McpServer): void {
         skillReviewId: z
           .string()
           .describe(
-            "Required. The reviewId returned by run_skill_review for this exact rawText. Required (not optional) because an optional gate is a silent-failure trap (LEARNINGS 2026-10-20)."
+            "Required. The reviewId returned by request_reviews for this exact rawText. Required (not optional) because an optional gate is a silent-failure trap (LEARNINGS 2026-10-20)."
           ),
         writerOverride: z
           .string()
           .optional()
           .describe(
-            "Only when the review did not pass AND the writer has decided to keep the text anyway: the writer's reason, in their words. Stored on the review and shown back to them."
+            "Only when the review is BLOCKED or incomplete AND the author has decided to keep the text anyway: the author's reason, in their words. Stored on the review and shown back to them."
           ),
         chapterTitle: z
           .string()

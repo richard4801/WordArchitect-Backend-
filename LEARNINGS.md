@@ -264,3 +264,21 @@ Related, practical: production's read-only GET endpoints
 are reachable from a cloud session with plain `curl`, which is the easy way to
 pull real chapter text into scratch files for offline testing. MCP connector
 results are not saved to disk, so retyping them is the only other route.
+
+## 2026-11-26 — "Each skill runs its own agent" meant a subagent in the writer's chat, not a backend API call
+
+Asked to build eight "skills" in the backend where "each skill runs its own
+agent", I built reviewers that the backend runs itself, on the backend's
+Anthropic key (`anthropicReviewerCaller` in `skillReview.ts`), and shipped
+the anti-slop slice that way. The writer then said the reviewers "won't run on
+Claude API. They run in chat... run by subagents in chat", the same way the
+Claude-side gatekeeper already worked. The backend's job is to own the skill
+definitions, build the brief, and check and record the verdict, not to run
+the model. The verdict checking, storage and save gate survived the change;
+the execution path did not.
+
+**Rule:** when a request says an "agent" or "skill" does some work, ask where
+it executes (the backend calling an API, or a subagent in the writer's own
+Claude session) and whose account pays, before building the call path.
+"Backend" in this project can mean "the backend enforces it" without meaning
+"the backend runs it".

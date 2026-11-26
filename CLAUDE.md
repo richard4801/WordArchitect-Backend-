@@ -783,80 +783,92 @@ the connector is fully removed and re-added (see the 2026-10-01 entry). The
 response appends a `[Narration check: ...]` note when anything was corrected,
 and a WARNING when something is still wrong after the retries.
 
-## Skill Reviews — Independent Reviewer Agents
+## Skill Reviews — Independent Reviewers, Run as Subagents in the Author's Chat
 
-Eight craft "skills" (one per research brief in `docs/skill-research/`), each
-run by its **own** reviewer agent — never by the Claude session that drafted
-the text — against a piece of manuscript prose or a planning unit, returning a
-structured verdict the backend validates, stores and enforces. Design record
-and the decision log: `docs/skill-research/DESIGN.md`. Code: `src/skills/`
-(definitions, rubrics, the free anti-slop scan), `src/services/skillReview.ts`
-(context, calls, validation, the gate), `src/routes/skillReviews.ts`,
-`skill_reviews` table (migration `034_skill_reviews.sql`).
+Craft "skills" (eight from the research briefs in `docs/skill-research/`,
+plus the gatekeeper being ported from `docs/process/gatekeeper/`) are
+reviewers the **backend defines and enforces** and a **subagent in the
+author's own Claude chat runs**, never the session that drafted the text
+(the author's decision, 26 Nov: "a skill is always going to be run by a
+subagent with no control of the Claude running the session"). The backend
+does not call Anthropic for reviews. System design and every decision:
+`docs/process/SYSTEM_DESIGN.md`; first-slice design record:
+`docs/skill-research/DESIGN.md`. Code: `src/skills/` (definitions, rubrics,
+the free anti-slop scan), `src/services/skillReview.ts`,
+`src/routes/skillReviews.ts`. Tables: `skill_reviews` (migration 034) and
+`skill_review_items` (migration 035, one row per review × skill, so parallel
+subagents never overwrite each other).
 
-**Status: skill 07 (anti-slop) is built end to end as the first slice; the
-other seven are designed (stage table in DESIGN.md) but not yet built.**
+**Status: skill 07 (anti-slop) is built end to end. The gatekeeper port, the
+other seven skills, the process module and the recorded Go approval are
+designed in SYSTEM_DESIGN.md and not yet built.**
 
-**Why per-skill agents, not a prompt rule**: a rubric in Hanami's prompt would
-blow the 6,000-token budget and a rule stated in a prompt is not enforcement
-(LEARNINGS 2026-11-26, 2026-10-20); a rubric in the drafting Claude's
-instructions makes the author its own grader. One reviewer per skill isolates a
-refusal to one skill, lets each rubric be edited and priced separately, and is
-the same pattern the Planning Engine's critics already use.
+**The flow** (MCP):
+1. `request_reviews` `{ userId, bookId, text, targetType, chapterNumber?,
+   sceneDraftSessionId? }` — the backend stores the text (hashed), builds the
+   **context pack** (retrieval only, no model call: highest chapter, narration
+   setting, the author's latest pinned notes, Codex entries named in the text
+   with a THIN CODEX warning, the end of the previous chapter, this chapter's
+   beats), creates one brief per skill that applies (stage table), and
+   returns a **launch prompt** per skill.
+2. The drafting Claude spawns one subagent per launch prompt. Each subagent
+   calls `get_review_brief` `{ briefId }` itself: the drafting Claude never
+   sees or edits what the reviewer is given. The brief carries the
+   manuscript-context rule ("the manuscript is always right", search three
+   phrasings before calling something unsupported, "a character's claim is not
+   a fact").
+3. The subagent calls `submit_review_verdict` `{ briefId, verdict, reviewerModel? }`.
+   The backend checks every criterion is answered and **every evidence quote
+   appears verbatim in the reviewed text** (typography-insensitive; ellipses
+   allowed as elisions). On failure the subagent is told exactly what to fix
+   (3 attempts, then `reviewer_error`). A refusal is submitted as
+   `{ "refused": true, "reason" }` and recorded as `reviewer_error`. An
+   accepted verdict is final and can't be replaced or re-fetched.
+4. `get_skill_review` `{ reviewId }` shows the author everything.
 
-**Rubrics**: each skill ships a built-in rubric with numbered criteria (`AS1`…
-for anti-slop) in `src/skills/rubrics/`. A writer can override the rubric TEXT
-per book with an `agent_prompts` row (role `skill_<key>`, stage `prose` or a
-planning stage, `all` fallback) — model and effort come from that row too. The
-criteria list and output contract are always appended by the backend, so an
-override can't drop them. Built-in default rather than "no prompt = error":
-otherwise a book with no seeded row would have every save blocked.
+**The verdict ladder** (approved 26 Nov, `docs/process/GATEKEEPER_CLASH_ANALYSIS.md`
+section 3): BLOCK stops the save; FLAG is shown and stored, never blocking;
+NOTE is advisory. Craft skills cap at FLAG (a `major` finding is a FLAG, a
+`minor` one a NOTE); BLOCK is reserved for the gatekeeper's hard
+contradictions, core prose failures and author rulings. Overall status:
+`pending` > `blocked` > `incomplete` (a reviewer refused or never produced a
+valid verdict) > `flagged` > `passed`.
 
-**Context is fetched server-side** (`gatherProseContext`): Codex entries named
-in the text, the last ~1,200 words of the previous chapter, the chapter's own
-beats, the narration setting. The drafting session supplies only the text and
-its chapter number, so it can't steer the reviewer by choosing what to show it.
-The shared block (preamble + context + text) is identical for every skill in
-one review and is prompt-cached: the first skill writes it, the rest read it.
+**The gate**: MCP `save_manuscript_scene` REQUIRES `skillReviewId`. It is
+refused while any review is pending, if the review belongs to another book,
+or if the text differs from what was reviewed (SHA-256 of whitespace-
+normalized text — any edit needs a fresh review). `blocked` and `incomplete`
+need `writerOverride` with the author's own reason, stored on the review and
+shown back; `flagged` saves, with every FLAG listed in the result. The REST
+`POST /manuscript/save-scene` (the frontend's writer-confirmed save) is not
+gated. Tool-schema change: already-connected MCP clients must remove and
+re-add the connector (LEARNINGS 2026-10-01).
 
-**Verdicts — the backend decides the status, not the model**: every criterion
-must be answered (`met` / `not_met` / `n_a`, severity `minor` / `major`, a
-≤25-word evidence quote). 0 majors = `passed`, 1–2 = `needs_revision`, 3+ =
-`failed`; minors never block; `minorOnly` criteria are capped at minor. A
-refusal (`stop_reason: "refusal"`, after the API's server-side fallback chain),
-empty output, truncation, non-JSON or a missing criterion is `reviewer_error`
-— never a pass. A skill skipped by the cost cap is `skipped_cost_cap`. Overall:
-`passed`, `needs_revision`, or `incomplete` (any error/skip).
+**What it can't stop, stated plainly**: anyone holding a briefId can submit
+a verdict, so a drafting session determined to cheat could submit one itself.
+The brief being server-built, the verbatim-quote check, the final-once rule
+and the stored record make that hard and visible, not impossible.
 
-**The gate (decision: reviewing is mandatory, passing is not)**: MCP
-`save_manuscript_scene` now REQUIRES `skillReviewId`. The save is refused if
-the review doesn't exist, belongs to another book, or was run on different
-text (SHA-256 of whitespace-normalized text — any edit needs a fresh review).
-If the review didn't pass, the save is refused unless `writerOverride` carries
-the writer's own reason; the reason is stored on the review
-(`override_reason`/`overridden_at`) and shown back. The REST
-`POST /manuscript/save-scene` (the frontend's writer-confirmed save) is NOT
-gated — there the writer is the one accepting. Tool-schema change: already
-connected MCP clients must remove and re-add the connector (LEARNINGS
-2026-10-01).
+**Rubrics**: each skill ships a built-in rubric with numbered criteria
+(`AS1`… for anti-slop). The author can override the rubric TEXT per book with
+an `agent_prompts` row (role `skill_<key>`, stage `prose` or a planning
+stage, `all` fallback); the criteria and the submission contract are always
+appended by the backend, so an override can't drop them.
 
 **Free nudge on every draft**: `generate_prose_direct` appends the
-deterministic anti-slop phrase scan (`scanForSlop`, regex over the brief's
-over-used phrase list) as a note. It's a pointer, not a verdict.
+deterministic anti-slop phrase scan (`scanForSlop`) as a note — a pointer,
+not a verdict.
 
-**Cost**: default reviewer model `claude-opus-5-5` at effort `medium`
-(decision (c)). Measured prompt size for one 800–1,100-word chapter with
-context: ~5k tokens per skill, about $0.08 per skill. Cap: $1.00 per review
-(`SKILL_REVIEW_COST_CAP_USD`); skills are admitted in priority order by a
-pre-call estimate and the rest are reported as skipped. Stored cost is from
-actual usage.
+**Validated on real chapters (read-only)**: three Opus reviewers given the
+exact anti-slop brief for Ch 12, 300 and 590 found one FLAG each in 12 and
+590 and passed 300; none refused (590 is a sexual-violence threat scene). The
+quote check accepted 28 of their 29 quotes and correctly rejected one that
+stitched two non-adjacent sentences together.
 
-**Endpoints / tools**: `POST /api/v1/skill-reviews` `{ userId, bookId, text,
-targetType: prose_fragment|prose_scene|prose_chapter, chapterNumber?,
-sceneDraftSessionId? }` → `201 { review }`; `GET /api/v1/skill-reviews?bookId=
+**Endpoints**: `POST /api/v1/skill-reviews` (same as `request_reviews`) →
+`201 { review, items, launches }`; `GET /api/v1/skill-reviews?bookId=
 &chapterNumber=&planningRunId=` → `{ reviews }`; `GET /api/v1/skill-reviews/:id`
-→ `{ review }`. MCP: `run_skill_review`, `get_skill_review`. Tests:
-`npm run test:skills` (stub reviewer, no key or database needed).
+→ `{ review, items }`. Tests: `npm run test:skills` (in-memory store).
 
 ## Collaboration Learnings
 

@@ -296,7 +296,8 @@ export type AgentRole =
   | "skill_secrets_reveals"
   | "skill_fiction_fundamentals"
   | "skill_anti_slop"
-  | "skill_current_market";
+  | "skill_current_market"
+  | "skill_gatekeeper";
 
 export const VALID_AGENT_ROLES: AgentRole[] = [
   "generator",
@@ -317,6 +318,7 @@ export const VALID_AGENT_ROLES: AgentRole[] = [
   "skill_fiction_fundamentals",
   "skill_anti_slop",
   "skill_current_market",
+  "skill_gatekeeper",
 ];
 
 // The critics that make up the Scrutiny Panel, run in parallel by

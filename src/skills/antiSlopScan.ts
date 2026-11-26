@@ -107,5 +107,5 @@ export function formatSlopScanNote(scan: SlopScanResult): string {
     .slice(0, 8)
     .map((h) => `${h.label} ×${h.count}`)
     .join("; ");
-  return `[Anti-slop phrase scan (free, regex, not a verdict): ${scan.totalHits} hit(s) — ${list}. Each marks a place where a specific detail may be missing. The full anti-slop review runs in run_skill_review before this text can be saved.]`;
+  return `[Anti-slop phrase scan (free, regex, not a verdict): ${scan.totalHits} hit(s) — ${list}. Each marks a place where a specific detail may be missing. The full reviews run through request_reviews before this text can be saved.]`;
 }

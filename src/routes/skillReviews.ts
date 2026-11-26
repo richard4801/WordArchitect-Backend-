@@ -1,14 +1,17 @@
 import { Router, type Request, type Response } from "express";
-import { runSkillReview, getSkillReview, listSkillReviews } from "../services/skillReview.js";
+import { requestReviews, getSkillReview, listSkillReviews } from "../services/skillReview.js";
 import type { ReviewTargetType } from "../skills/types.js";
 
-// Skill reviews over HTTP — the same runSkillReview the MCP run_skill_review
-// tool calls. See CLAUDE.md "Skill Reviews".
+// Skill reviews over HTTP — the same functions the MCP request_reviews and
+// get_skill_review tools call. The reviews themselves are run by subagents in
+// the author's chat (get_review_brief / submit_review_verdict over MCP), not
+// here. See CLAUDE.md "Skill Reviews".
 export const skillReviewsRouter = Router();
 
 const PROSE_TARGETS: ReviewTargetType[] = ["prose_fragment", "prose_scene", "prose_chapter"];
 
 // POST /api/v1/skill-reviews — { userId, bookId, text, targetType, chapterNumber?, sceneDraftSessionId? }
+// Creates the review and its briefs; returns the launch prompt for each reviewer.
 skillReviewsRouter.post("/skill-reviews", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const userId = typeof body.userId === "string" ? body.userId.trim() : "";
@@ -32,8 +35,8 @@ skillReviewsRouter.post("/skill-reviews", async (req: Request, res: Response) =>
   }
 
   try {
-    const review = await runSkillReview({ userId, bookId, text, targetType, chapterNumber, sceneDraftSessionId });
-    res.status(201).json({ review });
+    const { review, items, launches } = await requestReviews({ userId, bookId, text, targetType, chapterNumber, sceneDraftSessionId });
+    res.status(201).json({ review, items, launches });
   } catch (error) {
     console.error("skill review failed:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "Skill review failed." });
@@ -65,8 +68,8 @@ skillReviewsRouter.get("/skill-reviews", async (req: Request, res: Response) => 
 // GET /api/v1/skill-reviews/:id
 skillReviewsRouter.get("/skill-reviews/:id", async (req: Request, res: Response) => {
   try {
-    const review = await getSkillReview(String(req.params.id));
-    res.json({ review });
+    const { review, items } = await getSkillReview(String(req.params.id));
+    res.json({ review, items });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     res.status(message.startsWith("No skill review found") ? 404 : 502).json({ error: message });

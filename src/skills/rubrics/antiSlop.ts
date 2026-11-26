@@ -10,8 +10,8 @@ export const antiSlopSkill: SkillDefinition = {
   priority: 1,
   proseTargets: ["prose_fragment", "prose_scene", "prose_chapter"],
   planningStages: ["stage_1_summary", "act_summary", "part_outline", "part_beats", "codex_documentation", "hook_chapters_outline"],
-  defaultModel: "claude-opus-5-5",
-  defaultEffort: "medium",
+  maxLevel: "FLAG",
+  reviewerModel: "Opus 5.5",
   rubric: `Working definition: slop is what you get when every choice is the likeliest one — the likeliest word, image, next event, chapter ending. Any single likely choice is fine. A passage built mostly of them reads as if nobody made it, and paying readers of serial romance can tell and punish it. Your job is to find where the likeliest choice was taken in place of a specific one, and say what specific thing is missing.
 
 What specificity looks like: an object, a physical act, a line someone actually says, a detail only this world could produce. "He drops a hot paper bundle of meat pies in her lap. 'Eat.'" is specific. "A tender moment over food reveals his softer side, highlighting their evolving dynamic" is slop: no object, no act, no line, and analysis words where events should be.

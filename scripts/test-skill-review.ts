@@ -1,20 +1,22 @@
-// Offline tests for skill reviews: verdict validation, refusal/empty/partial
-// handling, cost cap, the acceptance gate, and the deterministic anti-slop
-// scan. Uses a stub reviewer — no API key, no database.
-// Run: npm run test:skills
+// Offline tests for skill reviews run by chat subagents: request → brief →
+// submit (criteria complete, quotes verbatim, ladder) → the save gate. Uses
+// an in-memory store: no API key, no database. Run: npm run test:skills
 import assert from "node:assert/strict";
 import {
-  runSkillReview,
-  validateReviewerOutput,
+  requestReviews,
+  getReviewBrief,
+  submitReviewVerdict,
+  validateSubmission,
   checkReviewForAcceptance,
-  hashReviewedText,
+  findMissingQuotePieces,
+  overallFromItems,
   SkillReviewGateError,
-  type ReviewerCaller,
-  type ReviewerResponse,
+  MAX_SUBMIT_ATTEMPTS,
+  type ReviewStore,
 } from "../src/services/skillReview.js";
 import { antiSlopSkill } from "../src/skills/rubrics/antiSlop.js";
 import { scanForSlop } from "../src/skills/antiSlopScan.js";
-import type { SkillReviewRow } from "../src/skills/types.js";
+import type { ReviewItemRow, SkillReviewRow } from "../src/skills/types.js";
 
 let passed = 0;
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -28,173 +30,199 @@ async function test(name: string, fn: () => Promise<void> | void) {
   }
 }
 
-const usage = { inputTokens: 9000, outputTokens: 3000, cacheReadTokens: 0, cacheWriteTokens: 0 };
-function verdict(overrides: Record<string, { result: string; severity: string }> = {}, drop: string[] = []): string {
-  return JSON.stringify({
+function memoryStore(): ReviewStore {
+  const reviews = new Map<string, SkillReviewRow>();
+  const items = new Map<string, ReviewItemRow>();
+  let n = 0;
+  return {
+    async insertReview(row) {
+      const r = { ...row, id: `rev-${++n}`, created_at: "", override_reason: null, overridden_at: null } as SkillReviewRow;
+      reviews.set(r.id, r);
+      return r;
+    },
+    async insertItems(rows) {
+      return rows.map((row) => {
+        const i = { verdict: null, reason: null, reviewer_model: null, submit_attempts: 0, submitted_at: null, ...row, id: `item-${++n}`, created_at: "" } as ReviewItemRow;
+        items.set(i.id, i);
+        return i;
+      });
+    },
+    async getReview(id) {
+      const r = reviews.get(id);
+      if (!r) throw new Error(`No skill review found with id ${id}.`);
+      return r;
+    },
+    async getItem(id) {
+      const i = items.get(id);
+      if (!i) throw new Error(`No review brief found with id ${id}.`);
+      return i;
+    },
+    async listItems(reviewId) {
+      return [...items.values()].filter((i) => i.review_id === reviewId);
+    },
+    async updateItem(id, patch) {
+      const i = { ...items.get(id)!, ...patch };
+      items.set(id, i);
+      return i;
+    },
+    async updateReview(id, patch) {
+      reviews.set(id, { ...reviews.get(id)!, ...patch });
+    },
+    async listReviews() {
+      return [...reviews.values()];
+    },
+  };
+}
+
+const TEXT =
+  "I set the pie on her knee and didn't take my hand back.\n\nShe ate it anyway, glaring at me over the crust, and when she was done she balled up the paper and shoved it at my chest.";
+const builtIn = async () => ({ rubric: antiSlopSkill.rubric, source: "built_in" as const });
+
+function verdict(over: Record<string, { result: string; severity: string; evidence?: string }> = {}, drop: string[] = []) {
+  return {
     criteria: antiSlopSkill.criteria
       .filter((c) => !drop.includes(c.id))
-      .map((c) => ({ id: c.id, result: overrides[c.id]?.result ?? "met", severity: overrides[c.id]?.severity ?? "none", evidence: "", note: `note ${c.id}` })),
-    mustFix: Object.entries(overrides)
+      .map((c) => ({ id: c.id, result: over[c.id]?.result ?? "met", severity: over[c.id]?.severity ?? "none", evidence: over[c.id]?.evidence ?? "", note: `note ${c.id}` })),
+    mustFix: Object.entries(over)
       .filter(([, v]) => v.severity === "major")
       .map(([id]) => ({ criterionId: id, problem: `problem ${id}`, fix: `fix ${id}` })),
     summary: "Two sentences.",
-  });
-}
-function resp(text: string, stopReason = "end_turn", extra: Partial<ReviewerResponse> = {}): ReviewerResponse {
-  return { text, stopReason, servedModel: "claude-opus-5-5", usage, ...extra };
+  };
 }
 
-const memory = new Map<string, SkillReviewRow>();
-const persist = async (row: Omit<SkillReviewRow, "id" | "created_at" | "override_reason" | "overridden_at">) => {
-  const full: SkillReviewRow = { ...row, id: `rev-${memory.size + 1}`, created_at: new Date().toISOString(), override_reason: null, overridden_at: null };
-  memory.set(full.id, full);
-  return full;
-};
-const builtIn = async () => ({ rubric: antiSlopSkill.rubric, model: "claude-opus-5-5", effort: "medium" as const, source: "built_in" as const });
-const TEXT = "I set the pie on her knee and didn't take my hand back.\n\nShe ate it anyway, glaring.";
+// --- validation -------------------------------------------------------------
 
-await test("all criteria met → passed", () => {
-  const v = validateReviewerOutput(antiSlopSkill, resp(verdict()));
-  assert.equal(v.status, "passed");
+await test("all met → passed", () => {
+  const r = validateSubmission(antiSlopSkill, verdict(), TEXT);
+  assert.ok(r.ok && r.status === "passed");
 });
-await test("one major → needs_revision, with its must-fix", () => {
-  const v = validateReviewerOutput(antiSlopSkill, resp(verdict({ AS2: { result: "not_met", severity: "major" } })));
-  assert.equal(v.status, "needs_revision");
-  assert.equal(v.mustFix?.length, 1);
+await test("a major from a craft skill is a FLAG, never a BLOCK (approved ladder)", () => {
+  const r = validateSubmission(antiSlopSkill, verdict({ AS4: { result: "not_met", severity: "major", evidence: "balled up the paper" } }), TEXT);
+  assert.ok(r.ok);
+  if (r.ok) {
+    assert.equal(r.status, "flagged");
+    assert.equal(r.verdict.findings[0]?.level, "FLAG");
+  }
 });
-await test("three majors → failed", () => {
-  const major = { result: "not_met", severity: "major" };
-  const v = validateReviewerOutput(antiSlopSkill, resp(verdict({ AS1: major, AS2: major, AS6: major })));
-  assert.equal(v.status, "failed");
+await test("minors become NOTEs and the item passes", () => {
+  const r = validateSubmission(antiSlopSkill, verdict({ AS1: { result: "not_met", severity: "minor" }, AS3: { result: "not_met", severity: "minor" } }), TEXT);
+  assert.ok(r.ok && r.status === "passed" && r.verdict.findings.every((f) => f.level === "NOTE"));
 });
-await test("minors never block", () => {
-  const minor = { result: "not_met", severity: "minor" };
-  const v = validateReviewerOutput(antiSlopSkill, resp(verdict({ AS1: minor, AS3: minor, AS4: minor, AS10: minor })));
-  assert.equal(v.status, "passed");
+await test("minorOnly criterion can't be raised to FLAG", () => {
+  const r = validateSubmission(antiSlopSkill, verdict({ AS11: { result: "not_met", severity: "major", evidence: "glaring at me" } }), TEXT);
+  assert.ok(r.ok && r.status === "passed");
 });
-await test("minorOnly criterion (AS11) is capped at minor", () => {
-  const v = validateReviewerOutput(antiSlopSkill, resp(verdict({ AS11: { result: "not_met", severity: "major" } })));
-  assert.equal(v.status, "passed");
-  assert.equal(v.criteria?.find((c) => c.id === "AS11")?.severity, "minor");
+await test("a quote not in the text is rejected", () => {
+  const r = validateSubmission(antiSlopSkill, verdict({ AS2: { result: "not_met", severity: "major", evidence: "his emerald eyes darkened" } }), TEXT);
+  assert.ok(!r.ok && /not found verbatim/.test(r.errors.join(" ")));
 });
-await test("major with no must-fix line gets one synthesized", () => {
-  const raw = JSON.parse(verdict({ AS5: { result: "not_met", severity: "major" } }));
-  raw.mustFix = [];
-  const v = validateReviewerOutput(antiSlopSkill, resp(JSON.stringify(raw)));
-  assert.equal(v.mustFix?.[0]?.criterionId, "AS5");
+await test("quotes match across curly quotes, case, whitespace and ellipsis elisions", () => {
+  assert.deepEqual(findMissingQuotePieces("I set the pie … didn’t take my hand", TEXT.replace("didn't", "didn’t")), []);
+  assert.deepEqual(findMissingQuotePieces("SHE ATE IT   anyway", TEXT), []);
 });
-await test("refusal → reviewer_error, never a pass", () => {
-  const v = validateReviewerOutput(antiSlopSkill, resp("", "refusal", { refusalCategory: "general_harms" }));
-  assert.equal(v.status, "reviewer_error");
-  assert.match(v.reason ?? "", /declined/);
+await test("a major with no quote is rejected", () => {
+  const r = validateSubmission(antiSlopSkill, verdict({ AS5: { result: "not_met", severity: "major" } }), TEXT);
+  assert.ok(!r.ok && /needs an exact quote/.test(r.errors.join(" ")));
 });
-await test("empty output → reviewer_error", () => {
-  assert.equal(validateReviewerOutput(antiSlopSkill, resp("")).status, "reviewer_error");
+await test("missing criteria are rejected, naming them", () => {
+  const r = validateSubmission(antiSlopSkill, verdict({}, ["AS7", "AS9"]), TEXT);
+  assert.ok(!r.ok && /AS7, AS9/.test(r.errors.join(" ")));
 });
-await test("truncated at max_tokens → reviewer_error", () => {
-  assert.equal(validateReviewerOutput(antiSlopSkill, resp(verdict(), "max_tokens")).status, "reviewer_error");
-});
-await test("prose instead of JSON → reviewer_error", () => {
-  assert.equal(validateReviewerOutput(antiSlopSkill, resp("This chapter is mostly fine.")).status, "reviewer_error");
-});
-await test("missing criteria → reviewer_error naming them", () => {
-  const v = validateReviewerOutput(antiSlopSkill, resp(verdict({}, ["AS7", "AS9"])));
-  assert.equal(v.status, "reviewer_error");
-  assert.match(v.reason ?? "", /AS7, AS9/);
-});
-await test("evidence is clamped to 25 words", () => {
-  const raw = JSON.parse(verdict());
-  raw.criteria[0].evidence = Array.from({ length: 60 }, (_, i) => `w${i}`).join(" ");
-  const v = validateReviewerOutput(antiSlopSkill, resp(JSON.stringify(raw)));
-  assert.ok((v.criteria?.[0]?.evidence.split(" ").length ?? 99) <= 26);
+await test("prose instead of JSON is rejected", () => {
+  assert.ok(!validateSubmission(antiSlopSkill, "Looks fine to me.", TEXT).ok);
 });
 
-await test("runSkillReview: stores hash, cost, overall passed", async () => {
-  const caller: ReviewerCaller = async () => resp(verdict());
-  const row = await runSkillReview(
+// --- the flow ---------------------------------------------------------------
+
+await test("request → launch prompts that tell the subagent to fetch its own brief", async () => {
+  const store = memoryStore();
+  const { review, launches } = await requestReviews(
     { bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene", chapterNumber: 3 },
-    { caller, persist, contextOverride: null, resolvePrompt: builtIn }
+    { store, pack: null, resolveRubric: builtIn }
   );
-  assert.equal(row.overall_status, "passed");
-  assert.equal(row.text_hash, hashReviewedText(TEXT));
-  assert.ok(row.cost_usd > 0);
-  const slop = row.results.find((r) => r.skill === "anti_slop");
-  assert.ok(slop?.deterministicHits);
-});
-await test("runSkillReview: a thrown API error becomes reviewer_error → incomplete", async () => {
-  const caller: ReviewerCaller = async () => {
-    throw new Error("529 overloaded");
-  };
-  const row = await runSkillReview(
-    { bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" },
-    { caller, persist, contextOverride: null, resolvePrompt: builtIn }
-  );
-  assert.equal(row.overall_status, "incomplete");
-  assert.match(row.results[0]?.reason ?? "", /529/);
-});
-await test("runSkillReview: cost cap skips and marks incomplete", async () => {
-  process.env.SKILL_REVIEW_COST_CAP_USD = "0.0001";
-  let called = false;
-  const caller: ReviewerCaller = async () => {
-    called = true;
-    return resp(verdict());
-  };
-  const row = await runSkillReview(
-    { bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" },
-    { caller, persist, contextOverride: null, resolvePrompt: builtIn }
-  );
-  delete process.env.SKILL_REVIEW_COST_CAP_USD;
-  assert.equal(called, false);
-  assert.equal(row.results[0]?.status, "skipped_cost_cap");
-  assert.equal(row.overall_status, "incomplete");
+  assert.equal(review.overall_status, "pending");
+  assert.equal(launches.length, 1);
+  assert.match(launches[0]!.prompt, new RegExp(`get_review_brief with briefId "${launches[0]!.briefId}"`));
+  const brief = await getReviewBrief(launches[0]!.briefId, { store });
+  assert.match(brief, /TEXT UNDER REVIEW/);
+  assert.match(brief, /I set the pie on her knee/);
+  assert.match(brief, /submit_review_verdict/);
 });
 
-const load = async (id: string) => {
-  const r = memory.get(id);
-  if (!r) throw new Error(`No skill review found with id ${id}.`);
-  return r;
-};
-const overrides: string[] = [];
-const recordOverride = async (_id: string, reason: string) => {
-  overrides.push(reason);
-};
+await test("full flow: pending blocks save → submit → flagged saves with FLAGs listed", async () => {
+  const store = memoryStore();
+  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  await assert.rejects(
+    checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: review.id }, { store }),
+    (e: unknown) => e instanceof SkillReviewGateError && /no verdict yet/.test((e as Error).message)
+  );
+  const out = await submitReviewVerdict(
+    { briefId: launches[0]!.briefId, verdict: JSON.stringify(verdict({ AS10: { result: "not_met", severity: "major", evidence: "shoved it at my chest" } })), reviewerModel: "Opus 5.5" },
+    { store }
+  );
+  assert.ok(out.accepted);
+  assert.equal(out.overall, "flagged");
+  const gate = await checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: review.id }, { store });
+  assert.equal(gate.overridden, false);
+  assert.match(gate.note, /FLAGs to show the author/);
+});
 
-await test("gate: passed review + same text (whitespace differences ok) → allowed", async () => {
-  const out = await checkReviewForAcceptance({ bookId: "b1", text: `  ${TEXT}\n\n`, skillReviewId: "rev-1" }, { load, recordOverride });
-  assert.equal(out.overridden, false);
+await test("an accepted verdict is final: a second submission is refused", async () => {
+  const store = memoryStore();
+  const { launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: verdict() }, { store });
+  await assert.rejects(submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: verdict() }, { store }), /final verdict/);
+  await assert.rejects(getReviewBrief(launches[0]!.briefId, { store }), /final verdict/);
 });
-await test("gate: edited text → refused", async () => {
-  await assert.rejects(
-    checkReviewForAcceptance({ bookId: "b1", text: TEXT + " Then she left.", skillReviewId: "rev-1" }, { load, recordOverride }),
-    (e: unknown) => e instanceof SkillReviewGateError && /hash/.test((e as Error).message)
-  );
+
+await test("invalid submissions get retries, then become reviewer_error → incomplete → override needed", async () => {
+  const store = memoryStore();
+  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const bad = verdict({ AS2: { result: "not_met", severity: "major", evidence: "a quote that is not there" } });
+  for (let i = 1; i < MAX_SUBMIT_ATTEMPTS; i++) {
+    const out = await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: bad }, { store });
+    assert.equal(out.accepted, false);
+    assert.equal(out.attemptsLeft, MAX_SUBMIT_ATTEMPTS - i);
+  }
+  const last = await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: bad }, { store });
+  assert.equal(last.item.status, "reviewer_error");
+  assert.equal(last.overall, "incomplete");
+  await assert.rejects(checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: review.id }, { store }), /INCOMPLETE/);
+  const ok = await checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: review.id, writerOverride: "Reviewer kept misquoting; I read it myself." }, { store });
+  assert.equal(ok.overridden, true);
+  assert.equal((await store.getReview(review.id)).override_reason, "Reviewer kept misquoting; I read it myself.");
 });
-await test("gate: wrong book → refused", async () => {
-  await assert.rejects(checkReviewForAcceptance({ bookId: "b2", text: TEXT, skillReviewId: "rev-1" }, { load, recordOverride }), SkillReviewGateError);
+
+await test("a refusal is recorded as reviewer_error, never a pass", async () => {
+  const store = memoryStore();
+  const { launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  const out = await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: JSON.stringify({ refused: true, reason: "content" }) }, { store });
+  assert.equal(out.item.status, "reviewer_error");
+  assert.equal(out.overall, "incomplete");
 });
-await test("gate: unknown review id → refused", async () => {
-  await assert.rejects(checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: "nope" }, { load, recordOverride }), SkillReviewGateError);
+
+await test("gate: edited text, wrong book, unknown review are all refused", async () => {
+  const store = memoryStore();
+  const { review, launches } = await requestReviews({ bookId: "b1", userId: "u1", text: TEXT, targetType: "prose_scene" }, { store, pack: null, resolveRubric: builtIn });
+  await submitReviewVerdict({ briefId: launches[0]!.briefId, verdict: verdict() }, { store });
+  await checkReviewForAcceptance({ bookId: "b1", text: `  ${TEXT}\n`, skillReviewId: review.id }, { store });
+  await assert.rejects(checkReviewForAcceptance({ bookId: "b1", text: TEXT + " Then she left.", skillReviewId: review.id }, { store }), /hash/);
+  await assert.rejects(checkReviewForAcceptance({ bookId: "b2", text: TEXT, skillReviewId: review.id }, { store }), /different book/);
+  await assert.rejects(checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: "nope" }, { store }), SkillReviewGateError);
 });
-await test("gate: unpassed review without override → refused, findings listed", async () => {
-  await assert.rejects(
-    checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: "rev-2" }, { load, recordOverride }),
-    (e: unknown) => e instanceof SkillReviewGateError && /did not pass/.test((e as Error).message)
-  );
-});
-await test("gate: unpassed review with blank override → refused", async () => {
-  await assert.rejects(checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: "rev-2", writerOverride: "   " }, { load, recordOverride }), SkillReviewGateError);
-});
-await test("gate: unpassed review with writer override → allowed and recorded", async () => {
-  const out = await checkReviewForAcceptance({ bookId: "b1", text: TEXT, skillReviewId: "rev-2", writerOverride: "Keeping it; the API was down." }, { load, recordOverride });
-  assert.equal(out.overridden, true);
-  assert.deepEqual(overrides, ["Keeping it; the API was down."]);
+
+await test("overall status order: pending > blocked > incomplete > flagged > passed", () => {
+  assert.equal(overallFromItems([{ status: "flagged" }, { status: "pending" }]), "pending");
+  assert.equal(overallFromItems([{ status: "flagged" }, { status: "blocked" }, { status: "reviewer_error" }]), "blocked");
+  assert.equal(overallFromItems([{ status: "flagged" }, { status: "reviewer_error" }]), "incomplete");
+  assert.equal(overallFromItems([{ status: "passed" }, { status: "not_applicable" }, { status: "flagged" }]), "flagged");
+  assert.equal(overallFromItems([{ status: "passed" }, { status: "not_applicable" }]), "passed");
 });
 
 await test("scan: catches stock phrases, ignores clean prose", () => {
   const sloppy =
     "Something flickered across his face. Her voice was barely above a whisper as she took a deep breath, his eyes never leaving hers. It was a pivotal moment, highlighting their evolving dynamic. Nothing would ever be the same.";
-  const scan = scanForSlop(sloppy);
-  const ids = scan.hits.map((h) => h.id);
+  const ids = scanForSlop(sloppy).hits.map((h) => h.id);
   for (const id of ["flicker", "barely_whisper", "deep_breath", "eyes_never_leaving", "pivotal", "highlighting", "evolving", "never_the_same"]) {
     assert.ok(ids.includes(id), `expected ${id}`);
   }
