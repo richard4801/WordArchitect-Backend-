@@ -16,43 +16,53 @@ verified as rubrics are written.
             │ renders: MCP `instructions` at connect · MCP prompts · get_drafting_process │
             │          REST /process (human doc) · REST /skills/:name/download (SKILL.md)  │
             └──────────────────────────────────────────────────────────────────────────────┘
-chapter workflow state (server-side, per book+chapter): context ▸ card ▸ card review ▸ GO ▸ drafting ▸ prose review ▸ saved
+chapter workflow state (server-side, per book+chapter): manuscript read ▸ card ▸ card review ▸ GO ▸ drafting ▸ prose review ▸ saved
                      │              │              │          │           │                 │
-              context pack     card stored    gatekeeper  writer-only  generate_prose   gatekeeper + 8 skills
-             (backend-built,                 + skills on   approval    _direct checks    → save_manuscript_scene
-              cited)                           the card     action      the approval        checks the review
+         manuscript_reads  card stored    gatekeeper  recorded Go  generate_prose   gatekeeper + 8 skills
+          (recorded by the                + skills on   (quoted in   _direct checks    → save_manuscript_scene
+           read tools)                      the card      chat)       the approval        checks the review
 ```
 
 Each arrow is a check the backend makes, not a reminder. A tool called out of order fails and its error names the
 step that's missing. A new session reads the workflow state and resumes where the last one stopped.
 
-## 1. Foundation: the context pack (manuscript-context, rebuilt)
+## 1. The manuscript-first gate (manuscript-context, as the author ruled it)
 
-**What it is.** A backend-built, stored, cited record of what the manuscript says right now, for one chapter: story
-position, the state of every character on the card, and the scene context (place, objects, the last scene each pair
-shared). It is consumed by the drafting Claude, the gatekeeper and every reviewer, so the manuscript is searched once
-per chapter instead of ten times.
+**The author's ruling (26 Nov):** manuscript-context "exists to only force Claude or any subagents to always seek
+context first from the Manuscript before doing anything at all." It is a gate on action, not a reviewer and not a
+context builder. Its own line is the precedence rule: **"The manuscript is always right. Memory is always suspect."**
+The frozen ~ch200 searches and bios, `context-to-prose.md` and the character bible are out of scope (clash M1, M4).
 
-**The protocol is kept, the content is derived** (clash M1/M2). Nothing from the frozen ~ch200 strings or bios is copied:
+**How the backend forces it.**
+1. **Every manuscript read is recorded** in a `manuscript_reads` table: book, tool (`search_manuscript`,
+   `get_manuscript_chapter`, `get_codex_entry`, `list_codex_entries`), the chapter read or the query, the MCP session
+   id (for the record only), time. The read tools write this themselves; nothing for Claude to remember.
+2. **Action tools refuse until a sufficient read is on record** for this book and target chapter, and the refusal names
+   the exact lookup still missing ("Read chapter 593 in full with get_manuscript_chapter first"). Action tools:
+   `generate_prose_direct`, `start_scene_draft_session`, `save_manuscript_scene`, `request_reviews`,
+   `generate_planning_unit`. `generate_prose_direct` gains a required `chapterNumber` for this (it gains `approvalId`
+   for Go at the same time, section 4, so one connector re-add covers both).
+3. **Scope is book + chapter + time, not the MCP session.** Session ids are wiped by every deploy, and subagents may not
+   share their parent's session, so a session-scoped rule would refuse legitimate work after any restart. A read
+   counts if it was made for this book within the window (decision below).
+4. **Subagents**: every reviewer brief opens with the lookups as its mandatory first step (built: section 4b's preamble).
+   The verdict check already rejects any quote not found verbatim in the reviewed text. For the gatekeeper, claims
+   about the past must cite a chapter and a short quote, and the backend checks each quote against that chapter's text.
+5. **Answering questions in chat** is not a tool call, so the backend can't gate it. The rule reaches it through the
+   MCP connect instructions and the process module (section 2), and through the gatekeeper catching what slips.
 
-| Protocol step (manuscript-context) | Backend source |
-| --- | --- |
-| Where are we | `get_book_facts` (highest chapter), the last 2 saved chapters in full, the latest pinned ledger notes (process step 12 writes them; best "where are we" source) |
-| Character state, per cast member | Codex entry (with a THIN CODEX warning when the entry is missing or bare), then `search_manuscript` with queries templated from the name ("{name} recent", "{name} {other cast member}"), the chapters of their last appearances read in full |
-| Who they know, what they witnessed | the last shared scene per pair: a search per pair, quoted with chapter numbers |
-| Scene context | place and objects named on the card, each searched |
-| "A character's claim is not a fact" | kept as a reviewer rule (the gatekeeper verifies contested claims against later chapters), not something the pack asserts |
+**What counts as a sufficient read** (decision for the author; recommended option first):
+- **A. The previous chapter in full, plus at least one manuscript search, for this book in the last 6 hours.**
+  Recommended: cheap, matches process step 1, and the refusal can say exactly what to do.
+- B. Any manuscript read for this book in the last 6 hours. Easiest to satisfy, weakest.
+- C. As A, plus one search per character named on the card. Strictest; needs the card stored first (section 3).
 
-**Who builds it: the backend, deterministically.** Retrieval only, no model call: every excerpt is stored with its
-chapter number, so the pack is evidence, not anyone's summary. The character **state sheets** (where, with whom,
-knows / doesn't know, who they know, what they witnessed, wants, physical state, possessions, voice lines) are built
-by the gatekeeper subagent from that evidence, as the gatekeeper does today, with its own extra searches for anything
-it contests (the three-phrasings rule, "a character's claim is not a fact"). That keeps the gatekeeper's rule that the
-work must not grade itself and must not rely on a summary (clash M3). The drafting Claude reads the same pack before
-carding, which is the manuscript-context rule made concrete.
+**Honest limit:** the backend can prove an agent *asked* the manuscript, not that it read or used the answer. The
+gatekeeper's independent re-check against the raw text is what covers that.
 
-`context-to-prose.md` (surface vs engine, the echo question, "what would be lost if this chapter were removed") is
-not a reviewer. It goes into the process module at the card-building step (clash M4).
+**The small context block in each reviewer brief** (pinned notes, Codex entries named in the text, the end of the
+previous chapter, beats, narration) stays: it's evidence handed to the reviewer, retrieval only, with no model call.
+It is not what enforces manuscript-first, and reviewers are still told to search for themselves.
 
 ## 2. The process module (the PDF as a real structure)
 
@@ -82,12 +92,12 @@ the "No similes" template line is replaced by "fresh figures only".
 
 ## 3. Enforcement: chapter workflow state
 
-`chapter_workflows` (one row per book + chapter + POV pass): step statuses, the ids of the context pack, card, card
+`chapter_workflows` (one row per book + chapter + POV pass): step statuses, the read record, card, card
 review, approval, prose review and save. Gates:
 
 | Tool | Refuses unless |
 | --- | --- |
-| `submit_card` (new) | a context pack exists for this chapter |
+| `submit_card` (new) | a sufficient manuscript read is on record for this chapter (section 1) |
 | `request_prompt_approval` (new) | the card has a review with no unresolved BLOCK |
 | `generate_prose_direct` | the exact prompt (hash of sceneBeat + compiledContext) is covered by a writer approval (section 4) |
 | `save_manuscript_scene` | a prose review of the exact text exists with no unresolved BLOCK (or a writer override); the chapter slot is empty |
@@ -136,7 +146,7 @@ who asked and when, and the brief being built server-side make that hard and vis
 ## 5. The gatekeeper, ported
 
 A backend-defined reviewer (`gatekeeper`), run as a chat subagent like the other skills:
-- **Continuity audit**: a chat subagent (section 4b) that starts from the context pack in its brief and runs its own
+- **Continuity audit**: a chat subagent (section 4b) that starts from the context block in its brief and runs its own
   `search_manuscript` / `get_manuscript_chapter` calls through the connector. Keeps every rule: list every character, object and place; who they know;
   what they witnessed; sourced claims ("I hear…"); "a character's claim is not a fact"; three phrasings before
   UNVERIFIED; cite chapter and quote. HARD / SOFT / UNVERIFIED.
@@ -170,7 +180,7 @@ on prose.
 
 ## 8. Build order and slice
 
-1. **Slice: the context pack plus the gatekeeper continuity audit**, end to end, validated against a regression set:
+1. **Slice: the manuscript-first gate plus the gatekeeper continuity audit**, end to end, validated against a regression set:
    take saved chapters, put back errors the gatekeeper is on record as catching (ch565 Kane asking "Is Mina happy
    about it?"; ch543 Jace reacting to a line said before he walked in; ch571 "I hear you came North"; the ch573 pregnancy
    taken as real; the 594 card's "blockers"), and measure what it catches, plus false alarms on the clean originals.
