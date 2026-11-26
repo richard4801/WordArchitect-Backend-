@@ -51,11 +51,21 @@ The frozen ~ch200 searches and bios, `context-to-prose.md` and the character bib
 5. **Answering questions in chat** is not a tool call, so the backend can't gate it. The rule reaches it through the
    MCP connect instructions and the process module (section 2), and through the gatekeeper catching what slips.
 
-**What counts as a sufficient read** (decision for the author; recommended option first):
-- **A. The previous chapter in full, plus at least one manuscript search, for this book in the last 6 hours.**
-  Recommended: cheap, matches process step 1, and the refusal can say exactly what to do.
-- B. Any manuscript read for this book in the last 6 hours. Easiest to satisfy, weakest.
-- C. As A, plus one search per character named on the card. Strictest; needs the card stored first (section 3).
+**What counts as a sufficient read (the author's clarification, 26 Nov):** not a fixed set of chapters. "An agent or
+Claude itself is not running an isolated search on a chapter, or few chapters. It would query the system on anything
+mentioned for the context it needs." So the gate is driven by the work itself:
+- At each action, the backend scans the text being acted on (the beat and compiled context sent to Hanami, the scene
+  being saved, the text sent for review, the planning directive) for every name it knows: Codex entries and their
+  aliases.
+- Each name needs a recent manuscript query about it on record for this book: a `search_manuscript` whose query
+  mentions it, or a read of its Codex entry. Window: 6 hours.
+- Missing names refuse the action, listed by name: "Not yet looked up in the manuscript: Amara, Kane. Search for each,
+  then retry."
+- Reviewer subagents: every claim about the story must cite a chapter and an exact quote, checked by the backend.
+
+**Limit of the name scan:** the backend only recognises names it already knows. A character, object or past event with
+no Codex entry can't be detected, so the gate can't force a lookup for it; those are reported as THIN CODEX and left to
+the gatekeeper's independent check. Keeping the Codex current is what widens the gate.
 
 **Honest limit:** the backend can prove an agent *asked* the manuscript, not that it read or used the answer. The
 gatekeeper's independent re-check against the raw text is what covers that.
