@@ -1,0 +1,466 @@
+ How Claude Drafts Your Chapters with
+ Hanami
+ Grace of the Barbarian (WordArchitect book a1b2c3d4-2222-…-0002). The full working
+ process, with the detailed record of Chapters 594 and 595 (Jace, the forge yard).
+ Prepared for Gold, 26 November 2026.
+
+
+ 1. Who does what
+  Party                  Role
+
+  Gold (you)             Author and final authority. Gives the plot and rulings, approves cards and Hanami
+                         prompts ("Go"), comments on drafts, edits the doc directly, and says when to save.
+
+  Claude (me)            Researches the manuscript, builds the card, writes the Hanami prompts, sends them one
+                         beat at a time, corrects what comes back, assembles the chapter, answers your
+                         comments, and saves to the manuscript with a ledger note.
+
+  Hanami                 The prose model behind WordArchitect's direct-generation tool. It writes the first draft of
+                         every passage from the prompts I give it. It is stateless: it remembers nothing between
+                         calls.
+
+  Gatekeeper agent       A separate Claude agent that has not seen my drafting. It audits each card and each
+                         assembled draft against the manuscript and your rules, then returns a verdict and a fix
+                         list.
+
+  WordArchitect          Holds the manuscript, notes and draft sessions. It runs Hanami calls and enforces your
+                         banned-terms list on every call.
+
+  Claude Docs            Where cards and drafts are put for you to read, comment on and edit.
+
+
+
+
+ 2. The standing workflow, step by step
+ This is the order I follow for every chapter. Each step marked (rule) is a standing instruction from
+ you.
+
+  1. Manuscript context first (rule, 18 Nov). Before carding or drafting I run the
+    manuscript-context protocol: where the story stands, the POV character's current state, and the
+    relationships in the scene, all checked against the text with search_manuscript and
+    get_manuscript_chapter. The manuscript beats memory. Every agent follows this, including the
+    gatekeeper.
+  2. Timeline and travel times. I check the timeline log and the ledger notes so the day, time of
+    day and who is where all hold.
+  3. Plot check with you. I lay out what the page supports, a rough shape, and the questions the
+    checks raise. Per your preference I flag plot problems the moment I see them and offer ideas.
+    Example for 594: breakfast clashed with the afternoon timing in 587, and Mina being in bed in
+    the afternoon needed a reason.
+  4. Card in a Claude Doc (MOMENT pattern). POV, time, place, who is present, who is off the
+    page, likely length, the hard facts Hanami must hold, the moments M1, M2 and so on in order,
+    the card's own rules, and the items still open.
+  5. Gatekeeper on the card. I send the card to the gatekeeper (resumed by SendMessage so it
+    keeps its context). Its fixes go into the card, and I report them to you.
+  6. Show you the exact Hanami prompts (rule). Nothing goes to Hanami until you have seen
+    the prompts and said "Go".
+
+
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                                              1
+  7. Feed Hanami one beat at a time (rule). Never the whole chapter in one call. You also asked
+    for shape, not instructions, so Hanami can find its own words.
+  8. Correct. I make mechanical fixes, send narrow reruns of single paragraphs, and add my own
+    stitches where nothing else works. Rule 8b: don't throw away a good pass; rerun only when a
+    pass is broken throughout. I report every change, including my own lines.
+  9. Assemble and present the whole chapter once (rule), not in bits.
+  10. Gatekeeper on the prose. A line-level audit; I apply its fixes and report them.
+  11. Draft into a Claude Doc. You read it and comment there or in chat, often by voice. I answer
+    each doc comment in its own thread on the page.
+  12. Save when you say so. I check the chapter slot is empty with get_manuscript_chapter, give
+    it a specific title (never a generic one), put the POV name on the first line and end with * * *,
+    write a pinned ledger note that includes the TIMING, then finish the draft session.
+
+
+
+ 3. Research: what I checked for 594 and 595
+  • Jace's history: he hated Elara "with a passion that bordered on pathological" (178); he is the
+    "human wolf" (556); Fenris: "He does smell like a human" (301); his family was killed by
+    wolfsbane in a factory his father funded (175, 290); he caught a woman's wrist before thinking
+    (296).
+  • Recent arc: he saw Kane beat Elara at the feast and turned away (573, 575); "I've got you" to
+    Kane (565); Fenris's public protection (574); "I couldn't get soft now" (576).
+  • The scene he walks into: the full text of 587 (cold afternoon, main gate, Maðr), 589 (Amara
+    stays at the gate; the forge yard walled on three sides, hearth under a crossbeam, anvils on
+    stumps), 590 (hands, crude lines, whetstone, her offers) and 591 (clothes cut away, cuts, the
+    neck, the edge pressing in, her blackout).
+  • Smell evidence: Kane smelled heavy, cloying, expensive perfume on her (178). The gatekeeper
+    caught that I had written "blockers" into the card, and Jace knows nothing about the stick (190).
+    So he only smells perfume with something wrong underneath it.
+  • Amara: named by Sera, real name Runa (517), Northern, small, silent. Nothing about her hair is
+    on the page, so I never let Hanami invent it.
+
+
+
+ 4. The card (MOMENT pattern), with 594 as the example
+ The card is written for two readers: you (to approve the story) and me (to build the prompts).
+ Hanami never sees the card itself, only prompts built from it.
+   POV: Jace, first person, past tense.
+   Time: K+2, late afternoon (the same afternoon as 587).
+   Place: great hall at a late meal, then the forge yard.
+   Off the page: Mina asleep after working late for the feast; Kane; Sera.
+   Facts Hanami must hold: Kane's beating last night; she hangs by the ankles; everything
+   Jace sees must match 590/591 and nothing beyond; the North despises humans; Jace's
+   standing; years of disliking her; the perfume; Amara stayed at the gate.
+   M1 The hall empties -> M2 The yard, slow recognition -> M3 The smell
+   M4 Watching -> M5 The throat -> M6 Amara -> M7 "Sera..."
+   Rules: long running sentences; no one-line paragraphs except "Sera..."; Jace doesn't step in;
+   no new wounds; no dashes; no felt/realized/suddenly; no invented names or colours.
+
+ Gatekeeper fixes applied to the 594/595 card
+  1. Timing wording: a late meal in the afternoon, not midday.
+  2. No "blockers": Jace only knows the perfume and the wrongness under it.
+  3. M7 inference must rest on something he sees (unhurried, not out of breath, the exact moment,
+    the heckler's "she stood at the gate"), with no "as if" line.
+
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                               2
+  4. M6 mechanics: Amara has no blade, so she takes the knife from the man; she half-catches Elara
+    and lowers her, with no head-first drop (that would be a new wound).
+  5. Why he holds still: Fenris's protection stands, so it isn't fear for his life. It is his standing.
+  6. The split was undefined: 594 = M1–M4, 595 = M5–M7.
+
+
+ 5. How a Hanami call is built
+ The three fields
+  • userId (required): your ID. It makes WordArchitect apply your banned-terms list (paragraphs
+    that contain a banned term are regenerated automatically) and your Writing Voice profile.
+  • compiledContext: everything Hanami knows. Because it is stateless, this must carry the POV
+    and tense, who the characters are, the hard facts, the rules, and the story so far.
+  • sceneBeat: what to write in this call.
+
+
+ The structure I settled on in 594 and 595
+ After the first attempts failed (section 7), this layout held reliably:
+   compiledContext:
+   Narrator: Jace, first person (I, me), PAST TENSE. <- tense spelled out
+   [who he is, where he is, what he knows right now]
+   [hard facts for this beat, stated as facts]
+   No dashes. No similes. Never use felt, realized, suddenly. <- rules every call
+   No invented names, hair or eye colours. No one-line paragraphs.
+   [colour note: this is HIS moment; give his angle, not hers]
+
+   Story so far:
+   [the last paragraph or two of ACCEPTED prose, verbatim] <- the anchor
+
+   sceneBeat:
+   Continue, past tense, first person, [N] paragraphs, then STOP.
+   [the beat as shape: what happens and what he notices, in order]
+   STOP [exact stop point]. [what must NOT happen yet]
+
+ Principles behind it
+  • One beat per call. Hanami's scope discipline drops sharply past about one paragraph's worth of
+    instruction.
+  • An anchor in real prose. Ending compiledContext with actual accepted sentences, not a
+    summary, keeps Hanami in first-person past tense. A summary as "story so far" made it run on
+    into new scenes.
+  • The beat in sceneBeat, not buried in the context. Early in 594 I put the beat inside
+    compiledContext with sceneBeat "Continue the story." It then treated the beat as already done
+    and wrote past it. Moving the beat into sceneBeat fixed this.
+  • Explicit STOP and "not yet" lines, for example "STOP on him knowing her. Do not describe
+    any smell yet. Do not have anyone cut her yet."
+  • Facts stated as facts. Example: "The woman is STILL FULLY CLOTHED... she is not naked."
+    Without it Hanami stripped her a beat early.
+  • Shape, not script (your rule). I give what happens and what he notices, and leave the
+    wording to Hanami. Dialogue already on the page, or set by you, is quoted exactly.
+  • Restate the bans every call. Hanami invents small physical details unless told not to, every
+    time.
+
+
+
+ 6. What I do with what comes back
+
+Claude × Hanami drafting process — Grace of the Barbarian                                                 3
+  Kind of change         When I use it                      Examples from 594/595
+
+  Mechanical fix         A word, a clause, tense or         Cut "blonde", "blue eyes", "blond beard"; cut "my blood ran
+                         punctuation is wrong but the       cold", "glinted wickedly"; changed present to past tense;
+                         passage works.                     removed a dash; fur, claws and growls removed from Jace
+                                                            in human form.
+
+  Narrow rerun           One paragraph is broken, or        The spoon thought, his mind fighting the smell, the
+                         you asked for a rewrite of one     whetstone from his angle: each a single-paragraph call.
+                         paragraph.
+
+  Full rerun of a        The pass is broken                 Hall opening: three discards. Forge yard recognition: one
+  beat                   throughout (rule 8b).              discard.
+
+  Claude stitch          Hanami won't produce the           The opening sentence, the woman on her toes, "Would
+                         line after a rerun, or a short     Kane even miss her…", the standing line, Jace's final
+                         bridge is needed.                  admission in 595.
+
+  Your edits             You edit the doc directly.         "Sera's little woman guard", the new jeer, cutting the
+                                                            explicit "she was waiting" reasoning.
+
+ Every change of each kind is reported to you, in chat or in the comment thread, and logged in the
+ draft session with record_scene_draft_iteration.
+
+
+ 7. Hanami behaviour seen in these chapters
+  Behaviour                  Example                                               What I did
+
+  Runs past the stop         First hall call: an invented human man is killed,     Discarded; added a hard limit ("the
+  line into invented plot    Elara appears beside Jace, and Jace walks             whole passage happens INSIDE the
+                             home.                                                 hall").
+
+  Invents named              Second hall call: a prisoner called "Samuel", a       Discarded; moved the beat into
+  characters                 hound master, Jace rescuing him.                      sceneBeat and anchored it in prose.
+
+  Tense and person           Third call in third-person present; several later     Spelled out PAST TENSE with
+  drift                      calls in present tense.                               examples; converted the tense by
+                                                                                   hand when the content was good.
+
+  Echoes the prompt          The whetstone rerun returned my bracket               Rejected; hand-interleaved instead,
+                             notes "(stroke)" as prose.                            later replaced by a Hanami rewrite
+                                                                                   after your comment.
+
+  Invents physical           Blonde hair; a blond beard and blue eyes on           Cut, with the ban restated every call.
+  detail                     the forge man; short black hair and bare feet
+                             on Amara; missing teeth; a cheek gash;
+                             bulging eyes.
+
+  Breaks facts on the        Elara naked before her clothes were cut; her          Rerun with the facts stated; or cut.
+  page                       hands gripping the rope while hanging upside
+                             down; Amara called a "Southern girl".
+
+  Similes and stock          "like a bowstring", "still as a stone", "a statue",   Cut or made plain.
+  phrases                    "silence grips the yard like a sickness",
+                             "precipice".
+
+  Tells the conclusion       "I knew then that I should have done                  Cut; shown through his body instead.
+                             something"; "paralyzed with fear".
+
+  Won't make a               595 ending: Jace would not let himself say she        Claude stitch, reported to you.
+  character admit            was human.
+  something
+
+
+
+
+ 8. The gatekeeper's prose audit
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                                                   4
+ After assembly, the gatekeeper reads the draft file against the manuscript and your rules. For 594
+ it returned eight line fixes, including:
+
+  • The banned "emerged" and "I thought"; a simile ("like a horse they were buying").
+  • The heartbeat used twice; stock phrases ("frozen in place", "breath caught", "couldn't tear my
+    eyes from her").
+  • An explaining clause about why he held still; "The word I'd been trying not to think" hinting
+    instead of saying.
+  • A compressed list of her pleas, which was the start of the problem you later named: re-running
+    Elara's scene instead of giving his perception.
+
+ For 595 it caught the banned "put her hand on" and "opened his mouth" patterns, a "just", filler
+ lines, and a contradiction ("couldn't make myself look" followed by him watching her being cut
+ down). It confirmed that Amara's description stayed within the page.
+
+
+ 9. Your comments and what they changed
+  Your comment                                         Change made
+
+  "Does he? He can only imagine… which                 Hanami rewrote the paragraph as an organic run of thought: he
+  unfortunate human managed to find its way            hasn't been here long enough to see one caught; everyone
+  to the north?"                                       knows the North's hate; which unlucky human made it this far?
+
+  "He shouldn't come to any conclusion… His            "She was human." became a denial paragraph ("It couldn't be…
+  mind should be fighting the possibility."            It was impossible.") and the line about his dislike making sense
+                                                       was moved to the end of 595.
+
+  "Why would he say the city still clung to            Replaced with his standing: the men who'd lately started calling
+  him. Like he smell human?"                           him by his name instead of "the Southerner".
+
+  "We don't need to copy the last chapter…             The whetstone paragraph was rewritten from what he notices:
+  Jace's perception should be different."              the crowd hushing, the man watching her not the knife, a joke
+                                                       about gold in her skirts, a woman's laugh.
+
+  Chat: "I hated the fact we had to quote              595's prompts carried a colour note ("This is HIS moment… give
+  some things from Elara's POV."                       his angle"), and none of her lines were quoted.
+
+
+
+
+ 10. Full call log
+ Chapter 594 (draft session e8782330…)
+  #     Beat                                  Result                                                        Kept?
+
+  1     M1 hall (beat inside                  Ran into the yard; invented a human man; Elara in the         No
+        compiledContext)                      crowd; dashes; "felt".
+
+  2     M1 with hard limits                   Invented "Samuel", hounds, a rescue.                          No
+
+  3     M1 as exactly three paragraphs        Third person, present tense.                                  No
+
+  4     M1 with a voice sample from           First person but present tense, and into the yard.            No
+        Ch310
+
+  5     M1 with the anchor sentence           Clean.                                                        Yes
+        (mine) and the beat in
+        sceneBeat
+
+  6     M2 forge yard                         Naked too early; hands on the rope; "I'm a Southerner".       No
+
+  7     M2 with fixed facts                   Good; I cut "blonde" and "blood ran cold".                    Yes
+
+  8     M3 smell                              Usable core; invented injuries and wolf traits cut.           Partly
+
+  9     M4 watching                           Usable; invented colours cut, lines swapped for 590's.        Partly
+
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                                                 5
+  #     Beat                                 Result                                                    Kept?
+
+  10    Whetstone narrow rerun               Echoed the prompt.                                        No
+
+  11    Comment: spoon thought               Good; light trims.                                        Yes
+
+  12    Comment: mind fights the smell       Present tense, twice as long; converted and trimmed.      Yes
+
+  13    Comment: whetstone from his          Present tense; converted; one dropped beat restored.      Yes
+        angle
+
+
+
+ Chapter 595
+  #     Beat                                 Result                                                    Kept?
+
+  1     M5 throat                            Good shape; similes and "I knew then…" cut.               Yes
+
+  2     M6 Amara                             Present tense; invented hair and feet; "Southern girl";   Partly
+                                             many similes. Converted and cut hard.
+
+  3     M7 Sera                              "felt"; moved him to the hall; wouldn't admit it. Last    Partly
+                                             paragraph largely mine.
+
+
+
+
+ 11. Who wrote what
+ Every new passage began as a Hanami call. The skeleton and most sentences are Hanami's. My
+ repairs carried more weight than usual in these two chapters, especially 595. Lines that are entirely
+ mine:
+
+  • 594: "I was halfway through a bowl of stew…" (the anchor sentence); "A woman beside me was
+    up on her toes…"; "Would Kane even miss her, when he was the one…"; "My stomach turned
+    over and I swallowed it back."; "Something in me kept saying this was wrong…"; "a shoulder in
+    front of me that I didn't move past"; "Some of the men packed in around me… calling me by my
+    name instead of the Southerner…".
+  • 595: "He took his hand back and stepped away from her."; "Elara's chest rose and fell, barely.";
+    "Her fingers closed around his wrist, not hard that I could see" (gatekeeper wording); "She was
+    human. She had always been human. And one name kept coming back to me."
+  • Your lines: "It was Sera's little woman guard."; "No. What is she doing? Why is she trying to
+    protect a dirty human?"; and your cuts.
+
+
+
+ 12. Saving
+  • Slot check: get_manuscript_chapter returned no content for 594 or 595 before saving.
+  • 594 saved as "Which Unlucky Human" (8 chunks); 595 saved as "Not One of Them Said a Word"
+    (4 chunks). Both use your edited doc text verbatim, with "Jace" on the first line and ending * * *.
+  • Pinned ledger note "Ledger 594+595: Jace at the forge yard", with the timing, beats, rulings,
+    next step and carry-forward rules.
+  • Draft session marked done.
+
+
+ 13. Craft rules applied to every call and fix
+  • First person, past tense. No dashes, except a dash for cut-off dialogue; ellipses for trailing words.
+  • No felt, realized or suddenly; no stock phrases; figures of speech only if fresh (you reversed the
+    blanket simile ban).
+  • No invented eye or hair colours, names or history. A POV character can't name places nobody
+    told them about, and can't see a look, only what a face does.
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                                       6
+  • Secrets show as shape until another character's mouth lands them; the narrator doesn't
+    conclude a reveal for the reader.
+  • A blow needs a trigger and the other person's reaction, written through the body. Every turn gets
+    a beat of stillness.
+  • No filler that re-narrates. Recognition is a process. Each POV colours the moment; don't re-run
+    another POV's scene.
+  • Chapters of about 800–1,300 words; splits are welcome.
+  • Explicit menace and nudity are allowed in the torture scenes, but Claude won't write a sexual
+    assault being carried out.
+
+
+
+ 14. Limits and what I can't verify
+  • Which model is Hanami. WordArchitect's tool says it sends to Hanami, but the response
+    carries no model name. The Planning Engine roles list Claude models, but none of them writes
+    prose. The evidence that it is Hanami: calls failed when your Hanami subscription lapsed and
+    resumed when you renewed it, and the output behaves like a smaller local model.
+  • Logging. The draft session records one consolidated iteration for 594 rather than every call.
+    Section 10 of this document is the full call record.
+  • Hand-fixing versus resending. I sometimes fix by hand where another Hanami call might
+    have worked. If you prefer more of the wording to stay Hanami's, I can send broken passages
+    back to it, at the cost of more calls.
+
+
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                               7
+ Appendix A. A verbatim working call (594, M1, the call
+ that was kept)
+   compiledContext:
+   Narrator: Jace, first person (I, me), PAST TENSE (I sat, I asked, I went). A Southern wolf who lived
+   years in human cities; some Northerners call him the human wolf. He is a guest in a Northern wolf
+   keep. The North despises humans and never took their machines; the South keeps its manners around
+   humans because it needs what they build. No dashes. Never use felt, realized, suddenly, woodsmoke.
+   No invented names or characters. Long running sentences, plain and unhurried.
+
+   Story so far:
+   Jace
+
+   I was halfway through a bowl of stew at the end of one of the long tables, late enough in the
+   afternoon that the hall was more empty benches than men, when the wolf at the next table leaned over
+   to the one beside him and said something too low for me to catch.
+
+   sceneBeat:
+   Continue from that sentence, in past tense, first person, for two or three paragraphs. Both wolves get
+   up and leave their bowls half full, then the table behind them, benches scraping, the hall thinning out
+   in a way that makes no sense to Jace. He catches a young wolf by the sleeve and asks. The young wolf
+   grins with all his teeth: "They caught a human. In the yard." He pulls free. The others hurry,
+   nostrils working, men half asleep a minute ago now quick on their feet, a gladness on them Jace has not
+   seen in this hall. Jace sits a moment with his spoon; he has some idea what a Northern crowd does with
+   a human it gets hold of. He puts the spoon down and goes after them. STOP as he walks out of the hall
+   doors. Do not describe the yard or any human.
+
+   userId: a1b2c3d4-1111-4a2b-9c3d-000000000001
+
+
+ Appendix B. The first call for 595 (M5, the throat)
+   compiledContext:
+   Narrator: Jace, first person (I, me), PAST TENSE. A Southern wolf, a guest in a Northern keep; the men
+   around him have only lately started accepting him and he will not throw that away. He stands in a
+   crowd in the forge yard, not moving. Elara, a Southern woman he has disliked for years, Kane's wife,
+   hangs head down by her ankles from a crossbeam, naked now, shallow cuts on her arm, ribs and hip. A big
+   forge man works on her with a long knife and says nothing. Jace's nose has told him she smells human
+   and his mind is still fighting it. No dashes. No similes. Never use felt, realized, suddenly. No
+   invented names, hair or eye colours. No sound effects. No one-line paragraphs. This is HIS moment, not
+   hers: let what he notices, what his body does, and where his thoughts drift colour everything. Don't
+   retell her suffering from the inside; give his angle on it.
+
+   Story so far (end of previous part):
+   Another across her ribs. Another at her hip, and she twisted on the rope and the rope only turned her.
+   My stomach turned over and I swallowed it back. Something in me kept saying this was wrong, and it
+   gave me nothing to do about it. I stood where I was. The blood kept dripping.
+
+   sceneBeat:
+   Continue, past tense, first person, two or three paragraphs, then STOP. The knife comes up toward her
+   neck, and the crowd knows where it's going before Jace does: the noise of them changes, men nearest
+   him going up on their toes. Jace takes it in from the side, whatever his eye catches and holds onto
+   (the man's forearm, the slow care of it, a face near him with its mouth open), while the knife draws a
+   line along her neck and the blood runs up her face into her hair. Her voice goes thinner until he
+   can't pick it out of the crowd any more. Her body stops fighting the rope. Jace finds himself watching
+   her chest, waiting for it to move, not sure it does. Then the edge goes back to her throat and the man
+   leans into it. STOP there.
+
+   userId: a1b2c3d4-1111-4a2b-9c3d-000000000001
+
+
+
+
+Claude × Hanami drafting process — Grace of the Barbarian                                                    8
+
