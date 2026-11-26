@@ -655,26 +655,47 @@ the one word intended. So there is exactly one enforcement mechanism
 here, used for both single words and full phrases — no fast path, no
 free path.
 
-**How it actually works** (`src/services/ghostEditor.ts`): when a book
-has at least one banned term, `/generate-prose` buffers the full
-generation (`generateHanamiProse`, not the live token stream) instead of
-streaming it directly, splits it into paragraphs, and checks each one
-(case-insensitive substring match — deliberately not strict word-
-boundary matching, so banning "delve" also catches "delved"; a writer
-wanting full conjugation coverage bans multiple literal forms rather
-than relying on a stemmer this doesn't have). Any paragraph containing a
-banned term gets regenerated via a narrowly-scoped Hanami call — only
-that paragraph, with the surrounding paragraphs supplied as context-only
-— re-checked after each attempt, up to 3 tries, before being accepted.
-Paragraph-level scope is deliberate, not arbitrary: it matches the
-project's established finding that Hanami's scope discipline holds up
-well around one paragraph per call and degrades sharply beyond it (see
-the MCP Server section's supervised-drafting findings), so this reuses
-the same "narrow scope, verify, retry" pattern already proven to work
-rather than inventing a new one.
+**How it actually works** (`src/services/ghostEditor.ts`, rebuilt 26 Nov to
+the author's design): when a writer has at least one banned term, the
+finished generation is buffered (not streamed) and the **system** marks every
+occurrence of every banned term itself (case-insensitive substring, so "delve"
+also catches "delved" but not "delving"). For each sentence holding a marked
+term, a **Sonnet agent run by the backend** (`GHOST_EDITOR_MODEL`, default
+`claude-sonnet-5-5`, effort `low`, on the backend's `ANTHROPIC_API_KEY`) gets
+that sentence with the terms marked `[[like this]]` plus up to two sentences
+either side as context, and rewrites only that sentence. The agent never sees
+the banned list: the system re-checks its rewrite against the FULL list, and
+if it landed on another banned term, marks that and asks again. Guards reject a
+rewrite that drops or adds a character name, adds a dash, adds stock phrasing
+from the anti-slop list, or is far longer or shorter than the original; the
+reason is fed back. Up to `MAX_SPOT_ATTEMPTS` (5) per sentence; if it never
+satisfies the system, the author's original sentence is kept and the spot is
+reported `resolved: false`, never claimed as fixed. If Sonnet declines a
+sentence (some explicit or violent content), that one sentence falls back to
+Hanami with the same loop, and the report says which engine fixed it.
+`GHOST_EDITOR_MODE=paragraph` restores the old whole-paragraph Hanami rewrite.
+
+Why the sentence, from a live test (LEARNINGS 2026-11-26): the old
+whole-paragraph rewrite removed the term every time but rewrote far more than
+it (one banned phrase in a 100-word paragraph lost two named characters and
+gained a dash and a stock line); asking for replacement words only broke the
+grammar. The sentence loop, run live with Hanami as the rewriter on the same
+five paragraphs, resolved all five in 7 calls and changed 3 words of the
+100-word paragraph instead of 94. The Sonnet path itself is covered by offline
+tests (`npm run test:ghost`) and still needs one live check once deployed with
+the backend's key.
+
+The report keeps the same shape (`paragraphIndex`, `originalText`,
+`finalText`, `bannedTermsFound`, `attempts`, `resolved`, `diff`) with an added
+`spots` array (each sentence's before/after, attempts, engine, and a log).
+
+**Claude can manage the list over MCP**: `list_banned_terms`, `ban_term`
+(`{ userId, bookId, term }`, across all the writer's books) and `unban_term`
+(`{ userId, term }`), called only when the writer asks in the conversation.
 
 **The real cost, stated plainly**: for a writer with banned terms
-configured, `/generate-prose` loses live token-by-token streaming on
+configured, `/generate-prose` loses live token-by-token streaming (and each
+fixed sentence costs about $0.002 of Sonnet) on
 every one of their books — the writer sees the finished, already-clean
 text appear once generation and any needed corrections are done, not
 prose typing out in real time. This is the honest tradeoff for the

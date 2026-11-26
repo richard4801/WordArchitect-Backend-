@@ -9,7 +9,7 @@ import { editManuscriptChapterContent, ManuscriptChapterNotFoundError } from "..
 import { listCollaborationLearnings, addCollaborationLearning } from "../routes/collaborationLearnings.js";
 import { getWritingVoiceProfile } from "../services/writingVoice.js";
 import { listBannedTerms, addBannedTerm, removeBannedTerm } from "../services/bannedTerms.js";
-import { enforceBannedTerms, MAX_REGENERATION_ATTEMPTS } from "../services/ghostEditor.js";
+import { enforceBannedTerms, MAX_REGENERATION_ATTEMPTS, MAX_SPOT_ATTEMPTS } from "../services/ghostEditor.js";
 import { enforceNarration } from "../services/narrationEditor.js";
 import { getBookNarrationSetting } from "../services/narrationSetting.js";
 import { appendNarrationReminder, isNarrationEnforcementEnabled, describeNarration } from "../lib/narration.js";
@@ -891,12 +891,16 @@ export function registerWordArchitectTools(server: McpServer): void {
         const notes: string[] = [];
         if (resolvedCorrections.length > 0) {
           const rewrittenTerms = [...new Set(resolvedCorrections.flatMap((c) => c.bannedTermsFound))];
-          notes.push(`${resolvedCorrections.length} paragraph(s) were automatically rewritten to remove banned term(s): ${rewrittenTerms.join(", ")}.`);
+          const spots = resolvedCorrections.flatMap((c) => c.spots ?? []).filter((f) => f.resolved);
+          const byHanami = spots.filter((f) => f.engine === "hanami").length;
+          notes.push(
+            `${spots.length || resolvedCorrections.length} sentence(s) were automatically rewritten to remove banned term(s): ${rewrittenTerms.join(", ")}${byHanami ? ` (${byHanami} by Hanami after the Sonnet editor declined)` : ""}.`
+          );
         }
         if (unresolvedCorrections.length > 0) {
           const stillPresentTerms = [...new Set(unresolvedCorrections.flatMap((c) => c.bannedTermsFound))];
           notes.push(
-            `WARNING: ${unresolvedCorrections.length} paragraph(s) still contain banned term(s) after ${MAX_REGENERATION_ATTEMPTS} rewrite attempts and were returned as-is: ${stillPresentTerms.join(", ")}. Review these paragraphs yourself before showing this draft to the writer.`
+            `WARNING: ${unresolvedCorrections.length} paragraph(s) still contain banned term(s) after up to ${MAX_SPOT_ATTEMPTS} rewrite attempts per sentence and were returned as-is: ${stillPresentTerms.join(", ")}. Review these paragraphs yourself before showing this draft to the writer.`
           );
         }
 
